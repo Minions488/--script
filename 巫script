@@ -1,2 +1,303 @@
--- This file is protected by goofyscator V9 >> goofyscator.lua.cz <<
-return ({["IvRER"]=(function(Zia,hm_,Jhj)local gcQ=Zia.rJ;local xt4,Uv7,bqt,FyO,ssW,dn2,Dma,ii7,iyB,mld,rsP,Qrc,Xrf=#Jhj,gcQ.table.concat,gcQ.string.char,gcQ.setmetatable or setmetatable,{},Zia.VlUOM,gcQ.rawset or rawset,true,gcQ.string.byte,#hm_,{},1,1;if xt4 == 0 then return {};end;while Qrc <= mld do local yes;yes,Qrc=(Zia.ztnBj)(Zia,hm_,Qrc);if yes == nil or yes < 0 or Qrc + yes - 1 > mld then break;end;rsP[Xrf]=Qrc;ssW[Xrf]=yes;Qrc=Qrc + yes;Xrf=Xrf + 1;end;local _iA={};_iA[0]=Xrf - 1;local function rnt(IiH,iaE)local SdC=Zia.l;if not SdC or type(IiH) ~= "table" or IiH[1] ~= nil then return;end;local Nc8=IiH[6];if Nc8 == nil then return;end;local Tci=(((iaE + 0x7B87) * 0x6FB) + 0x4A6) % 0x1FFFF;local Kd1,Qd2=dn2.bxor(Nc8,0x4A6) - Tci,(((iaE + 0x367F) * 659) + 0x18F1) % 0xFFFF;local Wrn=Kd1 - Qd2;local SoB=(((dn2.bxor(Wrn,0x5398) * 0x443) + 0xD370) % 0x1FFFF);local daN=SdC[SoB];if daN then local poO=Zia.XycP;if poO then daN=poO(IiH,iaE,SoB,daN) or daN;end;IiH[1]=daN;end;end;return FyO(_iA,{["__index"]=(function(ebc,c)local Fhf,Whw=rsP[c],ssW[c];if not Fhf or not Whw then return nil;end;local nw4,XlG,fll,Da6,Kru=c - 2 + (((c * 393) + 0x356E) % xt4),Fhf - 1,{},((c * 433) + 0xD6A) % 256,(((c + 49) % 4) * 2) + 17;local LnO=(c * 29) + 0x6AAA + Da6;for sw5=1,Whw do local py6,Zxf=((nw4 + sw5) % xt4) + 1,iyB(hm_,XlG + sw5);local by8,oxv=(((c + 0x667D) * 0x439) + sw5) % 3,iyB(Jhj,py6);local hl3;if by8 == 0 then hl3=(LnO + (sw5 * Kru) + ((sw5 % 3) * Da6)) % 256;elseif by8 == 1 then hl3=(LnO + (sw5 * (Kru + 2)) + ((sw5 % 5) * Da6) + ((sw5 * sw5 + c) % 251)) % 256;else hl3=(LnO + (sw5 * (Kru + 4)) + dn2.bxor((sw5 * Da6) % 256,(c + sw5) % 256)) % 256;end;fll[sw5]=bqt(dn2.bxor(dn2.bxor(Zxf,hl3),oxv));end;local krL=(Zia.eA)(Zia,Uv7(fll),c);rnt(krL,c);if ii7 then Dma(ebc,c,krL);rsP[c]=nil;ssW[c]=nil;end;return krL;end),["__metatable"]={}});end),["Iie"]=(function(_uc,Eum,Cr2)local wbE=_uc.qlY;local Mr3,Ghg,iih,apH=(((((Cr2[9] or {})[2] or {})))[0x3F36] or 0),(((((Cr2[9] or {})[1] or {})))[0x3F36] or 0),Cr2[7],Eum[0x23CC][(((Cr2[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD];if type(iih) ~= "number" then iih=(_uc.ztnBj)(_uc,iih or "",1) or 0;Cr2[7]=iih;end;if iih ~= 0 then Mr3=Eum[0x2639] or (Ghg - 1);end;local Qod=0;for hg9=Ghg,Mr3 do Qod=Qod + 1;apH[Qod]=wbE(_uc,Eum,hg9);end;end),["a"]=(function(ks4,zsr,Br9)local npL,qs5=ks4.nbITk,ks4.Bvky;local cmI=zsr[0x23CC][(((Br9[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD];qs5(ks4,zsr,(((Br9[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD + 1,cmI);local qgx=npL(ks4,zsr,(((Br9[9] or {})[1] or {})));local icS=cmI[qgx];if icS == nil then qs5(ks4,zsr,(((Br9[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,(function()error("attempt to call missing method '" .. tostring(qgx) .. "' of " .. type(cmI));end));else qs5(ks4,zsr,(((Br9[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,icS);end;end),["gSCsL"]=(function(s6,qq,ciw)local ymR,byr,swn,pmD,ptJ=s6.rJ.xpcall or xpcall,s6.rJ.error or error,s6.VlUOM,s6.l,(s6.rJ.table and s6.rJ.table.unpack) or s6.rJ.unpack;if not ptJ then ptJ=(function(Xdi,Isf,Cuz)Isf=Isf or 1;Cuz=Cuz or #Xdi;if Isf > Cuz then return;end;return Xdi[Isf],ptJ(Xdi,Isf + 1,Cuz);end);end;local Ptx=s6.OUG;local Iek,le0=#Ptx + 1,s6.fwjur;local function sla(Pq_)return Pq_;end;local gyd,jmW,ue1,ccF,thE,mcW=0x1D22,6,0x194C,0xAFF,1,0x754E;Ptx[Iek]=qq;local function Rsv(d)if type(d) ~= "table" then return;end;d[0x23CC]=nil;d[0x5699]=nil;d[0x472B]=nil;d[ue1]=nil;d[0xED6]=nil;d[0x3341]=nil;d[0x2639]=nil;d[0x83A]=nil;d[0x4082]=nil;d[0x29C2]=nil;d[0x1412]=nil;d[0x754E]=nil;d[0xAFF]=nil;d[0x835]=nil;d[0x270F]=nil;end;local function joD(vv)local bcK,gij=vv[0x3341],vv[0xED6];if gij == nil or bcK == nil then gij=0x2C78D2;bcK=0x4B720;vv[0xED6]=gij;vv[0x3341]=bcK;vv[ue1]=(vv[ue1] or 1) + (gij - bcK) - 1;end;return gij - bcK;end;local ohA=joD(qq);local function zkp(...)return {["n"]=select("#",...),...};end;local function Typ()while true do local zlk=qq[ue1];local VV=zlk - ohA;local p=ciw[VV];if not p then return;end;qq[ue1]=zlk + 1;if p[gyd] then s6.fwjur=VV;end;local DD=p[thE];if not DD then local tuM=(((VV + 0x7B87) * 0x6FB) + 0x4A6) % 0x1FFFF;local bdz,gd_=(((VV + 0x367F) * 659) + 0x18F1) % 0xFFFF,swn.bxor(p[jmW] or 0,0x4A6) - tuM;local kdE=gd_ - bdz;local qiz=(((swn.bxor(kdE,0x5398) * 0x443) + 0xD370) % 0x1FFFF);DD=pmD[qiz];if DD then local zoU=s6.XycP;if zoU then DD=zoU(p,VV,qiz,DD) or DD;end;p[thE]=DD;end;end;if not DD then return;end;DD(s6,qq,p);local Bt_=qq[ccF];if Bt_ then local qhK=qq;qq[ccF]=nil;local Ol_=s6.EJqoU and s6.EJqoU[Bt_[1]];if Ol_ then qq,ciw=Ol_(Bt_[2] or {},Bt_.n or 0);ohA=joD(qq);Ptx[Iek]=qq;Rsv(qhK);end;else local loj=qq[mcW];if loj then qq[mcW]=nil;return ptJ(loj,1,loj.n or 0);end;end;end;end;local fjC,TdH=ymR((function()return zkp(Typ());end),sla);Rsv(qq);Ptx[Iek]=nil;s6.fwjur=le0;if not fjC then byr(TdH,0);end;return ptJ(TdH,1,TdH.n or 0);end),["haAi"]=(function(Ntc,JsS,chU,hh)if type(JsS) ~= "table" then return hh or 0;end;hh=hh or 0;local Fau=hh < 0;if not Fau and hh == 0 then return hh;end;local function DiC(_aQ)if type(_aQ) ~= "table" or (not Fau and hh == 0) then return;end;local tkB=_aQ[0x1616] or 123;if (Ntc.fwjur or 0) <= 0 then return;end;if tkB == 0x6FB6 and _aQ[0x4BFE] == nil then local UiF=_aQ[0x3F36] or 0;Ntc.K=Ntc.VlUOM.bxor(((UiF + 0x6B68) * 989 + (Ntc.fwjur or 0)) % 0x10000,0x6730);local RdF=chU[UiF];Ntc.K=nil;_aQ[0x4BFE]=RdF == nil and Ntc.WzVH or RdF;if not Fau then hh=hh - 1;end;end;end;DiC((Ntc.Cp)(Ntc,JsS));DiC((Ntc.Uav)(Ntc,JsS));local Rv4=JsS[8];if type(Rv4) == "table" then for Kze=1,#Rv4 do hh=(Ntc.haAi)(Ntc,Rv4[Kze],chU,hh);if not Fau and hh == 0 then break;end;end;end;return hh;end),["vsTQx"]=(function(Dv5,BwV,Lv6)local CyT=Dv5.f;CyT(Dv5,BwV,(((((Lv6[9] or {})[1] or {})))[0x3F36] or 0),BwV[0x23CC][(((Lv6[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD]);end),["Pz" .. "Z"]=(function(ju9,esD,Cv8)local jq5=0x4450;local Pxs;repeat if jq5 == 0x4450 then esD,Cv8=(ju9.WiT)(ju9,esD,Cv8);if esD == nil then error("runtime error",0);end;jq5=0x53C4;elseif jq5 == 0x53C4 then Pxs=ju9.MLbh;jq5=0x58A6;else return Pxs(ju9,esD,Cv8);end;until false;end),["J"]=(function(At9,Cra,YeS)local yfz,skX,hkZ=At9.l or (At9.NG)(At9),At9.eA,At9.rJ.table.concat;local etS=YeS[7];if type(etS) ~= "string" or etS == "" then return;end;local Gbs=At9.rJ;local mk5,Eco,bfT,kfO,Kbh=Gbs.string.byte,At9.VlUOM,Gbs.table.concat,(Cra[0xED6] or 0x2C78D2) - (Cra[0x3341] or 0x4B720),Gbs.string.char;local foE=(Cra[0x194C] or 1) - kfO - 1;if foE < 1 then return;end;local woT,Hme,jfN,Ich=(((foE + 0x71F8) * 791) + 0x72FC + 0x255A) % 0x10000,#etS,foE * 13,{};for Mro=1,Hme do local gqa,MlD=(woT + (Mro * 29) + jfN) % 256,mk5(etS,Mro);Ich[Mro]=Kbh(Eco.bxor(MlD,gqa));woT=(woT + (MlD * 17) + (Mro * 11) + foE) % 0x10000;end;if Ich[1] == nil then return;end;local Q=skX(At9,bfT(Ich),foE);if type(Q) ~= "table" then return;end;YeS[6]=Q[6];YeS[4]=Q[4];YeS[9]=Q[9];YeS[7]=Q[7];YeS[8]=Q[8];YeS[0x1D22]=Q[0x1D22];if YeS[0x1D22] then At9.fwjur=foE;end;YeS[1]=nil;local Rmt=YeS[6];if Rmt == nil then return;end;local Ncr=(((foE + 0x7B87) * 0x6FB) + 0x4A6) % 0x1FFFF;local Jd3,Xd4=(((foE + 0x367F) * 659) + 0x18F1) % 0xFFFF,Eco.bxor(Rmt,0x4A6) - Ncr;local Zd5=Xd4 - Jd3;local ViK=(((Eco.bxor(Zd5,0x5398) * 0x443) + 0xD370) % 0x1FFFF);local rtF=yfz[ViK];if rtF then local NoV=At9.XycP;if NoV then rtF=NoV(YeS,foE,ViK,rtF) or rtF;end;YeS[1]=rtF;return (rtF)(At9,Cra,YeS);end;end),["O"]=(function(jem,Sa3,Ha4)local Jbd,raI=jem.nbITk,jem.Bvky;local Fri=Ha4[7];if type(Fri) ~= "number" then local ow2=(jem.ztnBj)(jem,Fri or "",1) or 0;Fri=jem.VlUOM.bxor(ow2,0x4D84);Ha4[7]=Fri;end;local Scd=(((Ha4[9] or {})[1] or {}));if Fri % 2 == 1 then Scd=(((Ha4[9] or {})[2] or {}));end;local ogn,YyN=Sa3[0x4082],Jbd(jem,Sa3,Scd);local FlL=ogn[YyN];if FlL == jem.WzVH then raI(jem,Sa3,(((Ha4[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,nil);elseif FlL ~= nil then raI(jem,Sa3,(((Ha4[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,FlL);elseif YyN == "limitedstack" then raI(jem,Sa3,(((Ha4[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,true);elseif ogn ~= jem.loyw then raI(jem,Sa3,(((Ha4[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,nil);else raI(jem,Sa3,(((Ha4[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,jem.rJ[YyN]);end;end),["i"]=(function(Ra5,xqs)local dna=Ra5.anLIU;if type(dna) ~= "string" or dna == "" then return;end;Ra5.anLIU=nil;Ra5.rJ=xqs or Ra5.rJ or (_ENV or (getfenv and getfenv()) or _G);dna=(Ra5.CJ)(Ra5,dna);local II=Ra5.rJ;local igs,PyS=((II and II.string) or string).sub,((II and II.string) or string).byte;if #dna < 18 then return;end;local WlU=(II and II.bit32) or _G.bit32;if not WlU then return;end;local HgD,Yrs,VyH,ByR,GyD,Lmo=3,234,227,1,23,58;local function yoA()local xfS,YlC=PyS(dna,ByR + 1),PyS(dna,ByR);if not YlC or not xfS or YlC < 65 or YlC > 80 or xfS < 80 or xfS > 95 then return nil;end;ByR=ByR + 2;return ((YlC - 65) * 16) + (xfS - 80);end;local Hcl=yoA();if Hcl == nil then return;end;local function ln3(Umi)local PlM,Prh,VlF=(VyH + (Umi * Yrs)) % 256,1,0;for vjY=1,4 do local ulh=yoA();if not ulh then return nil;end;local zqh=(HgD + PlM + (vjY * GyD) + (Umi * Yrs)) % 256;local ngh=WlU.bxor(ulh,zqh);VlF=VlF + (ngh * Prh);Prh=Prh * 256;PlM=(PlM + ngh + Lmo + (vjY * Umi)) % 256;end;return VlF;end;local hsY,HoG=ln3(1),ln3(2);if not hsY or not HoG then return;end;if Hcl ~= WlU.bxor(227,(hsY + HoG + VyH) % 256) then return;end;local Mhm=ByR;local Yam=Mhm + hsY;local Rcu=Yam + HoG - 1;if Rcu ~= #dna then return;end;Ra5.IQ=igs(dna,Mhm,Yam - 1);Ra5.Qsua=igs(dna,Yam,Rcu);end),["Cp"]=(function(zq7,KyL)local sgr=KyL[9];return (type(sgr) == "table" and sgr[1]) or {};end),["oBGc"]=(function(_q8,zfH,QyU)local Xbl,Vxh,_qr,RoK=zfH[0x23CC],(((QyU[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,QyU[9],zfH[0x40D1];local ezn=_qr[1];do local lno,_fR=Vxh,{};Xbl[lno]=_fR;local JyC=RoK and RoK[lno];if JyC then JyC[1]=_fR;end;end;end),["ryx"]=(function(Eq9,EfD,XyM)local TfL,Bxr,hgd,DoQ=EfD[0x23CC],(((XyM[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,XyM[9],EfD[0x40D1];local Gxd,Kxl=hgd[1],hgd[2];do local AfU,uni=TfL[(Gxd[0x3F36] or 0)] - (Kxl[0x3F36] or 0),Bxr;TfL[uni]=AfU;local ZyF=DoQ and DoQ[uni];if ZyF then ZyF[1]=AfU;end;end;end),["PxcJd"]=(function(Tje,Zbu,Vrr)local eyW=Zbu[0x5699];local tyY=eyW and eyW[Vrr];return tyY and tyY[1] or nil;end),["nxXAI"]=(function(BlW,ayP,bjP,Cmn)local Mms=(BlW.CLq)(BlW,ayP,0);return (BlW.Mc)(BlW,Mms,Cmn);end),["zdScl"]=(function(Ajt,uqB,Oja)end),["tCAwp"]=(function(GlY,KlP)if KlP == nil or KlP == "" then return {[0x7981]=0,[0x22AB]=""};end;local iw3,Eqd=(GlY.X)(GlY,KlP,1);local clr;clr,Eqd=(GlY.V)(GlY,KlP,Eqd);return {[0x7981]=(iw3 or 97) - 97,[0x22AB]=clr or ""};end),["Kb"]=(function(Ijo,xhJ,oyV)if not xhJ[0x23CC][(((oyV[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD] then do local QlV=(((((oyV[9] or {})[1] or {})))[0x3F36] or 0);local Dcc=(xhJ[0xED6] or 0x2C78D2) - (xhJ[0x3341] or 0x4B720);xhJ[0x194C]=Dcc + QlV;end;end;end),["X"]=(function(nyG,RgL,syK)local Lcm;Lcm,syK=(nyG.ztnBj)(nyG,RgL,syK);if Lcm == nil then return 0,syK;end;if Lcm % 2 == 0 then return Lcm / 2,syK;end;return -((Lcm + 1) / 2),syK;end),["QAGN"]=(function(JlB,OfC,hyQ)local ryJ,tbm=JlB.Bvky,JlB.PxcJd;ryJ(JlB,OfC,(((hyQ[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,tbm(JlB,OfC,(((((hyQ[9] or {})[1] or {})))[0x3F36] or 0)));end),["OCs"]=(function(Nji,IfM,dyX)local LoJ,rgl,Qxu,NfF=IfM[0x40D1],dyX[9],(((dyX[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,IfM[0x23CC];local Jxc,Xxm=rgl[2],rgl[1];do local SfW,cnn=NfF[(Xxm[0x3F36] or 0)] + (Jxc[0x3F36] or 0),Qxu;NfF[cnn]=SfW;local lyZ=LoJ and LoJ[cnn];if lyZ then lyZ[1]=SfW;end;end;end),["e"]=(function(Brd,xef,Yhy,P)if type(xef) ~= "table" then return P or 0;end;P=P or 0;local XeF=P < 0;if not XeF and P == 0 then return P;end;local laS,o3,mns=0,xef[0],P;if type(o3) == "number" and o3 > 0 then for DgU=1,o3 do if not XeF and laS >= mns then break;end;local Ucf=xef[DgU];if Ucf == nil then break;end;laS=laS + 1;P=(Brd.haAi)(Brd,Ucf,Yhy,P);if not XeF and P == 0 then break;end;end;return P;end;local uy0=Brd.rJ.next or next;for tzs,cy1 in uy0,xef do if not XeF and laS >= mns then break;end;laS=laS + 1;P=(Brd.haAi)(Brd,cy1,Yhy,P);if not XeF and P == 0 then break;end;end;return P;end),["KS"]=(function(Grl,abf,LgC)local my2=Grl.Bvky;local ZlK,uaH,DnA=Grl.rJ.string.byte,Grl.fw,Grl.VlUOM;local UgM,CgF,MgW,FgY=0,0,0,0;if type(uaH) == "string" then UgM=ZlK(uaH,1) or 0;CgF=ZlK(uaH,2) or 0;MgW=ZlK(uaH,3) or 0;FgY=ZlK(uaH,4) or 0;end;local HfY,Fmh=(MgW * 165 + FgY * 131 + 0x167B) % 0x10000,(UgM * 211 + CgF * 257 + 0x2A14) % 0x10000;local RfP=DnA.bxor((Fmh + 0x5BD3) % 0x10000,HfY);local obw=(UgM * 17 + CgF * 29 + MgW * 43 + FgY * 59 + 0xB95A) % 0x10000;local DfV=DnA.bxor((RfP * 293 + obw) % 0x10000,(Fmh + 0xF98A) % 0x10000);local cqG=DnA.bxor((RfP + DfV + 0x7DF7) % 0x10000,(Fmh + HfY) % 0x10000);local Jrm=DfV;my2(Grl,abf,(((LgC[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD,Jrm);end),["Z"]=(function(Sjn,Zrw)return Zrw;end),["LhxoE"]=(function(dtW,zhX,De_)local WgP,Wmr,fy3=dtW.rJ.table.concat,dtW.l or (dtW.NG)(dtW),dtW.eA;local Utv=De_[7];if type(Utv) ~= "string" or Utv == "" then return;end;local wy4=dtW.rJ;local YgV,Ymd,Pml,yy5,elQ=wy4.string.byte,wy4.table.concat,(zhX[0xED6] or 0x2C78D2) - (zhX[0x3341] or 0x4B720),wy4.string.char,dtW.VlUOM;local Paf=(zhX[0x194C] or 1) - Pml - 1;if Paf < 1 then return;end;local Vmu,tlJ,La7,Php=Paf * 23,{},(((Paf + 0x71F8 + 17) * 791) + 0x72FC + 0x255A + (Paf * 19)) % 0x10000,#Utv;for un4=1,Php do local PgB,dsV=(La7 + (un4 * 11) + Vmu + ((un4 % 5) * 31)) % 256,YgV(Utv,Php - un4 + 1);tlJ[un4]=yy5(elQ.bxor(dsV,PgB));La7=(La7 + (dsV * 19) + (un4 * 29) + Paf + ((dsV % 7) * 43)) % 0x10000;end;if tlJ[1] == nil then return;end;local V=fy3(dtW,Ymd(tlJ),Paf);if type(V) ~= "table" then return;end;De_[6]=V[6];De_[4]=V[4];De_[9]=V[9];De_[7]=V[7];De_[8]=V[8];De_[0x1D22]=V[0x1D22];if De_[0x1D22] then dtW.fwjur=Paf;end;De_[1]=nil;local Ccw=De_[6];if Ccw == nil then return;end;local alX=(((Paf + 0x7B87) * 0x6FB) + 0x4A6) % 0x1FFFF;local ery,trp=elQ.bxor(Ccw,0x4A6) - alX,(((Paf + 0x367F) * 659) + 0x18F1) % 0xFFFF;local arv=ery - trp;local UoX=(((elQ.bxor(arv,0x5398) * 0x443) + 0xD370) % 0x1FFFF);local ttH=Wmr[UoX];if ttH then local voI=dtW.XycP;if voI then ttH=voI(De_,Paf,UoX,ttH) or ttH;end;De_[1]=ttH;return (ttH)(dtW,zhX,De_);end;end),["CLq"]=(function(ztn,zew,olZ)if type(zew) == "table" and not ztn.n then return;end;zew=(ztn.qqkL)(ztn,zew);zew=(ztn.CJ)(ztn,zew);zew=(ztn.Fr)(ztn,zew);local orb=ztn.el;ztn.el=zew or true;local Bmc=(ztn.jq)(ztn,zew,olZ);ztn.el=orb;return Bmc;end),["to"]=(function(UnI,Mcy,il0)local irg=UnI.el;UnI.el=Mcy or true;local Gmm=(UnI.jq)(UnI,Mcy,il0 or 0);UnI.el=irg;return (UnI.Mc)(UnI,Gmm);end),["d"]=(function(f,BiQ,lsB)local dgu,nl1,vy7,exw=lsB[9],BiQ[0x23CC],BiQ[0x40D1],(((lsB[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD;local txy,axp=dgu[1],dgu[2];local boN;do local cea=txy;local A,sl2=cea[0x3F36] or 0,cea[0x1616] or 123;if sl2 == 0x7A87 then boN=nl1[A];elseif sl2 == 0x4272 then boN=A;elseif sl2 == 0x2B0D then local ZeW=cea[0x4BFE];if ZeW == nil then f.K=f.VlUOM.bxor(((A + 0x6B68) * 989 + (f.fwjur or 0)) % 0x10000,0x6730);f.tib=((A + ((((lsB[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD) + (f.fwjur or 0)) % 4);ZeW=BiQ[0x472B][A];f.K=nil;if ZeW == f.WzVH then cea[0x4BFE]=f.WzVH;boN=nil;else cea[0x4BFE]=ZeW == nil and f.WzVH or ZeW;boN=ZeW;end;elseif ZeW == f.WzVH then boN=nil;else boN=ZeW;end;elseif sl2 == 0x6FB6 then local eeY=cea[0x4BFE];if eeY == nil then f.K=f.VlUOM.bxor(((A + 0x6B68) * 989 + (f.fwjur or 0)) % 0x10000,0x6730);f.tib=((A + ((((lsB[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD) + (f.fwjur or 0)) % 4);eeY=BiQ[0x472B][A];f.K=nil;if eeY == f.WzVH then cea[0x4BFE]=f.WzVH;boN=nil;else cea[0x4BFE]=eeY == nil and f.WzVH or eeY;boN=eeY;end;elseif eeY == f.WzVH then boN=nil;else boN=eeY;end;else boN=nil;end;end;local QQ;do local meo=axp;local O,rl4=meo[0x3F36] or 0,meo[0x1616] or 123;if rl4 == 0x7A87 then QQ=nl1[O];elseif rl4 == 0x4272 then QQ=O;elseif rl4 == 0x2B0D then local teP=meo[0x4BFE];if teP == nil then f.K=f.VlUOM.bxor(((O + 0x6B68) * 989 + (f.fwjur or 0)) % 0x10000,0x6730);f.tib=((O + ((((lsB[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD) + (f.fwjur or 0)) % 4);teP=BiQ[0x472B][O];f.K=nil;if teP == f.WzVH then meo[0x4BFE]=f.WzVH;QQ=nil;else meo[0x4BFE]=teP == nil and f.WzVH or teP;QQ=teP;end;elseif teP == f.WzVH then QQ=nil;else QQ=teP;end;elseif rl4 == 0x6FB6 then local aeV=meo[0x4BFE];if aeV == nil then f.K=f.VlUOM.bxor(((O + 0x6B68) * 989 + (f.fwjur or 0)) % 0x10000,0x6730);f.tib=((O + ((((lsB[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD) + (f.fwjur or 0)) % 4);aeV=BiQ[0x472B][O];f.K=nil;if aeV == f.WzVH then meo[0x4BFE]=f.WzVH;QQ=nil;else meo[0x4BFE]=aeV == nil and f.WzVH or aeV;QQ=aeV;end;elseif aeV == f.WzVH then QQ=nil;else QQ=aeV;end;else QQ=nil;end;end;local VgG=nl1[exw];VgG[boN]=QQ;end),["uYDDv"]=(function(gy9,iby,kpe)local hw6=gy9.Bvky;local Ua8,Oae=(((((kpe[9] or {})[1] or {})))[0x3F36] or 0),(((kpe[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD;if Ua8 < Oae then Oae,Ua8=Ua8,Oae;end;for BgK=Oae,Ua8 do hw6(gy9,iby,BgK,nil);end;end),["NNkqh"]=(function(CoZ,Ca9,usG)local CnN,nbp=CoZ.Bvky,CoZ.rJ.tonumber;local dl5,nrk=Ca9[0x23CC],(((usG[4] or 0xBF8A4) - 0xBF8A4) * 0x17654) % 0xFFFFD;local Moe,Iat=(((((usG[9] or {})[2] or {})))[0x3F36] or 0),dl5[nrk];local pp,Naa=usG[7],dl5[Moe];if type(pp) == "table" then pp=pp[0x3F36] or (Moe + 1);usG[7]=pp;elseif type(pp) ~= "number" then pp=(CoZ.X)(CoZ,pp or "",1) or (Moe + 1);usG[7]=pp;end;local Mo0=dl5[pp];if type(Iat) ~= "number" or type(Naa) ~= "number" or type(Mo0) ~= "number" then local Fot=CoZ.rJ.tonumber or tonumber;if type(Iat) ~= "number" then local wlu=Fot(Iat);if wlu == nil then error("invalid 'for' initial value (number expected, got " .. type(Iat) .. ")");end;Iat=wlu;CnN(CoZ,Ca9,nrk,Iat);end;if type(Naa) ~= "number" then local ylc=Fot(Naa);if ylc == nil then error("invalid 'for' limit (number expected, got " .. type(Naa) .. ")");end;Naa=ylc;CnN(CoZ,Ca9,Moe,Naa);end;if type(Mo0) ~= "number" then local vlf=Fot(Mo0);if vlf == nil then error("invalid 'for' step (number expected, got " .. type(Mo0) .. ")");end;Mo0=vlf;CnN(CoZ,Ca9,pp,Mo0);end;end;if (Mo0 > 0 and Iat > Naa) or (Mo0 < 0 and Iat < Naa) then do local fue=(((((usG[9] or {})[1] or {})))[0x3F36] or 0);local Bcq=(Ca9[0xED6] or 0x2C78D2) - (Ca9[0x3341] or 0x4B720);Ca9[0x194C]=Bcq + fue;end;end;end),["tv"]=(function(Mjc,Mpb)return Mpb[0x1616] or 123;end),["eA"]=(function(o,e,msQ)local h=o.VlUOM;local prS,l=(o.ztnBj)(o,e,1);local Qo9=h.bxor(prS or 0,0x4C40);local mtB=Qo9;if msQ then local qrU=(((msQ + 0x367F) * 659) + 0x18F1) % 0xFFFF;mtB=mtB - qrU;end;local xrM=Qo9;if msQ then local vui=(((msQ + 0x7B87) * 0x6FB) + 0x4A6) % 0x1FFFF;xrM=h.bxor(Qo9 + vui,0x4A6);else xrM=h.bxor(Qo9 + 0x6460,0x4A6);end;local Goh={[6]=xrM};if mtB == 0x2ABB then local ErY;ErY,l=(o.ztnBj)(o,e,l);local IrG,ygv=false,{};for mxT=1,ErY or 0 do local ksi;ksi,l=(o.ztnBj)(o,e,l);if ksi == nil then break;end;local wyi=o.rJ.string.sub(e,l,l + ksi - 1);l=l + ksi;local xul=(o.eA)(o,wyi);ygv[mxT]=xul;if xul and xul[0x1D22] then IrG=true;end;end;Goh[8]=ygv;if IrG then Goh[0x1D22]=1;end;return Goh;end;local GnM;local yyn;local pys;local b;local t;t,l=(o.ztnBj)(o,e,l);local _ts=0x7609;if msQ then _ts=(((msQ + 0x6393) * 277) + 0x7609) % 0xFFFF;end;t=h.bxor(t or _ts,_ts);local g=math.floor((t or 0) / 16) % 10;t=(t or 0) % 16;if g == 0 then if h.band(t,1) ~= 0 then GnM,l=(o.X)(o,e,l);GnM=(GnM or 6) - 6;end;if h.band(t,8) ~= 0 then b,l=(o.V)(o,e,l);end;if h.band(t,4) ~= 0 then pys,l=(o.TBuwY)(o,e,l);end;if h.band(t,2) ~= 0 then yyn,l=(o.TBuwY)(o,e,l);end;elseif g == 1 then if h.band(t,4) ~= 0 then pys,l=(o.TBuwY)(o,e,l);end;if h.band(t,8) ~= 0 then b,l=(o.V)(o,e,l);end;if h.band(t,2) ~= 0 then yyn,l=(o.TBuwY)(o,e,l);end;if h.band(t,1) ~= 0 then GnM,l=(o.X)(o,e,l);GnM=(GnM or 6) - 6;end;elseif g == 2 then if h.band(t,1) ~=
+local Spectrum = loadstring(game:HttpGet("https://raw.githubusercontent.com/alperalp808/Spectrum-UI-Library/refs/heads/main/Spectrum%20Source"))()
+
+-- 1. 窗口创建与 Key 系统
+local Window = Spectrum:AddWindow({
+    Name = "巫 script",
+    Theme = "Aqua",
+    ToggleKeybind = Enum.KeyCode.RightControl,
+    Size = UDim2.new(0, 500, 0, 340),
+    Notifications = true,
+    ToggleButton = true,
+    
+    KeySystem = {
+        Enabled = true,
+        Users = {
+            { User = "admin", Pass = "1234" },
+            { User = "testuser", Pass = "abcd" }
+        }
+    }
+})
+
+-- 欢迎通知
+Window:Notify({
+    Title = "欢迎！",
+    Content = "巫 script 已准备就绪。",
+    Duration = 3
+})
+
+-- 反挂机
+local vu = game:GetService("VirtualUser")
+game:GetService("Players").LocalPlayer.Idled:Connect(function()
+    vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(1)
+    vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+-------------------------------------------------
+-- 标签页 1：通用功能
+-------------------------------------------------
+local MainTab = Window:AddTab("通用功能")
+local SpeedSection = MainTab:AddSection("角色属性")
+
+-- 所有 Slider 的 Notifications 全部设为 false，防止加载失败
+SpeedSection:AddSlider({
+    Name = "行走速度 (WalkSpeed)",
+    Min = 16,
+    Max = 250,
+    Default = 16,
+    Increment = 1,
+    Notifications = false, 
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = value
+        end)
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "跳跃高度 (JumpPower)",
+    Min = 50,
+    Max = 300,
+    Default = 50,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.Character.Humanoid.JumpPower = value
+        end)
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "重力 (Gravity)",
+    Min = 0,
+    Max = 500,
+    Default = 196.2,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        workspace.Gravity = value
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "视野 (FOV)",
+    Min = 30,
+    Max = 120,
+    Default = 70,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        workspace.CurrentCamera.FieldOfView = value
+    end
+})
+
+local ResetSection = MainTab:AddSection("快捷操作")
+
+ResetSection:AddButton({
+    Name = "恢复默认属性",
+    Callback = function()
+        pcall(function()
+            local char = game.Players.LocalPlayer.Character
+            char.Humanoid.WalkSpeed = 16
+            char.Humanoid.JumpPower = 50
+            workspace.Gravity = 196.2
+            workspace.CurrentCamera.FieldOfView = 70
+        end)
+        Window:Notify({
+            Title = "已恢复",
+            Content = "所有属性已重置为默认值",
+            Duration = 2
+        })
+    end
+})
+
+-------------------------------------------------
+-- 标签页 2：设置
+-------------------------------------------------
+local SettingTab = Window:AddTab("设置")
+local InfoSection = SettingTab:AddSection("玩家信息")
+
+InfoSection:AddButton({
+    Name = "查看用户名",
+    Callback = function()
+        Window:Notify({
+            Title = "用户名",
+            Content = game.Players.LocalPlayer.Name,
+            Duration = 3
+        })
+    end
+})
+
+InfoSection:AddButton({
+    Name = "查看注入器",
+    Callback = function()
+        local executor = "未知"
+        pcall(function()
+            -- 增加保护，防止 identifyexecutor 导致崩溃
+            executor = identifyexecutor() or "未知"
+        end)
+        Window:Notify({
+            Title = "注入器",
+            Content = executor,
+            Duration = 3
+        })
+    end
+})
+
+InfoSection:AddButton({
+    Name = "查看服务器ID",
+    Callback = function()
+        Window:Notify({
+            Title = "GameId",
+            Content = tostring(game.GameId),
+            Duration = 3
+        })
+    end
+})
+
+local UtilitySection = SettingTab:AddSection("服务器操作")
+
+UtilitySection:AddButton({
+    Name = "重新加入服务器",
+    Callback = function()
+        game:GetService("TeleportService"):TeleportToPlaceInstance(
+            game.PlaceId,
+            game.JobId,
+            game.Players.LocalPlayer
+        )
+    end
+})
+
+UtilitySection:AddButton({
+    Name = "离开服务器",
+    Callback = function()
+        game:Shutdown()
+    end
+})
+
+-------------------------------------------------
+-- 标签页 3：通用1
+-------------------------------------------------
+local Tab1 = Window:AddTab("通用1")
+local VisualSection = Tab1:AddSection("视觉与移动")
+
+local NightVision = false
+VisualSection:AddButton({
+    Name = "夜视 (点击开关)",
+    Callback = function()
+        NightVision = not NightVision
+        game.Lighting.Ambient = NightVision and Color3.new(1, 1, 1) or Color3.new(0, 0, 0)
+        Window:Notify({Title = "夜视", Content = NightVision and "已开启" or "已关闭", Duration = 2})
+    end
+})
+
+local NoclipEnabled = false
+local NoclipConnection
+VisualSection:AddButton({
+    Name = "穿墙 (跳跃即关闭)",
+    Callback = function()
+        NoclipEnabled = not NoclipEnabled
+        if NoclipEnabled then
+            NoclipConnection = game:GetService("RunService").Stepped:Connect(function()
+                pcall(function()
+                    for _, part in pairs(game.Players.LocalPlayer.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then part.CanCollide = false end
+                    end
+                end)
+            end)
+            Window:Notify({Title = "穿墙", Content = "已开启（跳跃即可关闭）", Duration = 2})
+        else
+            if NoclipConnection then NoclipConnection:Disconnect() end
+            Window:Notify({Title = "穿墙", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+local InfiniteJumpEnabled = false
+VisualSection:AddButton({
+    Name = "无限跳 (点击开关)",
+    Callback = function()
+        InfiniteJumpEnabled = not InfiniteJumpEnabled
+        Window:Notify({
+            Title = "无限跳",
+            Content = InfiniteJumpEnabled and "已开启" or "已关闭",
+            Duration = 2
+        })
+    end
+})
+
+game:GetService("UserInputService").JumpRequest:Connect(function()
+    if InfiniteJumpEnabled then
+        pcall(function()
+            game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+    end
+    if NoclipEnabled then
+        NoclipEnabled = false
+        if NoclipConnection then NoclipConnection:Disconnect() end
+        Window:Notify({Title = "穿墙", Content = "已通过跳跃关闭", Duration = 2})
+    end
+end)
+
+local ToolSection = Tab1:AddSection("工具")
+
+ToolSection:AddButton({
+    Name = "点击传送工具",
+    Callback = function()
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        local tool = Instance.new("Tool")
+        tool.RequiresHandle = false
+        tool.Name = "[巫] 传送工具"
+        tool.Activated:Connect(function()
+            local pos = mouse.Hit + Vector3.new(0, 2.5, 0)
+            pcall(function()
+                game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(pos.X, pos.Y, pos.Z)
+            end)
+        end)
+        tool.Parent = game.Players.LocalPlayer.Backpack
+        Window:Notify({Title = "提示", Content = "传送工具已添加到背包", Duration = 2})
+    end
+})
+
+-------------------------------------------------
+-- 标签页 4：通用2
+-------------------------------------------------
+local Tab2 = Window:AddTab("范围设置")
+local HitboxSection = Tab2:AddSection("范围调整")
+
+local HitboxSize = 0
+local HitboxEnabled = false
+
+game:GetService("RunService").RenderStepped:Connect(function()
+    if HitboxEnabled then
+        for _, v in pairs(game:GetService("Players"):GetPlayers()) do
+            if v ~= game.Players.LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") then
+                pcall(function()
+                    local root = v.Character.HumanoidRootPart
+                    root.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+                    root.Transparency = 0.7
+                    root.BrickColor = BrickColor.new("Really red")
+                    root.Material = Enum.Material.Neon
+                    root.CanCollide = false
+                end)
+            end
+        end
+    end
+end)
+
+local function SetHitbox(size)
+    HitboxSize = size
+    HitboxEnabled = true
+    Window:Notify({Title = "范围", Content = "已设置为 " .. tostring(size), Duration = 2})
+end
+
+HitboxSection:AddButton({Name = "0范围", Callback = function() SetHitbox(0) end})
+HitboxSection:AddButton({Name = "普通范围", Callback = function() SetHitbox(30) end})
+HitboxSection:AddButton({Name = "中等范围", Callback = function() SetHitbox(100) end})
+HitboxSection:AddButton({Name = "全图范围", Callback = function() SetHitbox(500) end})
+HitboxSection:AddButton({Name = "终极范围", Callback = function() SetHitbox(2500) end})
+HitboxSection:AddButton({Name = "关闭范围", Callback = function() 
+    HitboxEnabled = false 
+    Window:Notify({Title = "范围", Content = "已关闭", Duration = 2})
+end})
