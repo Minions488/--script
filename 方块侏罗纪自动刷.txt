@@ -1,0 +1,136 @@
+--[[
+    Jurassic Blocky - Auto Amber (高速版)
+]]
+
+local plr = game.Players.LocalPlayer
+local rs = game:GetService("RunService")
+
+local speed = 180          -- 原150 → 350（明显更快）
+local dist = 3.5           -- 到达判定更近一点
+local holdTime = 0.85      -- 原1.2 → 0.85（缩短按住时间）
+local heightOffset = 6.5
+local hoverTime = 0.25     -- 原0.6 → 0.25（少等一会）
+
+local noclip
+local currentChar, hrp, hum
+
+local function enableNoclip()
+    if noclip then noclip:Disconnect() end
+    noclip = rs.Heartbeat:Connect(function()
+        if not currentChar then return end
+        for _, v in ipairs(currentChar:GetDescendants()) do
+            if v:IsA("BasePart") and v.CanCollide then
+                v.CanCollide = false
+            end
+        end
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+        if hum then
+            hum.PlatformStand = true
+        end
+    end)
+end
+
+local function goto(pos)
+    if not hrp then return end
+
+    while (hrp.Position - pos).Magnitude > dist do
+        local diff = pos - hrp.Position
+        local currentDist = diff.Magnitude
+        local stepSize = speed * task.wait()
+
+        -- 只在很近时轻微减速，整体更快
+        if currentDist < 8 then
+            stepSize = stepSize * 0.55
+        end
+
+        stepSize = math.min(stepSize, currentDist)
+        local lookPos = Vector3.new(pos.X, hrp.Position.Y, pos.Z)
+        hrp.CFrame = CFrame.lookAt(hrp.Position + diff.Unit * stepSize, lookPos)
+        task.wait()
+    end
+
+    hrp.CFrame = CFrame.new(pos.X, pos.Y, pos.Z)
+end
+
+local function getPrompts()
+    local t = {}
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("ProximityPrompt") and v.ActionText == "Collect Amber" and v.Enabled then
+            table.insert(t, v)
+        end
+    end
+    return t
+end
+
+local function initCharacter()
+    currentChar = plr.Character or plr.CharacterAdded:Wait()
+    hrp = currentChar:WaitForChild("HumanoidRootPart", 5)
+    hum = currentChar:WaitForChild("Humanoid", 5)
+    if not hrp or not hum then return end
+    hum.PlatformStand = true
+    enableNoclip()
+end
+
+plr.CharacterAdded:Connect(function()
+    task.wait(0.3)
+    initCharacter()
+end)
+
+initCharacter()
+
+local prompts = getPrompts()
+local lastRefresh = tick()
+
+while true do
+    if not hrp or not hum then
+        task.wait(0.2)
+        continue
+    end
+
+    if tick() - lastRefresh > 0.8 then  -- 刷新更勤
+        prompts = getPrompts()
+        lastRefresh = tick()
+    end
+
+    for i = #prompts, 1, -1 do
+        if not prompts[i] or not prompts[i].Parent or not prompts[i].Enabled then
+            table.remove(prompts, i)
+        end
+    end
+
+    if #prompts == 0 then
+        task.wait(0.15)
+        continue
+    end
+
+    local closest, idx, minDist
+    for i, p in ipairs(prompts) do
+        local part = p.Parent:IsA("BasePart") and p.Parent or p.Parent:FindFirstChildWhichIsA("BasePart")
+        if part then
+            local d = (hrp.Position - part.Position).Magnitude
+            if not minDist or d < minDist then
+                minDist, idx, closest = d, i, p
+            end
+        end
+    end
+
+    if closest and hrp then
+        local part = closest.Parent:IsA("BasePart") and closest.Parent or closest.Parent:FindFirstChildWhichIsA("BasePart")
+        if part then
+            local targetPos = part.Position + Vector3.new(0, heightOffset, 0)
+            goto(targetPos)
+            task.wait(hoverTime)
+            pcall(function()
+                fireproximityprompt(closest, holdTime)
+            end)
+            task.wait(holdTime + 0.15)
+            table.remove(prompts, idx)
+            task.wait(0.08)
+        else
+            table.remove(prompts, idx)
+        end
+    end
+end
