@@ -4,7 +4,6 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 local SERVER_ENTRY_TIME = tick()
@@ -21,7 +20,6 @@ local RemoteEvent = nil
 local CURRENT_SCRIPT_SOURCE = [==[
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local SERVER_ENTRY_TIME = tick()
 
@@ -80,14 +78,6 @@ local function runVictory()
             local humanoid = character:WaitForChild("Humanoid", 10)
             if not hrp or not humanoid then return end
 
-            local noclipConn = RunService.Stepped:Connect(function()
-                if character then
-                    for _, part in ipairs(character:GetDescendants()) do
-                        if part:IsA("BasePart") then part.CanCollide = false end
-                    end
-                end
-            end)
-
             local function tp(cf)
                 hrp.Anchored = true
                 character:PivotTo(cf)
@@ -106,8 +96,8 @@ local function runVictory()
                 tp(pivot * CFrame.new(0, 5, 20))
             end
 
-            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 3 秒后
-            local remaining = 3 - (tick() - SERVER_ENTRY_TIME)
+            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 6 秒后
+            local remaining = 6 - (tick() - SERVER_ENTRY_TIME)
             if remaining > 0 then
                 task.wait(remaining)
             end
@@ -125,8 +115,6 @@ local function runVictory()
                 fireReplay()
                 task.wait(0.8)
             end
-
-            if noclipConn then noclipConn:Disconnect() end
         end)
         isVictoryRunning = false
     end)
@@ -362,16 +350,6 @@ local function runVictory()
             local humanoid = character:WaitForChild("Humanoid", 10)
             if not hrp or not humanoid then return end
 
-            local noclipConn = RunService.Stepped:Connect(function()
-                if character then
-                    for _, part in ipairs(character:GetDescendants()) do
-                        if part:IsA("BasePart") then
-                            part.CanCollide = false
-                        end
-                    end
-                end
-            end)
-
             local function tp(cf)
                 hrp.Anchored = true
                 character:PivotTo(cf)
@@ -390,8 +368,8 @@ local function runVictory()
                 tp(pivot * CFrame.new(0, 5, 20))
             end
 
-            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 3 秒后
-            local remaining = 3 - (tick() - SERVER_ENTRY_TIME)
+            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 6 秒后
+            local remaining = 6 - (tick() - SERVER_ENTRY_TIME)
             if remaining > 0 then
                 task.wait(remaining)
             end
@@ -409,8 +387,6 @@ local function runVictory()
                 fireReplay()
                 task.wait(0.8)
             end
-
-            if noclipConn then noclipConn:Disconnect() end
         end)
         if not ok then warn("[巫script] 流程出错:", err) end
         isVictoryRunning = false
