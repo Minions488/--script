@@ -117,17 +117,13 @@ local function queueReload()
 
     -- 跳服后：优先读固定路径，失败再 HttpGet
     local url = getURL()
-    local payload
 
-    if hasFixedScript() or true then
-        -- 固定路径优先（即使当前还没有，跳服前可能已写入）
-        payload = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(4) local ok=false pcall(function() if isfile and isfile("'
-            .. SCRIPT_FILE
-            .. '") then loadstring(readfile("'
-            .. SCRIPT_FILE
-            .. '"))() ok=true print("[刷金币] 固定路径加载成功") end end) if not ok then pcall(function() local u=getgenv and (getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL) if u and #tostring(u)>8 then loadstring(game:HttpGet(tostring(u)))() print("[刷金币] URL加载成功") end end) end end)'
+    local payload = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(4) local ok=false pcall(function() if isfile and isfile("'
+        .. SCRIPT_FILE
+        .. '") then loadstring(readfile("'
+        .. SCRIPT_FILE
+        .. '"))() ok=true print("[刷金币] 固定路径加载成功") end end) if not ok then pcall(function() local u=getgenv and (getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL) if u and #tostring(u)>8 then loadstring(game:HttpGet(tostring(u)))() print("[刷金币] URL加载成功") end end) end end)'
 
-    -- 若有 URL，额外再登记一版纯 URL（双保险）
     local ok, err = pcall(q, payload)
     if ok then
         print("[刷金币] 已登记跳服加载（固定路径: " .. SCRIPT_FILE .. "）")
