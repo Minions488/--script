@@ -1,0 +1,390 @@
+--[[
+    离家同盟 · 自动刷金币（精简版）
+    一键：自动通关 + 自动重播 + 跳服后尽量自动重载
+---------------------------------------------------------------
+    【跳服自动加载必须设置】先执行下面一行，再执行本脚本：
+    getgenv().RunawaysScriptURL = "你的本脚本 raw 链接"
+---------------------------------------------------------------
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
+local CONFIG_FILE = "Runaways_AutoGold.txt"
+local isRunning = false
+local isVictoryRunning = false
+local RemoteEvent = nil
+
+----------------------------------------------------------------
+-- 配置读写
+----------------------------------------------------------------
+local function saveOn(on)
+    pcall(function()
+        if writefile then
+            writefile(CONFIG_FILE, on and "1" or "0")
+        end
+    end)
+end
+
+local function loadOn()
+    local on = false
+    pcall(function()
+        if isfile and isfile(CONFIG_FILE) then
+            on = (tostring(readfile(CONFIG_FILE)):gsub("%s", "") == "1")
+        end
+    end)
+    return on
+end
+
+----------------------------------------------------------------
+-- 跳服自动重载
+----------------------------------------------------------------
+local function getQueueFn()
+    local list = {
+        rawget(_G, "queue_on_teleport"),
+        syn and syn.queue_on_teleport,
+        fluxus and fluxus.queue_on_teleport,
+        Krnl and Krnl.queue_on_teleport,
+        getgenv and getgenv().queue_on_teleport,
+    }
+    for _, fn in ipairs(list) do
+        if typeof(fn) == "function" then
+            return fn
+        end
+    end
+    return nil
+end
+
+local function getURL()
+    return tostring(getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL or "")
+end
+
+local function queueReload()
+    local url = getURL()
+    local q = getQueueFn()
+    if not q then
+        warn("[刷金币] 执行器不支持 queue_on_teleport，请把脚本放进 Autoexec")
+        return false
+    end
+    if url == "" or #url < 8 then
+        warn("[刷金币] 未设置链接！请先执行:")
+        warn('getgenv().RunawaysScriptURL = "你的raw链接"')
+        return false
+    end
+
+    -- 拼接 payload，避免复杂转义
+    local payload = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(4) pcall(function() loadstring(game:HttpGet("'
+        .. url
+        .. '"))() end) print("[刷金币] 跳服后已自动加载") end)'
+
+    local ok, err = pcall(q, payload)
+    if ok then
+        print("[刷金币] 已登记跳服自动加载")
+        return true
+    end
+    warn("[刷金币] queue 失败:", err)
+    return false
+end
+
+----------------------------------------------------------------
+-- 远程
+----------------------------------------------------------------
+local function bindRemote()
+    if RemoteEvent then return true end
+    local ok = pcall(function()
+        local fc = ReplicatedStorage:FindFirstChild("FlowClient")
+            or ReplicatedStorage:WaitForChild("FlowClient", 12)
+        local runner = fc and (fc:FindFirstChild("ClientRunner") or fc:WaitForChild("ClientRunner", 8))
+        RemoteEvent = runner and (runner:FindFirstChild("Event") or runner:WaitForChild("Event", 8))
+    end)
+    return ok and RemoteEvent ~= nil
+end
+
+local function fireReplay()
+    if not RemoteEvent then bindRemote() end
+    if RemoteEvent then
+        pcall(function()
+            RemoteEvent:FireServer("GameManager", "Replay")
+        end)
+    end
+end
+
+----------------------------------------------------------------
+-- 通关逻辑（精简自原版 Victory）
+----------------------------------------------------------------
+local function runVictory()
+    if isVictoryRunning then return end
+    isVictoryRunning = true
+
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+            local hrp = character:WaitForChild("HumanoidRootPart", 10)
+            if not hrp then return end
+
+            local noclipConn = RunService.Stepped:Connect(function()
+                if character then
+                    for _, part in ipairs(character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+
+            local function tp(cf)
+                hrp.Anchored = true
+                character:PivotTo(cf)
+                task.wait(1.2)
+                hrp.Anchored = false
+            end
+
+            local function firePrompt(prompt)
+                if not prompt or not prompt:IsA("ProximityPrompt") then return end
+                prompt.RequiresLineOfSight = false
+                prompt.MaxActivationDistance = 99999
+                prompt.HoldDuration = 0
+                if fireproximityprompt then
+                    fireproximityprompt(prompt)
+                end
+            end
+
+            tp(CFrame.new(1780, 1940, 83615) * CFrame.new(0, 5, 0))
+            task.wait(0.4)
+
+            local map = workspace:FindFirstChild("Map")
+            local buildings = map and map:FindFirstChild("Buildings")
+            local customsFinal = buildings and buildings:FindFirstChild("CustomsFinal")
+
+            if customsFinal then
+                local pivot = customsFinal:IsA("Model") and customsFinal:GetPivot() or customsFinal.CFrame
+                tp(pivot * CFrame.new(0, 5, 20))
+            end
+            task.wait(0.4)
+
+            local commandDoor = customsFinal
+                and customsFinal:FindFirstChild("CustomsBuilding")
+                and customsFinal.CustomsBuilding:FindFirstChild("FinalDoor")
+                and customsFinal.CustomsBuilding.FinalDoor:FindFirstChild("Command")
+
+            if commandDoor then
+                local doorCf = commandDoor:IsA("Model") and commandDoor:GetPivot() or commandDoor.CFrame
+                tp(doorCf * CFrame.new(0, 0, 5))
+                local btn = commandDoor:FindFirstChild("CommandButton")
+                local prompt = btn and btn:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt then
+                    task.spawn(function()
+                        local t0 = tick()
+                        while isRunning and isVictoryRunning and tick() - t0 < 60 do
+                            firePrompt(prompt)
+                            task.wait(0.12)
+                        end
+                    end)
+                end
+            end
+
+            task.wait(0.5)
+            local t0 = tick()
+            while isRunning and isVictoryRunning and tick() - t0 < 90 do
+                fireReplay()
+                task.wait(0.8)
+            end
+
+            if noclipConn then noclipConn:Disconnect() end
+        end)
+        if not ok then
+            warn("[刷金币] 通关出错:", err)
+        end
+        isVictoryRunning = false
+    end)
+end
+
+----------------------------------------------------------------
+-- 检测结算 Replay 按钮
+----------------------------------------------------------------
+local function findReplayBtn()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local endFrame = pg:FindFirstChild("EndFrame")
+    if endFrame then
+        local f = endFrame:FindFirstChild("Frame")
+        local opt = f and f:FindFirstChild("Options")
+        local r = opt and opt:FindFirstChild("Replay")
+        if r then return r end
+    end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d.Name == "Replay" and d:IsA("GuiButton") then
+            return d
+        end
+    end
+    return nil
+end
+
+----------------------------------------------------------------
+-- 主循环
+----------------------------------------------------------------
+local function startFarm()
+    if isRunning then return end
+    isRunning = true
+    saveOn(true)
+    queueReload()
+    bindRemote()
+
+    -- 循环：通关 + 重播
+    task.spawn(function()
+        while isRunning do
+            queueReload()
+            if not isVictoryRunning then
+                runVictory()
+            end
+            local t0 = tick()
+            while isRunning and isVictoryRunning and tick() - t0 < 150 do
+                task.wait(1)
+            end
+            fireReplay()
+            task.wait(3)
+        end
+    end)
+
+    -- 结算界面出现时也重播
+    task.spawn(function()
+        while isRunning do
+            local btn = findReplayBtn()
+            if btn and btn.Visible and btn.AbsoluteSize.X > 0 then
+                fireReplay()
+                task.wait(1.5)
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    print("[刷金币] 已开启：通关 + 重播 + 跳服重载登记")
+end
+
+local function stopFarm()
+    isRunning = false
+    saveOn(false)
+    print("[刷金币] 已关闭")
+end
+
+----------------------------------------------------------------
+-- 精简 UI（仅一个开关）
+----------------------------------------------------------------
+local function getUiParent()
+    local ok, h = pcall(function()
+        if gethui then return gethui() end
+    end)
+    if ok and h then return h end
+    ok, h = pcall(function() return game:GetService("CoreGui") end)
+    if ok and h then return h end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+pcall(function()
+    local parent = getUiParent()
+    local old = parent:FindFirstChild("RunawaysAutoGoldUI")
+    if old then old:Destroy() end
+end)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "RunawaysAutoGoldUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 9999
+gui.Parent = getUiParent()
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(260, 130)
+frame.Position = UDim2.new(0.5, -130, 0.2, 0)
+frame.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -16, 0, 28)
+title.Position = UDim2.fromOffset(8, 8)
+title.BackgroundTransparency = 1
+title.Text = "离家同盟 · 自动刷金币"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local sub = Instance.new("TextLabel")
+sub.Size = UDim2.new(1, -16, 0, 18)
+sub.Position = UDim2.fromOffset(8, 36)
+sub.BackgroundTransparency = 1
+sub.Text = "通关 + 重播 + 跳服重载"
+sub.TextColor3 = Color3.fromRGB(160, 160, 170)
+sub.Font = Enum.Font.Gotham
+sub.TextSize = 12
+sub.TextXAlignment = Enum.TextXAlignment.Left
+sub.Parent = frame
+
+local btn = Instance.new("TextButton")
+btn.Size = UDim2.new(1, -24, 0, 44)
+btn.Position = UDim2.fromOffset(12, 64)
+btn.BackgroundColor3 = Color3.fromRGB(70, 55, 30)
+btn.Text = "开启自动刷金币"
+btn.TextColor3 = Color3.fromRGB(255, 230, 180)
+btn.Font = Enum.Font.GothamBold
+btn.TextSize = 16
+btn.Parent = frame
+Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+local function refreshBtn()
+    if isRunning then
+        btn.Text = "关闭自动刷金币"
+        btn.BackgroundColor3 = Color3.fromRGB(160, 90, 30)
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    else
+        btn.Text = "开启自动刷金币"
+        btn.BackgroundColor3 = Color3.fromRGB(70, 55, 30)
+        btn.TextColor3 = Color3.fromRGB(255, 230, 180)
+    end
+end
+
+btn.MouseButton1Click:Connect(function()
+    if isRunning then
+        stopFarm()
+    else
+        startFarm()
+    end
+    refreshBtn()
+end)
+
+-- 定时保活 UI
+task.spawn(function()
+    while task.wait(2) do
+        if gui and not gui.Parent then
+            gui.Parent = getUiParent()
+        end
+    end
+end)
+
+----------------------------------------------------------------
+-- 启动：绑定远程 + 若上次开着则自动继续
+----------------------------------------------------------------
+task.spawn(function()
+    task.wait(1)
+    bindRemote()
+    queueReload() -- 先登记一次
+
+    print("[刷金币] URL:", getURL() ~= "" and getURL() or "(未设置)")
+    print("[刷金币] queue_on_teleport:", getQueueFn() and "支持" or "不支持")
+
+    if loadOn() then
+        task.wait(2)
+        startFarm()
+        refreshBtn()
+        print("[刷金币] 已根据上次配置自动开启")
+    end
+end)
+
+print("[离家同盟·刷金币] 已加载")
