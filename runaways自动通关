@@ -1,19 +1,24 @@
 --[[
     离家同盟 · 自动刷金币（精简版）
-    一键：自动通关 + 自动重播 + 跳服后尽量自动重载
----------------------------------------------------------------
-    【跳服自动加载必须设置】先执行下面一行，再执行本脚本：
-    getgenv().RunawaysScriptURL = "你的本脚本 raw 链接"
----------------------------------------------------------------
+    一键：自动通关 + 自动重播 + 跳服自动重载（固定路径）
+
+    固定路径文件名（执行器工作目录）：
+      Runaways_AutoGold_Fixed.lua   ← 脚本缓存
+      Runaways_AutoGold.txt         ← 开关配置
+
+    默认 raw 已写好（也可覆盖）：
+      getgenv().RunawaysScriptURL = "自定义链接"
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
+-- 固定路径（文件名固定，不改）
 local CONFIG_FILE = "Runaways_AutoGold.txt"
+local SCRIPT_FILE = "Runaways_AutoGold_Fixed.lua"
+
 local isRunning = false
 local isVictoryRunning = false
 local RemoteEvent = nil
@@ -40,7 +45,7 @@ local function loadOn()
 end
 
 ----------------------------------------------------------------
--- 跳服自动重载
+-- 跳服自动重载 = 固定路径 + 可选 URL
 ----------------------------------------------------------------
 local function getQueueFn()
     local list = {
@@ -58,35 +63,86 @@ local function getQueueFn()
     return nil
 end
 
+local DEFAULT_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/runaways%E8%87%AA%E5%8A%A8%E9%80%9A%E5%85%B3"
+
 local function getURL()
-    return tostring(getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL or "")
+    local u = tostring(getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL or "")
+    if u ~= "" and #u > 8 then
+        return u
+    end
+    return DEFAULT_URL
+end
+
+-- 用 URL 下载源码，写入固定路径
+local function cacheScriptFromURL()
+    local url = getURL()
+    if url == "" or #url < 8 then return false end
+    if not writefile then return false end
+    local ok, src = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if ok and type(src) == "string" and #src > 50 then
+        local wok = pcall(function()
+            writefile(SCRIPT_FILE, src)
+        end)
+        if wok then
+            print("[刷金币] 已写入固定路径:", SCRIPT_FILE)
+            return true
+        end
+    end
+    return false
+end
+
+local function hasFixedScript()
+    local ok = false
+    pcall(function()
+        if isfile and isfile(SCRIPT_FILE) then
+            local s = readfile(SCRIPT_FILE)
+            ok = type(s) == "string" and #s > 50
+        end
+    end)
+    return ok
 end
 
 local function queueReload()
-    local url = getURL()
     local q = getQueueFn()
     if not q then
-        warn("[刷金币] 执行器不支持 queue_on_teleport，请把脚本放进 Autoexec")
-        return false
-    end
-    if url == "" or #url < 8 then
-        warn("[刷金币] 未设置链接！请先执行:")
-        warn('getgenv().RunawaysScriptURL = "你的raw链接"')
+        warn("[刷金币] 无 queue_on_teleport → 请把本脚本放入 Autoexec，文件名建议:")
+        warn("  " .. SCRIPT_FILE)
         return false
     end
 
-    -- 拼接 payload，避免复杂转义
-    local payload = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(4) pcall(function() loadstring(game:HttpGet("'
-        .. url
-        .. '"))() end) print("[刷金币] 跳服后已自动加载") end)'
+    -- 有 URL 就先缓存到固定路径
+    pcall(cacheScriptFromURL)
 
+    -- 跳服后：优先读固定路径，失败再 HttpGet
+    local url = getURL()
+    local payload
+
+    if hasFixedScript() or true then
+        -- 固定路径优先（即使当前还没有，跳服前可能已写入）
+        payload = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(4) local ok=false pcall(function() if isfile and isfile("'
+            .. SCRIPT_FILE
+            .. '") then loadstring(readfile("'
+            .. SCRIPT_FILE
+            .. '"))() ok=true print("[刷金币] 固定路径加载成功") end end) if not ok then pcall(function() local u=getgenv and (getgenv().RunawaysScriptURL or getgenv().WuRunawaysURL) if u and #tostring(u)>8 then loadstring(game:HttpGet(tostring(u)))() print("[刷金币] URL加载成功") end end) end end)'
+
+    -- 若有 URL，额外再登记一版纯 URL（双保险）
     local ok, err = pcall(q, payload)
     if ok then
-        print("[刷金币] 已登记跳服自动加载")
-        return true
+        print("[刷金币] 已登记跳服加载（固定路径: " .. SCRIPT_FILE .. "）")
+    else
+        warn("[刷金币] queue 失败:", err)
     end
-    warn("[刷金币] queue 失败:", err)
-    return false
+
+    if url ~= "" and #url > 8 then
+        local payload2 = 'task.spawn(function() local i=0 repeat i=i+1 task.wait(1) until game:IsLoaded() or i>40 task.wait(5) pcall(function() loadstring(game:HttpGet("'
+            .. url
+            .. '"))() end) end)'
+        pcall(q, payload2)
+    end
+
+    return ok
 end
 
 ----------------------------------------------------------------
@@ -376,6 +432,8 @@ task.spawn(function()
     bindRemote()
     queueReload() -- 先登记一次
 
+    pcall(cacheScriptFromURL)
+    print("[刷金币] 固定路径:", SCRIPT_FILE, hasFixedScript() and "(已有缓存)" or "(尚无缓存)")
     print("[刷金币] URL:", getURL() ~= "" and getURL() or "(未设置)")
     print("[刷金币] queue_on_teleport:", getQueueFn() and "支持" or "不支持")
 
