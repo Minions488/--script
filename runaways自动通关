@@ -106,8 +106,8 @@ local function runVictory()
                 tp(pivot * CFrame.new(0, 5, 20))
             end
 
-            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 10 秒后
-            local remaining = 10 - (tick() - SERVER_ENTRY_TIME)
+            -- 从进入服务器/脚本启动开始计时，确保自动死亡发生在约 16 秒后
+            local remaining = 16 - (tick() - SERVER_ENTRY_TIME)
             if remaining > 0 then
                 task.wait(remaining)
             end
