@@ -179,7 +179,7 @@ local function runVictory()
             if not isRunning then return end
 
             -- 7 秒后自杀
-            local waitDie = 7 - (tick() - SERVER_ENTRY_TIME)
+            local waitDie = 9 - (tick() - SERVER_ENTRY_TIME)
             if waitDie > 0 then task.wait(waitDie) end
             if not isRunning then return end
 
@@ -322,7 +322,7 @@ local function refreshBtn()
         btn.Text = "关闭自动刷金币"
         btn.BackgroundColor3 = Color3.fromRGB(160, 90, 30)
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        sub.Text = "状态：运行中（6s传送 / 7s自杀）"
+        sub.Text = "状态：运行中（6s传送 / 9s自杀）"
     else
         btn.Text = "开启自动刷金币"
         btn.BackgroundColor3 = Color3.fromRGB(70, 55, 30)
@@ -464,7 +464,7 @@ local function runVictory()
             end
             if not isRunning then return end
 
-            local waitDie = 7 - (tick() - SERVER_ENTRY_TIME)
+            local waitDie = 9 - (tick() - SERVER_ENTRY_TIME)
             if waitDie > 0 then task.wait(waitDie) end
             if not isRunning then return end
 
@@ -531,7 +531,7 @@ local function startFarm()
             task.wait(0.4)
         end
     end)
-    print("[巫script] 已开启：6s传送 / 7s自杀")
+    print("[巫script] 已开启：6s传送 / 9s自杀")
 end
 
 local function stopFarm()
@@ -609,7 +609,7 @@ local function refreshBtn()
         btn.Text = "关闭自动刷金币"
         btn.BackgroundColor3 = Color3.fromRGB(160, 90, 30)
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        sub.Text = "状态：运行中（6s传送 / 7s自杀）"
+        sub.Text = "状态：运行中（6s传送 / 9s自杀）"
     else
         btn.Text = "开启自动刷金币"
         btn.BackgroundColor3 = Color3.fromRGB(70, 55, 30)
