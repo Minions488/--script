@@ -1,2 +1,2 @@
-# --script
-script
+巫script
+最好的
