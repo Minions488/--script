@@ -1,0 +1,1265 @@
+--[[
+  Kaiju Alpha · Obsidian UI
+  https://github.com/deividcomsono/Obsidian
+]]
+
+print("[KaijuAlpha] Obsidian 版加载中…")
+
+-- 防重复加载
+if getgenv and getgenv().WuKaijuLoaded then
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "巫 ka",
+            Text = "已经加载 请勿重复点击",
+            Duration = 5,
+        })
+    end)
+    warn("[巫 ka] 已经加载 请勿重复点击")
+    return
+end
+if getgenv then getgenv().WuKaijuLoaded = true end
+
+-- 仅允许 Kaiju Alpha 运行（当前正式服 PlaceId）
+local ALLOWED_PLACE_IDS = {
+    [127403135954624] = true, -- 正式服（SULU OPPA / 2026-08 重开）
+    [139769003880269] = true, -- 旧服（若仍可进）
+}
+local placeId = game.PlaceId
+if not ALLOWED_PLACE_IDS[placeId] then
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "巫 ka",
+            Text = "该服务器不支持",
+            Duration = 6,
+        })
+    end)
+    warn("[巫 ka] 该服务器不支持 PlaceId=", placeId)
+    if getgenv then getgenv().WuKaijuLoaded = nil end
+    return
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local StarterGui = game:GetService("StarterGui")
+
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui", 15)
+
+-- ===================== Obsidian UI =====================
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local okLib, Library = pcall(function()
+    return loadstring(game:HttpGet(repo .. "Library.lua"))()
+end)
+if not okLib or not Library then
+    warn("[KaijuAlpha] Obsidian 加载失败:", Library)
+    return
+end
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+local BG_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E9%9C%B2%E7%90%AA%E4%BA%9A%E8%83%8C%E6%99%AF%E5%9B%BE.jpg"
+
+local Window = Library:CreateWindow({
+    Title = "巫  kaiju script",
+    Footer = "巫  kaiju script · Obsidian",
+    Center = true,
+    AutoShow = true,
+    Resizable = true,
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+    BackgroundImage = BG_URL,
+})
+
+-- 再设一次，确保 http 图被下载到本地缓存
+pcall(function()
+    if Window.SetBackgroundImage then
+        Window:SetBackgroundImage(BG_URL)
+    elseif Library.SetBackgroundImage then
+        Library:SetBackgroundImage(BG_URL)
+    end
+end)
+
+local Tabs = {
+    Farm = Window:AddTab("挂机", "swords"),
+    Player = Window:AddTab("玩家", "user"),
+    ESP = Window:AddTab("透视", "eye"),
+    Extra = Window:AddTab("其他", "sparkles"),
+}
+
+local FarmLeft = Tabs.Farm:AddLeftGroupbox("战斗")
+local FarmSkill = Tabs.Farm:AddLeftGroupbox("技能设置")
+local FarmRight = Tabs.Farm:AddRightGroupbox("复活 / 原型")
+local PlayerLeft = Tabs.Player:AddLeftGroupbox("移动")
+local ESPLeft = Tabs.ESP:AddLeftGroupbox("视觉")
+local ExtraLeft = Tabs.Extra:AddLeftGroupbox("杂项")
+
+-- ===================== 状态 =====================
+local S = {
+    AutoFarm = false,
+    AutoFarmEnemy = false, -- 只打敌人，不打建筑
+    AutoRespawn = false,
+    AutoEscape = false,
+    DoubleSpeed = false,
+    SpeedScale = 5,
+    InfiniteRun = false,
+    ESP = false,
+    ESPTracers = false,
+    AutoRadiation = false,
+    AutoArchetype = false,
+    RadEnemiesOnly = false,
+    PlayerRange = 16,
+    -- 优先攻击条件（0 或不填 = 不启用，走原逻辑）
+    PrioritizeHP = 0,      -- 血量 ≤ 此值才优先
+    PrioritizeDist = 0,    -- 距离 ≤ 此值才优先
+    SkillCastRange = 18,   -- 放技能触发距离（中等）
+    -- 技能：可多选键位 + 单选顺序
+    SkillKeys = { ["1"] = true, ["2"] = true, ["3"] = true, ["4"] = true, ["5"] = true },
+    SkillOrder = "从小到大", -- 从小到大 / 从大到小 / 随机
+}
+
+local farmTarget = nil
+local lastSkillAt = 0
+local skillStep = 1
+local espStore = {}
+local escapeModel = nil
+local escapeCF = nil
+local escaping = false
+-- 残血击杀：记录传送前坐标，目标死后立刻返回
+local archetypeBusy = false -- 拾取原型进行中，其它功能暂停
+
+local function dist2(a, b)
+    local dx, dz = a.X - b.X, a.Z - b.Z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function isBuilding(model)
+    if not model or not model:IsA("Model") then return false end
+    local ok, pivot = pcall(function() return model:GetPivot().Position end)
+    return ok and pivot and pivot.Y > -50
+end
+
+-- 附近最近建筑（自动攻击敌人卡住时用来清路）
+local function findNearestBuilding(pos, maxD)
+    maxD = maxD or 50
+    local best, bestD = nil, maxD
+    local folders = {}
+    local map = workspace:FindFirstChild("Map")
+    if map and map:FindFirstChild("CityFolder") then
+        table.insert(folders, map.CityFolder)
+    end
+    if workspace:FindFirstChild("Buildings") then
+        table.insert(folders, workspace.Buildings)
+    end
+    for _, folder in ipairs(folders) do
+        for _, m in ipairs(folder:GetChildren()) do
+            if isBuilding(m) then
+                local ok, p = pcall(function() return m:GetPivot().Position end)
+                if ok and p then
+                    local d = dist2(pos, p)
+                    if d < bestD then
+                        bestD = d
+                        best = m
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local stuckPos = nil
+local stuckSince = 0
+local clearingBuilding = nil
+
+local function pressKey(key)
+    -- 聊天框聚焦时不按键，避免往聊天里打出一串数字
+    local chatBusy = false
+    pcall(function()
+        if UIS:GetFocusedTextBox() then chatBusy = true end
+    end)
+    if chatBusy then return end
+    pcall(function()
+        VIM:SendKeyEvent(true, key, false, game)
+        task.delay(0.03, function()
+            pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
+        end)
+    end)
+end
+
+-- ===================== 选目标 =====================
+-- 敌人优先评分：不太远时血量最低优先，否则距离最近优先
+local ENEMY_NEAR_RANGE = 40
+local ENEMY_MAX_RANGE = 180 -- 超过此距离不追，避免跑到地图边缘空放
+
+local function isValidCombatPos(pos)
+    if typeof(pos) ~= "Vector3" then return false end
+    if pos.Y < -50 or pos.Y > 800 then return false end
+    if math.abs(pos.X) > 20000 or math.abs(pos.Z) > 20000 then return false end
+    return true
+end
+
+local function pickEnemyTarget(pos)
+    local hpLimit = tonumber(S.PrioritizeHP) or 0
+    local distLimit = tonumber(S.PrioritizeDist) or 0
+    local useHP = hpLimit > 0
+    local useDist = distLimit > 0
+
+    local candidates = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr.Character then
+            local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if thrp and thrp.Parent and hum and hum.Health > 0 then
+                local p = thrp.Position
+                if isValidCombatPos(p) then
+                    local d = dist2(pos, p)
+                    if d <= ENEMY_MAX_RANGE then
+                        -- 自定义优先：有填才过滤；都不填则全员候选（原逻辑）
+                        if useHP and hum.Health > hpLimit then
+                            -- skip: 血量高于阈值
+                        elseif useDist and d > distLimit then
+                            -- skip: 距离超出
+                        else
+                            candidates[#candidates + 1] = {
+                                char = plr.Character,
+                                d = d,
+                                hp = hum.Health,
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 若自定义条件一个都筛不出来，回退原逻辑（全图近距）
+    if #candidates == 0 and (useHP or useDist) then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= localPlayer and plr.Character then
+                local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                if thrp and thrp.Parent and hum and hum.Health > 0 then
+                    local p = thrp.Position
+                    if isValidCombatPos(p) then
+                        local d = dist2(pos, p)
+                        if d <= ENEMY_MAX_RANGE then
+                            candidates[#candidates + 1] = {
+                                char = plr.Character,
+                                d = d,
+                                hp = hum.Health,
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #candidates == 0 then return nil end
+
+    local nearList = {}
+    local nearR = (useDist and distLimit > 0) and math.min(ENEMY_NEAR_RANGE, distLimit) or ENEMY_NEAR_RANGE
+    for _, c in ipairs(candidates) do
+        if c.d <= nearR then
+            nearList[#nearList + 1] = c
+        end
+    end
+
+    local pool = (#nearList > 0) and nearList or candidates
+    table.sort(pool, function(a, b)
+        -- 有血量优先条件时：低血优先；否则近距内也低血优先
+        if useHP or #nearList > 0 then
+            if a.hp ~= b.hp then return a.hp < b.hp end
+            return a.d < b.d
+        end
+        return a.d < b.d
+    end)
+    return pool[1].char
+end
+
+local function pickTarget()
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        farmTarget = nil
+        return
+    end
+    local pos = hrp.Position
+
+    -- 仅刷敌人模式
+    if S.AutoFarmEnemy then
+        farmTarget = pickEnemyTarget(pos)
+        return
+    end
+
+    local best, bestD = nil, math.huge
+
+    -- 残血优先改由独立 Heartbeat 处理；此处不再把远处残血设为走路目标，避免跑去打空气
+
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr.Character then
+            local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if thrp and hum and hum.Health > 0 then
+                local d = dist2(pos, thrp.Position)
+                if d < S.PlayerRange and d < bestD then
+                    bestD = d
+                    best = plr.Character
+                end
+            end
+        end
+    end
+
+    if not best then
+        local map = workspace:FindFirstChild("Map")
+        local folder = (map and map:FindFirstChild("CityFolder")) or workspace:FindFirstChild("Buildings")
+        if folder then
+            for _, m in ipairs(folder:GetChildren()) do
+                if isBuilding(m) then
+                    local ok, p = pcall(function() return m:GetPivot().Position end)
+                    if ok and p then
+                        local d = dist2(pos, p)
+                        if d < bestD then
+                            bestD = d
+                            best = m
+                        end
+                    end
+                end
+            end
+        end
+    end
+    farmTarget = best
+end
+
+local SKILL_KEY_MAP = {
+    ["1"] = Enum.KeyCode.One,
+    ["2"] = Enum.KeyCode.Two,
+    ["3"] = Enum.KeyCode.Three,
+    ["4"] = Enum.KeyCode.Four,
+    ["5"] = Enum.KeyCode.Five,
+    ["R"] = Enum.KeyCode.R,
+    ["T"] = Enum.KeyCode.T,
+    ["Q"] = Enum.KeyCode.Q,
+    ["E"] = Enum.KeyCode.E,
+    ["F"] = Enum.KeyCode.F,
+    ["G"] = Enum.KeyCode.G,
+}
+
+local SKILL_ORDER_LIST = { "1", "2", "3", "4", "5", "Q", "E", "R", "T", "F", "G" }
+
+local function getSelectedSkillKeys()
+    local list = {}
+    for _, name in ipairs(SKILL_ORDER_LIST) do
+        if S.SkillKeys[name] then
+            list[#list + 1] = SKILL_KEY_MAP[name]
+        end
+    end
+    return list
+end
+
+function castSkill(preferKill)
+    local now = tick()
+    local cd = preferKill and 0.12 or 0.32
+    if now - lastSkillAt < cd then return end
+
+    local keys = getSelectedSkillKeys()
+    if #keys == 0 then return end
+
+    lastSkillAt = now
+    local order = S.SkillOrder or "从小到大"
+    local key
+    if order == "随机" then
+        key = keys[math.random(1, #keys)]
+    elseif order == "从大到小" then
+        -- 反向列表循环
+        local idx = (#keys - ((skillStep - 1) % #keys))
+        key = keys[idx]
+        skillStep = skillStep % #keys + 1
+    else
+        -- 从小到大
+        key = keys[((skillStep - 1) % #keys) + 1]
+        skillStep = skillStep % #keys + 1
+    end
+    pressKey(key or keys[1])
+end
+
+-- ===================== 优先击杀残血（独立于自动刷怪，Heartbeat 尽快传送） =====================
+-- ===================== 自动刷怪/建筑循环 =====================
+-- 用 Heartbeat 持续走路，避免「走一下就停」
+local holdingW = false
+local function setHoldW(on)
+    if on == holdingW then return end
+    holdingW = on
+    pcall(function()
+        VIM:SendKeyEvent(on, Enum.KeyCode.W, false, game)
+    end)
+end
+
+RunService.Heartbeat:Connect(function()
+    if archetypeBusy then
+        setHoldW(false)
+        return
+    end
+    if not (S.AutoFarm or S.AutoFarmEnemy) then
+        setHoldW(false)
+        return
+    end
+
+    pickTarget()
+
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then
+        setHoldW(false)
+        return
+    end
+
+    -- 自动攻击敌人：卡住约 2 秒则放一次技能清障（不改打建筑，避免打断打人）
+    if S.AutoFarmEnemy and not S.AutoFarm then
+        local pos = hrp.Position
+        if not stuckPos or dist2(pos, stuckPos) > 5 then
+            stuckPos = pos
+            stuckSince = tick()
+        elseif tick() - stuckSince > 2 then
+            castSkill(true)
+            stuckSince = tick() -- 放完技能重置，避免连放
+            stuckPos = hrp.Position
+            print("[Kaiju] 卡住 2 秒，释放技能尝试清障")
+        end
+    else
+        stuckPos = nil
+        stuckSince = 0
+    end
+
+    -- 目标失效则松开并下一帧重选
+    if not farmTarget or not farmTarget.Parent then
+        farmTarget = nil
+        setHoldW(false)
+        return
+    end
+
+    local okT, tpos = pcall(function() return farmTarget:GetPivot().Position end)
+    if not okT or not tpos then
+        farmTarget = nil
+        setHoldW(false)
+        return
+    end
+
+    local d = dist2(hrp.Position, tpos)
+    local flat = Vector3.new(tpos.X - hrp.Position.X, 0, tpos.Z - hrp.Position.Z)
+
+    -- 目标坐标异常则放弃，避免跑到海里/地图外空放
+    if not isValidCombatPos(tpos) then
+        farmTarget = nil
+        setHoldW(false)
+        return
+    end
+
+    local castR = tonumber(S.SkillCastRange) or 18
+    if castR < 8 then castR = 8 end
+    if castR > 40 then castR = 40 end
+
+    if d < castR then
+        setHoldW(false)
+        pcall(function() hum:Move(Vector3.zero, false) end)
+        castSkill(S.AutoFarmEnemy)
+    elseif flat.Magnitude > 0.35 then
+        pcall(function() hum:Move(flat.Unit, false) end)
+        setHoldW(true)
+        -- 中距离也可放技能（建筑 / 敌人）
+        if d < castR + 6 then
+            castSkill(S.AutoFarmEnemy)
+        end
+    else
+        setHoldW(false)
+    end
+end)
+
+-- 镜头慢 lean（不锁死）
+RunService.RenderStepped:Connect(function()
+    if archetypeBusy then return end
+    if not ((S.AutoFarm or S.AutoFarmEnemy) and farmTarget) then return end
+    local cam = workspace.CurrentCamera
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not cam or not hrp then return end
+    if cam.CameraType == Enum.CameraType.Scriptable then
+        cam.CameraType = Enum.CameraType.Custom
+    end
+    local ok, tpos = pcall(function() return farmTarget:GetPivot().Position end)
+    if not ok or not tpos then return end
+    local pos = hrp.Position
+    hrp.CFrame = hrp.CFrame:Lerp(CFrame.lookAt(pos, Vector3.new(tpos.X, pos.Y, tpos.Z)), 0.065)
+    local desired = CFrame.lookAt(pos + Vector3.new(0, 5, 0) - hrp.CFrame.LookVector * 12, tpos)
+    cam.CFrame = cam.CFrame:Lerp(desired, 0.045)
+end)
+
+-- ===================== 自动重生（开启即持续点） =====================
+local function clickBtn(btn)
+    if not btn then return false end
+    -- 跳过不可见 / 左上角 Roblox 顶栏区域（避免误开玩家列表）
+    local skip = false
+    pcall(function()
+        if btn.Visible == false then skip = true end
+        local pos = btn.AbsolutePosition
+        local size = btn.AbsoluteSize
+        local cx = pos.X + size.X * 0.5
+        local cy = pos.Y + size.Y * 0.5
+        -- 屏幕左上约 120x80 为 Roblox 图标/顶栏，绝不点
+        if cx < 120 and cy < 80 then skip = true end
+    end)
+    if skip then return false end
+
+    local ok = false
+    pcall(function()
+        if typeof(getconnections) == "function" then
+            for _, sigName in ipairs({"MouseButton1Click", "Activated", "MouseButton1Down"}) do
+                local sig = btn[sigName]
+                if sig then
+                    local conns = getconnections(sig)
+                    if conns then
+                        for _, c in ipairs(conns) do
+                            if c.Enabled and c.Fire then
+                                if pcall(function() c:Fire() end) then ok = true end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    pcall(function()
+        if firesignal then
+            if pcall(firesignal, btn.MouseButton1Click) then ok = true end
+            if pcall(firesignal, btn.Activated) then ok = true end
+        end
+    end)
+    -- 不用 VIM 鼠标点击，避免误触 Roblox 图标
+    return ok
+end
+
+local function findByPath(names)
+    local pg = localPlayer:FindFirstChild("PlayerGui") or playerGui
+    if not pg then return nil end
+    local node = pg
+    for _, name in ipairs(names) do
+        if not node then return nil end
+        node = node:FindFirstChild(name)
+    end
+    return node
+end
+
+local function waitPath(names, timeout)
+    local t0 = os.clock()
+    local pg = localPlayer:FindFirstChild("PlayerGui") or playerGui
+    if not pg then return nil end
+    local node = pg
+    for _, name in ipairs(names) do
+        local nextNode = node and node:FindFirstChild(name)
+        while not nextNode and os.clock() - t0 < (timeout or 2) do
+            task.wait(0.1)
+            pg = localPlayer:FindFirstChild("PlayerGui") or playerGui
+            node = pg
+            for _, n2 in ipairs(names) do
+                nextNode = node and node:FindFirstChild(n2)
+                if not nextNode then break end
+                node = nextNode
+            end
+            if nextNode then break end
+        end
+        if not nextNode then return nil end
+        node = nextNode
+    end
+    return node
+end
+
+local function isMenuOpen()
+    local menu = findByPath({"Menu", "Menu"})
+    local map = findByPath({"Menu", "Map"})
+    local mVis = menu and (menu.Visible ~= false)
+    local mapVis = map and (map.Visible ~= false)
+    return mVis or mapVis
+end
+
+local function isAlive()
+    local char = localPlayer.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if not char:FindFirstChild("HumanoidRootPart") then return false end
+    -- 还在选图/菜单界面不算在游戏中
+    if isMenuOpen() then return false end
+    return true
+end
+
+local function doRespawnClick()
+    -- 1) Play 打开地图
+    local playBtn = findByPath({"Menu", "Menu", "ButtonList", "Play"})
+        or waitPath({"Menu", "Menu", "ButtonList", "Play"}, 1.5)
+    if playBtn then
+        print("[KaijuAlpha] 点击 Play")
+        clickBtn(playBtn)
+        task.wait(0.6)
+    end
+    -- 2) Spawn 真正开始
+    local spawnBtn = findByPath({"Menu", "Map", "Spawn"})
+        or waitPath({"Menu", "Map", "Spawn"}, 2)
+    if spawnBtn then
+        print("[KaijuAlpha] 点击 Spawn")
+        clickBtn(spawnBtn)
+    else
+        print("[KaijuAlpha] 未找到 Spawn 按钮")
+    end
+end
+
+local function kaijuNotify(text, duration)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "巫  kaiju script",
+            Text = tostring(text),
+            Duration = duration or 1.2,
+        })
+    end)
+end
+
+task.spawn(function()
+    local inCountdown = false
+    local wasDead = false
+    while true do
+        if archetypeBusy then
+            task.wait(0.3)
+        elseif not S.AutoRespawn then
+            inCountdown = false
+            wasDead = false
+            task.wait(0.5)
+        elseif isAlive() then
+            if wasDead then
+                kaijuNotify("已自动复活", 2.5)
+                print("[KaijuAlpha] 已自动复活")
+            end
+            wasDead = false
+            inCountdown = false
+            task.wait(0.5)
+        else
+            wasDead = true
+            if not inCountdown then
+                inCountdown = true
+                kaijuNotify("检测到死亡，自动触发复活", 2)
+                print("[KaijuAlpha] 检测到死亡，4 秒倒计时…")
+                for sec = 4, 1, -1 do
+                    if not S.AutoRespawn or isAlive() then break end
+                    kaijuNotify("距自动复活剩余 " .. sec .. " 秒", 1)
+                    print("[KaijuAlpha] 距自动复活剩余", sec, "秒")
+                    task.wait(1)
+                end
+                if S.AutoRespawn and not isAlive() then
+                    doRespawnClick()
+                end
+                -- 若仍未复活，再等 5 秒重试（再次倒计时）
+                if S.AutoRespawn and not isAlive() then
+                    task.wait(0.5)
+                    inCountdown = false
+                end
+            else
+                task.wait(0.3)
+            end
+        end
+    end
+end)
+
+-- ===================== 自动拾取原型（最高优先级，独占） =====================
+-- 一旦开始拾取：archetypeBusy=true，其它功能全部暂停，直到完成/消失再恢复
+task.spawn(function()
+    local OFFSET = Vector3.new(0, 3, 0)
+    local lastRef = nil
+    local tryCount = 0
+    local nextTryAt = 0
+    local savedCF = nil
+    local busySince = 0
+
+    local function teleportTo(pos)
+        local char = localPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local dest = CFrame.new(pos + OFFSET)
+        -- 连写几次，尽量突破距离/流式加载限制
+        for _ = 1, 3 do
+            hrp.CFrame = dest
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+            task.wait()
+        end
+    end
+
+    local function returnToSaved()
+        if not savedCF then return end
+        local char = localPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.CFrame = savedCF
+            pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+        end
+        savedCF = nil
+    end
+
+    local function triggerPrompt(prompt)
+        local oldHold = prompt.HoldDuration
+        local oldMax = prompt.MaxActivationDistance
+        local oldLos = prompt.RequiresLineOfSight
+        pcall(function()
+            prompt.HoldDuration = 0
+            prompt.MaxActivationDistance = 9999 -- 取消客户端距离限制
+            prompt.RequiresLineOfSight = false
+            prompt.Enabled = true
+        end)
+        -- 执行器自带 fireproximityprompt（若有）优先，无视距离
+        pcall(function()
+            if fireproximityprompt then
+                fireproximityprompt(prompt)
+            end
+        end)
+        for _ = 1, 5 do
+            pcall(function()
+                prompt:InputHoldBegin()
+                task.wait(0.2)
+                prompt:InputHoldEnd()
+            end)
+            task.wait(0.08)
+        end
+        pcall(function()
+            prompt.HoldDuration = oldHold
+            prompt.MaxActivationDistance = oldMax
+            prompt.RequiresLineOfSight = oldLos
+        end)
+    end
+
+    local function findArchetype()
+        -- 只认名为 Archetype 的 Model/Folder，避免误检 Terrain 等导致飞海里
+        local function valid(obj)
+            if not obj or obj == workspace.Terrain then return false end
+            if obj:IsA("Model") or obj:IsA("Folder") or obj:IsA("BasePart") then
+                return obj.Name == "Archetype"
+            end
+            return false
+        end
+        for _, parentName in ipairs({"Terrain", "Map", "Items", "Pickups", "World", "Game"}) do
+            local folder = workspace:FindFirstChild(parentName)
+            if folder and folder ~= workspace.Terrain then
+                local a = folder:FindFirstChild("Archetype")
+                if valid(a) then return a end
+            elseif parentName == "Terrain" then
+                local terrain = workspace:FindFirstChild("Terrain")
+                if terrain then
+                    local a = terrain:FindFirstChild("Archetype")
+                    if valid(a) then return a end
+                end
+            end
+        end
+        for _, child in ipairs(workspace:GetChildren()) do
+            if valid(child) then return child end
+            local a = child:FindFirstChild("Archetype")
+            if valid(a) then return a end
+        end
+        return nil
+    end
+
+    local function getPartAndPrompt(item)
+        if not item then return nil, nil end
+        local part = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
+        local prompt = item:FindFirstChildOfClass("ProximityPrompt")
+            or (part and part:FindFirstChildOfClass("ProximityPrompt"))
+            or item:FindFirstChildWhichIsA("ProximityPrompt", true)
+        return part, prompt
+    end
+
+    while true do
+        task.wait(0.15)
+        if not S.AutoArchetype then
+            if archetypeBusy then
+                returnToSaved()
+                archetypeBusy = false
+            end
+            lastRef = nil
+            tryCount = 0
+            nextTryAt = 0
+        else
+            local item = findArchetype()
+            if item and item.Parent then
+                local part, prompt = getPartAndPrompt(item)
+                if part then
+                    -- 进入独占：其它功能全部停
+                    if not archetypeBusy then
+                        local char0 = localPlayer.Character
+                        local hrp0 = char0 and char0:FindFirstChild("HumanoidRootPart")
+                        if hrp0 then savedCF = hrp0.CFrame end
+                        archetypeBusy = true
+                        busySince = tick()
+                        print("[Kaiju] 原型独占开始，其它功能暂停")
+                    elseif tick() - busySince > 20 then
+                        -- 超时强制结束，防止永久卡死
+                        print("[Kaiju] 原型超时，强制恢复")
+                        returnToSaved()
+                        archetypeBusy = false
+                        lastRef = nil
+                        tryCount = 0
+                    end
+                    lastRef = item
+                    local pos = part.Position
+                    teleportTo(pos)
+                    -- 再确认是否贴脸，不够近就再传一次
+                    local char1 = localPlayer.Character
+                    local hrp1 = char1 and char1:FindFirstChild("HumanoidRootPart")
+                    if hrp1 then
+                        local d = (hrp1.Position - pos).Magnitude
+                        if d > 15 then
+                            teleportTo(pos)
+                        end
+                    end
+                    if prompt and tick() >= nextTryAt then
+                        tryCount = tryCount + 1
+                        nextTryAt = tick() + 0.5
+                        triggerPrompt(prompt)
+                    elseif not prompt and tick() >= nextTryAt then
+                        nextTryAt = tick() + 0.8
+                        teleportTo(pos) -- 无 Prompt 也持续贴脸等加载
+                    end
+                end
+            else
+                -- 原型没了：回原位，解除独占，其它功能恢复
+                if archetypeBusy or lastRef then
+                    print("[Kaiju] 原型完成，恢复其它功能")
+                    returnToSaved()
+                    archetypeBusy = false
+                    lastRef = nil
+                    tryCount = 0
+                    nextTryAt = 0
+                end
+            end
+        end
+    end
+end)
+
+-- ===================== 加速 / 无限跑 =====================
+RunService.RenderStepped:Connect(function(dt)
+    if archetypeBusy then return end
+    if not S.DoubleSpeed then return end
+    local char = localPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp and hum.Health > 0 and hum.MoveDirection.Magnitude > 0 then
+        hrp.CFrame = hrp.CFrame + hum.MoveDirection * (S.SpeedScale * 3 * dt)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if S.InfiniteRun and localPlayer.Character then
+            localPlayer.Character:SetAttribute("CanRun", true)
+            localPlayer.Character:SetAttribute("IsRunning", true)
+        end
+    end
+end)
+
+-- ===================== ESP =====================
+local function clearESP(key)
+    local e = espStore[key]
+    if not e then return end
+    if e.Highlight then e.Highlight:Destroy() end
+    if e.Tracer then pcall(function() e.Tracer:Remove() end) end
+    espStore[key] = nil
+end
+
+RunService.RenderStepped:Connect(function()
+    if not S.ESP then
+        for k in pairs(espStore) do clearESP(k) end
+        return
+    end
+    local cam = workspace.CurrentCamera
+    local seen = {}
+    local list = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr.Character then
+            table.insert(list, plr.Character)
+        end
+    end
+    local map = workspace:FindFirstChild("Map")
+    local folders = { workspace }
+    if map and map:FindFirstChild("CityFolder") then table.insert(folders, map.CityFolder) end
+    if workspace:FindFirstChild("Buildings") then table.insert(folders, workspace.Buildings) end
+    for _, folder in ipairs(folders) do
+        for _, m in ipairs(folder:GetChildren()) do
+            if m:IsA("Model") and m ~= localPlayer.Character then
+                local n = string.lower(m.Name)
+                if string.find(n, "kaiju") or m:FindFirstChildOfClass("Humanoid") then
+                    table.insert(list, m)
+                end
+            end
+        end
+    end
+    for _, obj in ipairs(list) do
+        local hrp = obj:FindFirstChild("HumanoidRootPart")
+        local hum = obj:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            seen[obj] = true
+            if not espStore[obj] then
+                local hl = Instance.new("Highlight")
+                hl.FillColor = Color3.fromRGB(255, 0, 0)
+                hl.FillTransparency = 0.35
+                hl.OutlineColor = Color3.fromRGB(255, 0, 0)
+                hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                hl.Adornee = obj
+                pcall(function() hl.Parent = CoreGui end)
+                if not hl.Parent then hl.Parent = playerGui end
+                espStore[obj] = { Highlight = hl }
+                pcall(function()
+                    local line = Drawing.new("Line")
+                    line.Visible = false
+                    line.Color = Color3.fromRGB(255, 255, 255)
+                    line.Thickness = 1.5
+                    espStore[obj].Tracer = line
+                end)
+            end
+            local tr = espStore[obj].Tracer
+            if tr then
+                if S.ESPTracers and cam then
+                    local v, on = cam:WorldToViewportPoint(hrp.Position)
+                    if on then
+                        tr.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                        tr.To = Vector2.new(v.X, v.Y)
+                        tr.Visible = true
+                    else
+                        tr.Visible = false
+                    end
+                else
+                    tr.Visible = false
+                end
+            end
+        else
+            clearESP(obj)
+        end
+    end
+    for k in pairs(espStore) do
+        if not seen[k] then clearESP(k) end
+    end
+end)
+
+-- ===================== 残血撤离（简化） =====================
+task.spawn(function()
+    while task.wait(0.5) do
+        if not S.AutoEscape then
+            if escaping and escapeCF then
+                local char = localPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then hrp.CFrame = escapeCF end
+                if escapeModel then escapeModel:Destroy() escapeModel = nil end
+                escapeCF = nil
+                escaping = false
+            end
+        else
+        local char = localPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hum and hrp then
+        if hum.Health > 0 and hum.Health < 2800 and not escaping then
+            escapeCF = hrp.CFrame
+            escaping = true
+            -- 很高的撤离点，减少被发现
+            local pos = hrp.Position + Vector3.new(0, 2800, 0)
+            local model = Instance.new("Model")
+            model.Name = "Acrocano_MegaSkyRoom"
+            model.Parent = workspace
+            local floor = Instance.new("Part")
+            floor.Anchored = true
+            floor.CanCollide = true
+            floor.Size = Vector3.new(60, 2, 60)
+            floor.Position = pos
+            floor.Transparency = 0.3
+            floor.Parent = model
+            escapeModel = model
+            hrp.CFrame = CFrame.new(pos + Vector3.new(0, 8, 0))
+            pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+        elseif escaping and hum.Health >= 2800 then
+            if escapeCF then hrp.CFrame = escapeCF end
+            if escapeModel then escapeModel:Destroy() escapeModel = nil end
+            escapeCF = nil
+            escaping = false
+        end
+        end
+        end
+    end
+end)
+
+
+-- ===================== Obsidian 控件绑定 =====================
+FarmLeft:AddToggle("AutoFarm", {
+    Text = "自动刷建筑",
+    Default = false,
+    Tooltip = "自动走向并攻击建筑（也可顺带打附近敌人）",
+    Callback = function(v)
+        S.AutoFarm = v
+        if v then pcall(function() localPlayer.CameraMode = Enum.CameraMode.Classic end) end
+    end,
+})
+FarmLeft:AddToggle("AutoFarmEnemy", {
+    Text = "自动攻击敌人",
+    Default = false,
+    Tooltip = "只攻击玩家敌人，不攻击建筑；可填优先条件",
+    Callback = function(v)
+        S.AutoFarmEnemy = v
+        if v then pcall(function() localPlayer.CameraMode = Enum.CameraMode.Classic end) end
+    end,
+})
+FarmLeft:AddToggle("AutoEscape", {
+    Text = "残血自动撤离",
+    Default = false,
+    Callback = function(v) S.AutoEscape = v end,
+})
+
+-- 技能设置（独立小板块，避免战斗栏塞不下）
+FarmSkill:AddInput("PrioritizeHP", {
+    Text = "优先攻击：血量≤",
+    Default = "",
+    Placeholder = "不填=不限制，如 500",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        S.PrioritizeHP = (n and n > 0) and n or 0
+        print("[Kaiju] 优先血量≤", S.PrioritizeHP == 0 and "不限制" or S.PrioritizeHP)
+    end,
+})
+FarmSkill:AddInput("PrioritizeDist", {
+    Text = "优先攻击：距离≤",
+    Default = "",
+    Placeholder = "不填=不限制，如 80",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        S.PrioritizeDist = (n and n > 0) and n or 0
+        print("[Kaiju] 优先距离≤", S.PrioritizeDist == 0 and "不限制" or S.PrioritizeDist)
+    end,
+})
+FarmSkill:AddInput("SkillCastRange", {
+    Text = "放技能距离",
+    Default = "18",
+    Placeholder = "默认 18，建议 12~25",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        if n and n > 0 then
+            S.SkillCastRange = math.clamp(n, 8, 40)
+        else
+            S.SkillCastRange = 18
+        end
+        print("[Kaiju] 放技能距离:", S.SkillCastRange)
+    end,
+})
+
+FarmSkill:AddDropdown("SkillKeys", {
+    Text = "使用技能（可多选）",
+    Values = { "1", "2", "3", "4", "5", "Q", "E", "R", "T", "F", "G" },
+    Default = { "1", "2", "3", "4", "5" },
+    Multi = true,
+    Callback = function(value)
+        local map = {}
+        if typeof(value) == "table" then
+            local isList = value[1] ~= nil
+            if isList then
+                for _, name in ipairs(value) do
+                    map[tostring(name)] = true
+                end
+            else
+                for name, on in pairs(value) do
+                    if on then map[tostring(name)] = true end
+                end
+            end
+        end
+        S.SkillKeys = map
+        skillStep = 1
+        print("[Kaiju] 技能键位已更新")
+    end,
+})
+
+FarmSkill:AddDropdown("SkillOrder", {
+    Text = "技能释放顺序",
+    Values = { "从小到大", "从大到小", "随机" },
+    Default = "从小到大",
+    Multi = false,
+    Callback = function(value)
+        S.SkillOrder = tostring(value)
+        skillStep = 1
+        print("[Kaiju] 技能顺序:", S.SkillOrder)
+    end,
+})
+
+FarmSkill:AddLabel("勾选要用的键；顺序仅单选", true)
+
+FarmRight:AddToggle("AutoRespawn", {
+    Text = "自动重生(死后倒计时)",
+    Default = false,
+    Tooltip = "死后 4 秒倒计时通知并点击复活",
+    Callback = function(v)
+        S.AutoRespawn = v
+        print("[KaijuAlpha] 自动重生:", v)
+    end,
+})
+FarmRight:AddToggle("AutoArchetype", {
+    Text = "自动拾取原型",
+    Default = false,
+    Tooltip = "常驻等待 Archetype 出现并传送交互",
+    Callback = function(v)
+        S.AutoArchetype = v
+        print("[KaijuAlpha] 自动拾取原型:", v)
+    end,
+})
+
+PlayerLeft:AddToggle("DoubleSpeed", {
+    Text = "CFrame 加速",
+    Default = false,
+    Tooltip = "开启后按下方数值加速移动",
+    Callback = function(v) S.DoubleSpeed = v end,
+})
+PlayerLeft:AddInput("SpeedScale", {
+    Text = "加速力度 (数值)",
+    Default = tostring(S.SpeedScale),
+    Numeric = true,
+    Finished = true,
+    Tooltip = "越大越快，建议 1~30",
+    Callback = function(text)
+        local n = tonumber(text)
+        if n and n > 0 then
+            S.SpeedScale = math.clamp(n, 0.1, 100)
+            print("[Kaiju] 加速力度 =", S.SpeedScale)
+        else
+            print("[Kaiju] 请输入有效数字")
+        end
+    end,
+})
+PlayerLeft:AddToggle("InfiniteRun", {
+    Text = "无限疾跑",
+    Default = false,
+    Callback = function(v) S.InfiniteRun = v end,
+})
+
+ESPLeft:AddToggle("ESP", {
+    Text = "怪兽/玩家透视",
+    Default = false,
+    Callback = function(v) S.ESP = v end,
+})
+ESPLeft:AddToggle("ESPTracers", {
+    Text = "追踪线",
+    Default = false,
+    Callback = function(v) S.ESPTracers = v end,
+})
+
+ExtraLeft:AddToggle("AutoRadiation", {
+    Text = "自动辐射技能",
+    Default = false,
+    Callback = function(v)
+        S.AutoRadiation = v
+        print("[KaijuAlpha] 自动辐射技能:", v)
+    end,
+})
+ExtraLeft:AddButton({
+    Text = "关闭全部功能",
+    Func = function()
+        S.AutoFarm = false
+        S.AutoFarmEnemy = false
+        S.AutoRespawn = false
+        S.AutoArchetype = false
+        S.DoubleSpeed = false
+        S.ESP = false
+        S.ESPTracers = false
+        S.AutoRadiation = false
+        -- 同步 UI（若支持）
+        pcall(function()
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation"}) do
+                if Toggles[name] then Toggles[name]:SetValue(false) end
+            end
+        end)
+        print("[KaijuAlpha] 已关闭主要功能")
+    end,
+})
+ExtraLeft:AddLabel("Kaiju Alpha · Obsidian UI", true)
+
+-- ===================== 配置保存 / 主题（Obsidian 自带） =====================
+pcall(function()
+    local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+    local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+    ThemeManager:SetLibrary(Library)
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({})
+    SaveManager:SetFolder("WuKaiju")
+    SaveManager:BuildConfigSection(Tabs.Extra)
+    ThemeManager:ApplyToTab(Tabs.Extra)
+    SaveManager:LoadAutoloadConfig()
+    print("[巫 ka] 配置/主题模块已加载（其他页可保存）")
+end)
+
+
+print("[KaijuAlpha] Obsidian UI 加载完成")
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title = "巫  kaiju script",
+        Text = "Obsidian UI 已加载",
+        Duration = 4,
+    })
+end)
+
+-- 启动音效（露琪亚音频裁剪）
+task.spawn(function()
+    local SFX_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E9%9C%B2%E7%90%AA%E4%BA%9A%E9%9F%B3%E9%A2%91%E8%A3%81%E5%89%AA%20(1).mp3"
+    local ok, err = pcall(function()
+        local sound = Instance.new("Sound")
+        sound.Name = "KaijuStartSFX"
+        sound.Volume = 1 -- 最大音量
+        sound.PlaybackSpeed = 1
+        sound.Looped = false
+        sound.RollOffMode = Enum.RollOffMode.Linear
+        sound.Parent = SoundService
+
+        local played = false
+        -- 优先：HttpGet + writefile + getcustomasset（执行器常用）
+        if writefile and getcustomasset and request then
+            local res = request({ Url = SFX_URL, Method = "GET" })
+            if res and res.Body and #res.Body > 100 then
+                local path = "kaiju_start_sfx.mp3"
+                writefile(path, res.Body)
+                sound.SoundId = getcustomasset(path)
+                played = true
+            end
+        end
+        if not played and game.HttpGet then
+            local body = game:HttpGet(SFX_URL)
+            if body and #body > 100 and writefile and getcustomasset then
+                writefile("kaiju_start_sfx.mp3", body)
+                sound.SoundId = getcustomasset("kaiju_start_sfx.mp3")
+                played = true
+            end
+        end
+        if played then
+            sound:Play()
+            sound.Ended:Connect(function()
+                sound:Destroy()
+            end)
+            print("[Kaiju] 启动音效已播放")
+        else
+            sound:Destroy()
+            warn("[Kaiju] 启动音效加载失败（执行器可能不支持外链音频）")
+        end
+    end)
+    if not ok then
+        warn("[Kaiju] 启动音效错误:", err)
+    end
+end)
