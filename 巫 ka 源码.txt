@@ -63,7 +63,7 @@ end
 local Options = Library.Options
 local Toggles = Library.Toggles
 
-local BG_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E9%9C%B2%E7%90%AA%E4%BA%9A%E8%83%8C%E6%99%AF%E5%9B%BE.jpg"
+local BG_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/露琪亚背景图.jpg"
 
 local Window = Library:CreateWindow({
     Title = "巫  kaiju script",
@@ -140,8 +140,34 @@ end
 
 local function isBuilding(model)
     if not model or not model:IsA("Model") then return false end
+    if model == localPlayer.Character then return false end
+    -- 必须在建筑相关目录下，避免把任意 Model 当建筑
+    local parent = model.Parent
+    local inBuildFolder = false
+    while parent and parent ~= workspace do
+        local n = string.lower(parent.Name)
+        if n == "cityfolder" or n == "buildings" or n == "map" or n:find("build") or n:find("city") then
+            inBuildFolder = true
+            break
+        end
+        parent = parent.Parent
+    end
+    if not inBuildFolder then return false end
+    -- 排除玩家角色
+    if Players:GetPlayerFromCharacter(model) then return false end
     local ok, pivot = pcall(function() return model:GetPivot().Position end)
-    return ok and pivot and pivot.Y > -50
+    if not ok or not pivot or pivot.Y < -50 then return false end
+    -- 名称/体量粗筛
+    local n = string.lower(model.Name)
+    if n:find("kaiju") or n:find("player") or n:find("npc") then return false end
+    local parts = 0
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then
+            parts = parts + 1
+            if parts >= 3 then break end
+        end
+    end
+    return parts >= 2
 end
 
 -- 附近最近建筑（自动攻击敌人卡住时用来清路）
@@ -175,6 +201,8 @@ end
 
 local stuckPos = nil
 local stuckSince = 0
+local stuckSkillFired = false
+local stuckHopFired = false
 local clearingBuilding = nil
 
 local function pressKey(key)
@@ -195,13 +223,49 @@ end
 -- ===================== 选目标 =====================
 -- 敌人优先评分：不太远时血量最低优先，否则距离最近优先
 local ENEMY_NEAR_RANGE = 40
-local ENEMY_MAX_RANGE = 180 -- 超过此距离不追，避免跑到地图边缘空放
+local ENEMY_MAX_RANGE = 140 -- 收紧最大追击距离
+local ENEMY_MAX_Y_DELTA = 90 -- 与自己高度差过大不追（防海里/虚空）
 
-local function isValidCombatPos(pos)
+local function isValidCombatPos(pos, myPos)
     if typeof(pos) ~= "Vector3" then return false end
-    if pos.Y < -50 or pos.Y > 800 then return false end
-    if math.abs(pos.X) > 20000 or math.abs(pos.Z) > 20000 then return false end
+    if pos.Y < 2 or pos.Y > 600 then return false end -- 拒绝水面以下/过高
+    if math.abs(pos.X) > 12000 or math.abs(pos.Z) > 12000 then return false end
+    if myPos and math.abs(pos.Y - myPos.Y) > ENEMY_MAX_Y_DELTA then return false end
     return true
+end
+
+-- 连续确认目标，避免一帧误判就开追
+local enemyConfirmChar = nil
+local enemyConfirmUntil = 0
+
+local function collectEnemyCandidates(pos, useHP, useDist, hpLimit, distLimit)
+    local candidates = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr.Character then
+            local char = plr.Character
+            local thrp = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if thrp and thrp.Parent and hum and hum.Health > 0 then
+                local p = thrp.Position
+                if isValidCombatPos(p, pos) then
+                    local d = dist2(pos, p)
+                    if d <= ENEMY_MAX_RANGE then
+                        local ok = true
+                        if useHP and hum.Health > hpLimit then ok = false end
+                        if useDist and d > distLimit then ok = false end
+                        if ok then
+                            candidates[#candidates + 1] = {
+                                char = char,
+                                d = d,
+                                hp = hum.Health,
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return candidates
 end
 
 local function pickEnemyTarget(pos)
@@ -210,58 +274,17 @@ local function pickEnemyTarget(pos)
     local useHP = hpLimit > 0
     local useDist = distLimit > 0
 
-    local candidates = {}
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= localPlayer and plr.Character then
-            local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            if thrp and thrp.Parent and hum and hum.Health > 0 then
-                local p = thrp.Position
-                if isValidCombatPos(p) then
-                    local d = dist2(pos, p)
-                    if d <= ENEMY_MAX_RANGE then
-                        -- 自定义优先：有填才过滤；都不填则全员候选（原逻辑）
-                        if useHP and hum.Health > hpLimit then
-                            -- skip: 血量高于阈值
-                        elseif useDist and d > distLimit then
-                            -- skip: 距离超出
-                        else
-                            candidates[#candidates + 1] = {
-                                char = plr.Character,
-                                d = d,
-                                hp = hum.Health,
-                            }
-                        end
-                    end
-                end
-            end
-        end
-    end
+    local candidates = collectEnemyCandidates(pos, useHP, useDist, hpLimit, distLimit)
 
-    -- 若自定义条件一个都筛不出来，回退原逻辑（全图近距）
+    -- 自定义条件筛空时回退：不限制血量/距离填写，但仍走安全坐标过滤
     if #candidates == 0 and (useHP or useDist) then
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= localPlayer and plr.Character then
-                local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
-                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-                if thrp and thrp.Parent and hum and hum.Health > 0 then
-                    local p = thrp.Position
-                    if isValidCombatPos(p) then
-                        local d = dist2(pos, p)
-                        if d <= ENEMY_MAX_RANGE then
-                            candidates[#candidates + 1] = {
-                                char = plr.Character,
-                                d = d,
-                                hp = hum.Health,
-                            }
-                        end
-                    end
-                end
-            end
-        end
+        candidates = collectEnemyCandidates(pos, false, false, 0, 0)
     end
 
-    if #candidates == 0 then return nil end
+    if #candidates == 0 then
+        enemyConfirmChar = nil
+        return nil
+    end
 
     local nearList = {}
     local nearR = (useDist and distLimit > 0) and math.min(ENEMY_NEAR_RANGE, distLimit) or ENEMY_NEAR_RANGE
@@ -273,14 +296,25 @@ local function pickEnemyTarget(pos)
 
     local pool = (#nearList > 0) and nearList or candidates
     table.sort(pool, function(a, b)
-        -- 有血量优先条件时：低血优先；否则近距内也低血优先
         if useHP or #nearList > 0 then
             if a.hp ~= b.hp then return a.hp < b.hp end
             return a.d < b.d
         end
         return a.d < b.d
     end)
-    return pool[1].char
+
+    local best = pool[1].char
+    -- 同一目标连续确认约 0.25s 才锁定，降低误追
+    if enemyConfirmChar == best then
+        if tick() >= enemyConfirmUntil then
+            return best
+        end
+        return farmTarget -- 确认中保持旧目标或 nil
+    else
+        enemyConfirmChar = best
+        enemyConfirmUntil = tick() + 0.25
+        return farmTarget
+    end
 end
 
 local function pickTarget()
@@ -422,21 +456,44 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- 自动攻击敌人：卡住约 2 秒则放一次技能清障（不改打建筑，避免打断打人）
+    -- 自动攻击敌人卡住处理：
+    -- 2s 放技能清障；若仍卡住到 8s，小幅升高 TP（约一层楼高度，绕过建筑，不明显）
     if S.AutoFarmEnemy and not S.AutoFarm then
         local pos = hrp.Position
-        if not stuckPos or dist2(pos, stuckPos) > 5 then
+        if not stuckPos or dist2(pos, stuckPos) > 6 then
             stuckPos = pos
             stuckSince = tick()
-        elseif tick() - stuckSince > 2 then
-            castSkill(true)
-            stuckSince = tick() -- 放完技能重置，避免连放
-            stuckPos = hrp.Position
-            print("[Kaiju] 卡住 2 秒，释放技能尝试清障")
+            stuckSkillFired = false
+            stuckHopFired = false
+        else
+            local elapsed = tick() - stuckSince
+            if elapsed > 2 and not stuckSkillFired then
+                stuckSkillFired = true
+                castSkill(true)
+                print("[Kaiju] 卡住 2 秒，释放技能清障")
+            end
+            if elapsed > 8 and not stuckHopFired then
+                stuckHopFired = true
+                -- 升高约 28~36 studs：略高于常见建筑层，不要飞天
+                local hop = 28 + math.random() * 8
+                local dest = pos + Vector3.new(0, hop, 0)
+                hrp.CFrame = CFrame.new(dest)
+                pcall(function()
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hum:Move(Vector3.zero, false)
+                end)
+                setHoldW(false)
+                stuckPos = dest
+                stuckSince = tick()
+                stuckSkillFired = false
+                print("[Kaiju] 卡住 8 秒，小幅升高绕障")
+            end
         end
     else
         stuckPos = nil
         stuckSince = 0
+        stuckSkillFired = false
+        stuckHopFired = false
     end
 
     -- 目标失效则松开并下一帧重选
@@ -880,11 +937,15 @@ local function clearESP(key)
     espStore[key] = nil
 end
 
-RunService.RenderStepped:Connect(function()
+local lastEspUpdate = 0
+RunService.Heartbeat:Connect(function()
     if not S.ESP then
         for k in pairs(espStore) do clearESP(k) end
         return
     end
+    -- 约 10 次/秒，减轻手机端压力
+    if tick() - lastEspUpdate < 0.1 then return end
+    lastEspUpdate = tick()
     local cam = workspace.CurrentCamera
     local seen = {}
     local list = {}
@@ -1170,20 +1231,49 @@ ExtraLeft:AddToggle("AutoRadiation", {
         print("[KaijuAlpha] 自动辐射技能:", v)
     end,
 })
+
+-- 自动辐射：开启后附近有敌人时周期性按 R / 4
+task.spawn(function()
+    while task.wait(1.8) do
+        if S.AutoRadiation and not archetypeBusy then
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and hrp then
+                local near = false
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr ~= localPlayer and plr.Character then
+                        local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                        if thrp and dist2(hrp.Position, thrp.Position) < 60 then
+                            near = true
+                            break
+                        end
+                    end
+                end
+                if near or S.AutoFarm or S.AutoFarmEnemy then
+                    pressKey(Enum.KeyCode.R)
+                    task.wait(0.12)
+                    pressKey(Enum.KeyCode.Four)
+                end
+            end
+        end
+    end
+end)
+
 ExtraLeft:AddButton({
     Text = "关闭全部功能",
     Func = function()
         S.AutoFarm = false
         S.AutoFarmEnemy = false
         S.AutoRespawn = false
+        S.AutoEscape = false
         S.AutoArchetype = false
         S.DoubleSpeed = false
         S.ESP = false
         S.ESPTracers = false
         S.AutoRadiation = false
-        -- 同步 UI（若支持）
         pcall(function()
-            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation"}) do
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation"}) do
                 if Toggles[name] then Toggles[name]:SetValue(false) end
             end
         end)
@@ -1219,7 +1309,7 @@ end)
 
 -- 启动音效（露琪亚音频裁剪）
 task.spawn(function()
-    local SFX_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E9%9C%B2%E7%90%AA%E4%BA%9A%E9%9F%B3%E9%A2%91%E8%A3%81%E5%89%AA%20(1).mp3"
+    local SFX_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/露琪亚音频裁剪 (1).mp3"
     local ok, err = pcall(function()
         local sound = Instance.new("Sound")
         sound.Name = "KaijuStartSFX"
