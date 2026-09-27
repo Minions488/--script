@@ -228,10 +228,37 @@ local ENEMY_MAX_Y_DELTA = 90 -- 与自己高度差过大不追（防海里/虚�
 
 local function isValidCombatPos(pos, myPos)
     if typeof(pos) ~= "Vector3" then return false end
-    if pos.Y < 2 or pos.Y > 600 then return false end -- 拒绝水面以下/过高
+    if pos.Y < 2 or pos.Y > 600 then return false end
     if math.abs(pos.X) > 12000 or math.abs(pos.Z) > 12000 then return false end
     if myPos and math.abs(pos.Y - myPos.Y) > ENEMY_MAX_Y_DELTA then return false end
+    if pos.X ~= pos.X or pos.Y ~= pos.Y or pos.Z ~= pos.Z then return false end
     return true
+end
+
+-- 严格校验：真实玩家角色，排除 NPC / 残留模型 / 空气 HRP
+local function isValidEnemyCharacter(char, myPos)
+    if not char or not char.Parent then return false end
+    local plr = Players:GetPlayerFromCharacter(char)
+    if not plr or plr == localPlayer or not plr.Parent then return false end
+    local thrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not thrp or thrp.Parent ~= char then return false end
+    if not hum or hum.Parent ~= char then return false end
+    if hum.Health <= 0 then return false end
+    local okState, state = pcall(function() return hum:GetState() end)
+    if okState and state == Enum.HumanoidStateType.Dead then return false end
+    if not char:IsDescendantOf(workspace) then return false end
+    local pos = thrp.Position
+    if not isValidCombatPos(pos, myPos) then return false end
+    local hasMesh = false
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") and d.Name ~= "HumanoidRootPart" and d.Transparency < 0.95 then
+            hasMesh = true
+            break
+        end
+    end
+    if not hasMesh then return false end
+    return true, thrp, hum, pos
 end
 
 -- 连续确认目标，避免一帧误判就开追
@@ -241,19 +268,17 @@ local enemyConfirmUntil = 0
 local function collectEnemyCandidates(pos, useHP, useDist, hpLimit, distLimit)
     local candidates = {}
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= localPlayer and plr.Character then
+        if plr ~= localPlayer then
             local char = plr.Character
-            local thrp = char:FindFirstChild("HumanoidRootPart")
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if thrp and thrp.Parent and hum and hum.Health > 0 then
-                local p = thrp.Position
-                if isValidCombatPos(p, pos) then
+            if char then
+                local okE, thrp, hum, p = isValidEnemyCharacter(char, pos)
+                if okE and thrp and hum and p then
                     local d = dist2(pos, p)
                     if d <= ENEMY_MAX_RANGE then
-                        local ok = true
-                        if useHP and hum.Health > hpLimit then ok = false end
-                        if useDist and d > distLimit then ok = false end
-                        if ok then
+                        local pass = true
+                        if useHP and hum.Health > hpLimit then pass = false end
+                        if useDist and d > distLimit then pass = false end
+                        if pass then
                             candidates[#candidates + 1] = {
                                 char = char,
                                 d = d,
@@ -496,11 +521,19 @@ RunService.Heartbeat:Connect(function()
         stuckHopFired = false
     end
 
-    -- 目标失效则松开并下一帧重选
+    -- 目标失效 / 幽灵目标则松开并重选（防河岸对着空气狂按）
     if not farmTarget or not farmTarget.Parent then
         farmTarget = nil
         setHoldW(false)
         return
+    end
+    if S.AutoFarmEnemy then
+        if not isValidEnemyCharacter(farmTarget, hrp.Position) then
+            farmTarget = nil
+            enemyConfirmChar = nil
+            setHoldW(false)
+            return
+        end
     end
 
     local okT, tpos = pcall(function() return farmTarget:GetPivot().Position end)
@@ -949,22 +982,13 @@ RunService.Heartbeat:Connect(function()
     local cam = workspace.CurrentCamera
     local seen = {}
     local list = {}
+    local myHrp = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = myHrp and myHrp.Position or nil
+    -- 只描真实玩家，不扫 workspace 里的 NPC/残留 Humanoid（避免追踪线指空气）
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= localPlayer and plr.Character then
-            table.insert(list, plr.Character)
-        end
-    end
-    local map = workspace:FindFirstChild("Map")
-    local folders = { workspace }
-    if map and map:FindFirstChild("CityFolder") then table.insert(folders, map.CityFolder) end
-    if workspace:FindFirstChild("Buildings") then table.insert(folders, workspace.Buildings) end
-    for _, folder in ipairs(folders) do
-        for _, m in ipairs(folder:GetChildren()) do
-            if m:IsA("Model") and m ~= localPlayer.Character then
-                local n = string.lower(m.Name)
-                if string.find(n, "kaiju") or m:FindFirstChildOfClass("Humanoid") then
-                    table.insert(list, m)
-                end
+            if isValidEnemyCharacter(plr.Character, myPos) then
+                table.insert(list, plr.Character)
             end
         end
     end
