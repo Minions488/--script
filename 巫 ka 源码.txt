@@ -126,6 +126,13 @@ local S = {
 local farmTarget = nil
 local lastSkillAt = 0
 local skillStep = 1
+-- 自动攻击：同一目标原地过久则拉黑（重载脚本清除）
+local enemyBlacklist = {} -- [UserId]=true
+local lockTrackUserId = nil
+local lockTrackPos = nil
+local lockTrackSince = 0
+local LOCK_STUCK_TIME = 15 -- 秒
+local LOCK_MOVE_EPS = 8 -- 位移小于此视为几乎没动
 local espStore = {}
 local escapeModel = nil
 local escapeCF = nil
@@ -268,7 +275,7 @@ local enemyConfirmUntil = 0
 local function collectEnemyCandidates(pos, useHP, useDist, hpLimit, distLimit)
     local candidates = {}
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= localPlayer then
+        if plr ~= localPlayer and not enemyBlacklist[plr.UserId] then
             local char = plr.Character
             if char then
                 local okE, thrp, hum, p = isValidEnemyCharacter(char, pos)
@@ -531,9 +538,53 @@ RunService.Heartbeat:Connect(function()
         if not isValidEnemyCharacter(farmTarget, hrp.Position) then
             farmTarget = nil
             enemyConfirmChar = nil
+            lockTrackUserId = nil
             setHoldW(false)
             return
         end
+        -- 同一敌人约 15s 几乎不动 → 取消锁定并永久拉黑（至重载）
+        local tPlr = Players:GetPlayerFromCharacter(farmTarget)
+        local tHrp = farmTarget:FindFirstChild("HumanoidRootPart")
+        if tPlr and tHrp then
+            if enemyBlacklist[tPlr.UserId] then
+                farmTarget = nil
+                enemyConfirmChar = nil
+                lockTrackUserId = nil
+                setHoldW(false)
+                return
+            end
+            local tp = tHrp.Position
+            if lockTrackUserId == tPlr.UserId then
+                if lockTrackPos and dist2(tp, lockTrackPos) <= LOCK_MOVE_EPS then
+                    if tick() - lockTrackSince >= LOCK_STUCK_TIME then
+                        enemyBlacklist[tPlr.UserId] = true
+                        print("[巫 ka] 目标久未移动，已拉黑:", tPlr.Name, tPlr.UserId)
+                        pcall(function()
+                            StarterGui:SetCore("SendNotification", {
+                                Title = "巫 ka",
+                                Text = "已拉黑久战目标: " .. tPlr.Name,
+                                Duration = 3,
+                            })
+                        end)
+                        farmTarget = nil
+                        enemyConfirmChar = nil
+                        lockTrackUserId = nil
+                        lockTrackPos = nil
+                        setHoldW(false)
+                        return
+                    end
+                else
+                    lockTrackPos = tp
+                    lockTrackSince = tick()
+                end
+            else
+                lockTrackUserId = tPlr.UserId
+                lockTrackPos = tp
+                lockTrackSince = tick()
+            end
+        end
+    else
+        lockTrackUserId = nil
     end
 
     local okT, tpos = pcall(function() return farmTarget:GetPivot().Position end)
@@ -1306,21 +1357,126 @@ ExtraLeft:AddButton({
 })
 ExtraLeft:AddLabel("Kaiju Alpha · Obsidian UI", true)
 
--- ===================== 配置保存 / 主题（Obsidian 自带） =====================
-pcall(function()
-    local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-    local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
-    ThemeManager:SetLibrary(Library)
-    SaveManager:SetLibrary(Library)
-    SaveManager:IgnoreThemeSettings()
-    SaveManager:SetIgnoreIndexes({})
-    SaveManager:SetFolder("WuKaiju")
-    SaveManager:BuildConfigSection(Tabs.Extra)
-    ThemeManager:ApplyToTab(Tabs.Extra)
-    SaveManager:LoadAutoloadConfig()
-    print("[巫 ka] 配置/主题模块已加载（其他页可保存）")
-end)
+-- ===================== 配置保存 / 主题（中文，容错加载） =====================
+do
+    local function zhTranslateUI()
+        local map = {
+            ["Load theme"] = "加载主题",
+            ["Overwrite theme"] = "覆盖主题",
+            ["Delete theme"] = "删除主题",
+            ["Refresh list"] = "刷新列表",
+            ["Set as default"] = "设为默认",
+            ["Reset default"] = "重置默认",
+            ["Current default theme: none"] = "当前默认主题: 无",
+            ["Current default theme:"] = "当前默认主题:",
+            ["Current default"] = "当前默认",
+            ["theme: none"] = "主题: 无",
+            ["Create config"] = "创建配置",
+            ["Load config"] = "加载配置",
+            ["Overwrite config"] = "覆盖配置",
+            ["Delete config"] = "删除配置",
+            ["Set as autoload"] = "设为自动加载",
+            ["Reset autoload"] = "重置自动加载",
+            ["Current autoload config: none"] = "当前自动加载: 无",
+            ["Current autoload config:"] = "当前自动加载:",
+            ["Configuration"] = "配置",
+            ["Config name"] = "配置名称",
+            ["Config list"] = "配置列表",
+            ["Autoload config"] = "自动加载配置",
+            ["Background color"] = "背景颜色",
+            ["Main color"] = "主色",
+            ["Accent color"] = "强调色",
+            ["Outline color"] = "描边颜色",
+            ["Font color"] = "字体颜色",
+            ["Font Face"] = "字体",
+            ["Background Image"] = "背景图片",
+            ["Theme list"] = "主题列表",
+            ["Custom theme name"] = "自定义主题名",
+            ["Create theme"] = "创建主题",
+            ["Custom themes"] = "自定义主题",
+            ["Themes"] = "主题",
+            ["Theme Manager"] = "主题管理",
+            ["Contrast check: n/a"] = "对比度检查: 无",
+            ["Contrast check:"] = "对比度检查:",
+        }
+        local function walk(inst)
+            if not inst then return end
+            if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+                local tx = inst.Text
+                if type(tx) == "string" then
+                    if map[tx] then
+                        inst.Text = map[tx]
+                    else
+                        for en, zh in pairs(map) do
+                            if string.find(tx, en, 1, true) then
+                                inst.Text = (string.gsub(tx, en, zh))
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            for _, c in ipairs(inst:GetChildren()) do
+                walk(c)
+            end
+        end
+        pcall(function()
+            if Library.ScreenGui then walk(Library.ScreenGui) end
+        end)
+        pcall(function()
+            local pg = Players.LocalPlayer:FindFirstChild("PlayerGui")
+            if not pg then return end
+            for _, g in ipairs(pg:GetChildren()) do
+                local n = string.lower(g.Name)
+                if string.find(n, "obsidian") or string.find(n, "library") or string.find(n, "window") then
+                    walk(g)
+                end
+            end
+        end)
+    end
 
+    local ThemeManager, SaveManager
+    local okTM, errTM = pcall(function()
+        ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+        ThemeManager:SetLibrary(Library)
+        ThemeManager:ApplyToTab(Tabs.Extra)
+    end)
+    if not okTM then
+        warn("[巫 ka] ThemeManager 加载失败:", errTM)
+    end
+
+    local okSM, errSM = pcall(function()
+        SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+        SaveManager:SetLibrary(Library)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetIgnoreIndexes({})
+        SaveManager:SetFolder("WuKaiju")
+        SaveManager:BuildConfigSection(Tabs.Extra)
+        SaveManager:LoadAutoloadConfig()
+    end)
+    if not okSM then
+        warn("[巫 ka] SaveManager 加载失败:", errSM)
+        -- 兜底：自建中文配置面板（不依赖 SaveManager UI）
+        pcall(function()
+            local ConfigBox = Tabs.Extra:AddLeftGroupbox("配置")
+            ConfigBox:AddLabel("配置模块加载失败，功能可能不完整", true)
+            ConfigBox:AddLabel("请检查网络后重载脚本", true)
+        end)
+    end
+
+    -- 延迟汉化，等 UI 生成完
+    task.spawn(function()
+        for _ = 1, 8 do
+            task.wait(0.25)
+            pcall(zhTranslateUI)
+        end
+        print("[巫 ka] 配置/主题汉化完成")
+    end)
+
+    if okTM or okSM then
+        print("[巫 ka] 配置/主题模块已加载")
+    end
+end
 
 print("[KaijuAlpha] Obsidian UI 加载完成")
 pcall(function()
