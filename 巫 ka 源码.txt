@@ -94,6 +94,7 @@ local Tabs = {
 
 local FarmLeft = Tabs.Farm:AddLeftGroupbox("战斗")
 local FarmSkill = Tabs.Farm:AddLeftGroupbox("技能设置")
+local FarmSafe = Tabs.Farm:AddRightGroupbox("安全技能")
 local FarmRight = Tabs.Farm:AddRightGroupbox("复活 / 原型")
 local PlayerLeft = Tabs.Player:AddLeftGroupbox("移动")
 local ESPLeft = Tabs.ESP:AddLeftGroupbox("视觉")
@@ -121,6 +122,12 @@ local S = {
     -- 技能：可多选键位 + 单选顺序
     SkillKeys = { ["1"] = true, ["2"] = true, ["3"] = true, ["4"] = true, ["5"] = true },
     SkillOrder = "从小到大", -- 从小到大 / 从大到小 / 随机
+    SkillInterval = "默认", -- 极快/快/默认/慢/极慢
+    -- 安全技能：范围内无敌人时自动按选定键
+    SafeSkill = false,
+    SafeSkillRange = 40,
+    SafeSkillKeys = { ["R"] = true },
+    SafeSkillInterval = 1.5,
 }
 
 local farmTarget = nil
@@ -268,6 +275,26 @@ local function isValidEnemyCharacter(char, myPos)
     return true, thrp, hum, pos
 end
 
+
+-- 安全技能占用：释放期间暂停自动刷怪/打人
+local safeSkillHolding = false
+
+local function anyEnemyInRange(pos, range)
+    range = range or (tonumber(S.SafeSkillRange) or 40)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and not enemyBlacklist[plr.UserId] then
+            local char = plr.Character
+            if char then
+                local okE, thrp = isValidEnemyCharacter(char, pos)
+                if okE and thrp and dist2(pos, thrp.Position) <= range then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 -- 连续确认目标，避免一帧误判就开追
 local enemyConfirmChar = nil
 local enemyConfirmUntil = 0
@@ -412,13 +439,10 @@ local SKILL_KEY_MAP = {
     ["5"] = Enum.KeyCode.Five,
     ["R"] = Enum.KeyCode.R,
     ["T"] = Enum.KeyCode.T,
-    ["Q"] = Enum.KeyCode.Q,
-    ["E"] = Enum.KeyCode.E,
-    ["F"] = Enum.KeyCode.F,
-    ["G"] = Enum.KeyCode.G,
+    ["V"] = Enum.KeyCode.V,
 }
 
-local SKILL_ORDER_LIST = { "1", "2", "3", "4", "5", "Q", "E", "R", "T", "F", "G" }
+local SKILL_ORDER_LIST = { "1", "2", "3", "4", "5", "R", "T", "V" }
 
 local function getSelectedSkillKeys()
     local list = {}
@@ -430,9 +454,18 @@ local function getSelectedSkillKeys()
     return list
 end
 
+local SKILL_INTERVAL_CD = {
+    ["极快"] = 0.08,
+    ["快"] = 0.15,
+    ["默认"] = 0.32,
+    ["慢"] = 0.55,
+    ["极慢"] = 0.90,
+}
+
 function castSkill(preferKill)
     local now = tick()
-    local cd = preferKill and 0.12 or 0.32
+    local base = SKILL_INTERVAL_CD[S.SkillInterval] or 0.32
+    local cd = preferKill and math.max(0.06, base * 0.4) or base
     if now - lastSkillAt < cd then return end
 
     local keys = getSelectedSkillKeys()
@@ -468,6 +501,26 @@ local function setHoldW(on)
     end)
 end
 
+-- 复活后重置战斗/安全技能状态，避免安全技能一直占着导致自动攻击失效
+local function resetCombatStateAfterSpawn()
+    safeSkillHolding = false
+    farmTarget = nil
+    enemyConfirmChar = nil
+    lockTrackUserId = nil
+    lockTrackPos = nil
+    lockTrackSince = 0
+    stuckPos = nil
+    stuckSince = 0
+    stuckSkillFired = false
+    stuckHopFired = false
+    setHoldW(false)
+end
+
+localPlayer.CharacterAdded:Connect(function()
+    task.defer(resetCombatStateAfterSpawn)
+    task.delay(1.0, resetCombatStateAfterSpawn)
+end)
+
 RunService.Heartbeat:Connect(function()
     if archetypeBusy then
         setHoldW(false)
@@ -478,8 +531,6 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    pickTarget()
-
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -488,8 +539,31 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
+    -- 安全技能优先：安全范围内没人 → 原地放技能，不追远处锁定目标
+    -- 只有敌人真正进入「安全范围」才中断安全技能去打
+    if S.SafeSkill then
+        local safeR = tonumber(S.SafeSkillRange) or 40
+        local enemyInSafe = anyEnemyInRange(hrp.Position, safeR)
+        if not enemyInSafe then
+            safeSkillHolding = true
+            setHoldW(false)
+            farmTarget = nil
+            return
+        end
+        -- 敌人进入安全范围：收招一帧后开打
+        if safeSkillHolding then
+            safeSkillHolding = false
+            setHoldW(false)
+            return
+        end
+    else
+        safeSkillHolding = false
+    end
+
+    pickTarget()
+
     -- 自动攻击敌人卡住处理：
-    -- 2s 放技能清障；若仍卡住到 8s，小幅升高 TP（约一层楼高度，绕过建筑，不明显）
+    -- 2s 放技能清障；若仍卡住到 11s（原 8+3），小幅升高 TP（约一层楼高度，绕过建筑，不明显）
     if S.AutoFarmEnemy and not S.AutoFarm then
         local pos = hrp.Position
         if not stuckPos or dist2(pos, stuckPos) > 6 then
@@ -504,7 +578,7 @@ RunService.Heartbeat:Connect(function()
                 castSkill(true)
                 print("[Kaiju] 卡住 2 秒，释放技能清障")
             end
-            if elapsed > 8 and not stuckHopFired then
+            if elapsed > 11 and not stuckHopFired then
                 stuckHopFired = true
                 -- 升高约 28~36 studs：略高于常见建筑层，不要飞天
                 local hop = 28 + math.random() * 8
@@ -518,7 +592,7 @@ RunService.Heartbeat:Connect(function()
                 stuckPos = dest
                 stuckSince = tick()
                 stuckSkillFired = false
-                print("[Kaiju] 卡住 8 秒，小幅升高绕障")
+                print("[Kaiju] 卡住 11 秒，小幅升高绕障")
             end
         end
     else
@@ -794,8 +868,8 @@ task.spawn(function()
             if not inCountdown then
                 inCountdown = true
                 kaijuNotify("检测到死亡，自动触发复活", 2)
-                print("[KaijuAlpha] 检测到死亡，4 秒倒计时…")
-                for sec = 4, 1, -1 do
+                print("[KaijuAlpha] 检测到死亡，3 秒倒计时…")
+                for sec = 3, 1, -1 do
                     if not S.AutoRespawn or isAlive() then break end
                     kaijuNotify("距自动复活剩余 " .. sec .. " 秒", 1)
                     print("[KaijuAlpha] 距自动复活剩余", sec, "秒")
@@ -1203,7 +1277,7 @@ FarmSkill:AddInput("SkillCastRange", {
 
 FarmSkill:AddDropdown("SkillKeys", {
     Text = "使用技能（可多选）",
-    Values = { "1", "2", "3", "4", "5", "Q", "E", "R", "T", "F", "G" },
+    Values = { "1", "2", "3", "4", "5", "R", "T", "V" },
     Default = { "1", "2", "3", "4", "5" },
     Multi = true,
     Callback = function(value)
@@ -1238,12 +1312,123 @@ FarmSkill:AddDropdown("SkillOrder", {
     end,
 })
 
-FarmSkill:AddLabel("勾选要用的键；顺序仅单选", true)
+FarmSkill:AddDropdown("SkillInterval", {
+    Text = "技能释放间隔",
+    Values = { "极快", "快", "默认", "慢", "极慢" },
+    Default = "默认",
+    Multi = false,
+    Callback = function(value)
+        S.SkillInterval = tostring(value)
+        print("[Kaiju] 技能间隔:", S.SkillInterval)
+    end,
+})
+
+FarmSkill:AddLabel("勾选要用的键；顺序/间隔仅单选", true)
+
+-- 安全技能：附近范围内没有敌人时，自动使用勾选技能
+FarmSafe:AddToggle("SafeSkill", {
+    Text = "启用安全技能",
+    Default = false,
+    Tooltip = "检测范围内无敌人时，自动按下方勾选的技能键",
+    Callback = function(v)
+        S.SafeSkill = v
+        print("[巫 ka] 安全技能:", v)
+    end,
+})
+FarmSafe:AddInput("SafeSkillRange", {
+    Text = "安全范围（stud）",
+    Default = "40",
+    Placeholder = "如 30~80",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        if n and n > 0 then
+            S.SafeSkillRange = math.clamp(n, 5, 200)
+        else
+            S.SafeSkillRange = 40
+        end
+        print("[巫 ka] 安全范围:", S.SafeSkillRange)
+    end,
+})
+FarmSafe:AddDropdown("SafeSkillKeys", {
+    Text = "无敌人时使用（可多选）",
+    Values = { "1", "2", "3", "4", "5", "R", "T", "V" },
+    Default = { "R" },
+    Multi = true,
+    Callback = function(value)
+        local map = {}
+        if typeof(value) == "table" then
+            local isList = value[1] ~= nil
+            if isList then
+                for _, name in ipairs(value) do
+                    map[tostring(name)] = true
+                end
+            else
+                for name, on in pairs(value) do
+                    if on then map[tostring(name)] = true end
+                end
+            end
+        end
+        S.SafeSkillKeys = map
+        print("[巫 ka] 安全技能键已更新")
+    end,
+})
+FarmSafe:AddInput("SafeSkillInterval", {
+    Text = "释放间隔（秒）",
+    Default = "1.5",
+    Placeholder = "建议 1~3",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        if n and n > 0 then
+            S.SafeSkillInterval = math.clamp(n, 0.3, 10)
+        else
+            S.SafeSkillInterval = 1.5
+        end
+    end,
+})
+FarmSafe:AddLabel("安全范围内没人→原地放技能；有人进入范围→再攻击（不追远处）", true)
+
+local safeSkillStep = 1
+task.spawn(function()
+    while true do
+        local waitSec = tonumber(S.SafeSkillInterval) or 1.5
+        task.wait(math.max(0.3, waitSec))
+        if not S.SafeSkill or archetypeBusy then
+            if not S.SafeSkill then
+                safeSkillHolding = false
+            end
+        else
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and hrp then
+                local range = tonumber(S.SafeSkillRange) or 40
+                local enemyInSafe = anyEnemyInRange(hrp.Position, range)
+                -- 安全范围内没人 → 原地放技能（不追范围外的锁定目标）
+                if not enemyInSafe then
+                    safeSkillHolding = true
+                    local keys = {}
+                    for _, name in ipairs(SKILL_ORDER_LIST) do
+                        if S.SafeSkillKeys[name] and SKILL_KEY_MAP[name] then
+                            keys[#keys + 1] = SKILL_KEY_MAP[name]
+                        end
+                    end
+                    if #keys > 0 then
+                        local key = keys[((safeSkillStep - 1) % #keys) + 1]
+                        safeSkillStep = safeSkillStep % #keys + 1
+                        pressKey(key)
+                    end
+                end
+            end
+        end
+    end
+end)
 
 FarmRight:AddToggle("AutoRespawn", {
     Text = "自动重生(死后倒计时)",
     Default = false,
-    Tooltip = "死后 4 秒倒计时通知并点击复活",
+    Tooltip = "死后 3 秒倒计时通知并点击复活",
     Callback = function(v)
         S.AutoRespawn = v
         print("[KaijuAlpha] 自动重生:", v)
@@ -1347,8 +1532,9 @@ ExtraLeft:AddButton({
         S.ESP = false
         S.ESPTracers = false
         S.AutoRadiation = false
+        S.SafeSkill = false
         pcall(function()
-            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation"}) do
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation","SafeSkill"}) do
                 if Toggles[name] then Toggles[name]:SetValue(false) end
             end
         end)
