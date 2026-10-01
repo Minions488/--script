@@ -99,6 +99,7 @@ local FarmRight = Tabs.Farm:AddRightGroupbox("复活 / 原型")
 local PlayerLeft = Tabs.Player:AddLeftGroupbox("移动")
 local ESPLeft = Tabs.ESP:AddLeftGroupbox("视觉")
 local ExtraLeft = Tabs.Extra:AddLeftGroupbox("杂项")
+local ExtraBoss = Tabs.Extra:AddRightGroupbox("Boss 传送")
 
 -- ===================== 状态 =====================
 local S = {
@@ -111,6 +112,9 @@ local S = {
     InfiniteRun = false,
     ESP = false,
     ESPTracers = false,
+    ESPLevel = false, -- 等级文字
+    ESPHP = false,    -- 血量文字
+
     AutoRadiation = false,
     AutoArchetype = false,
     RadEnemiesOnly = false,
@@ -128,6 +132,10 @@ local S = {
     SafeSkillRange = 40,
     SafeSkillKeys = { ["R"] = true },
     SafeSkillInterval = 1.5,
+    -- Boss 传送
+    BossTP = false,
+    BossTPThreshold = 1080, -- 秒，对应单选（默认约 18min 档用 10min=600 可改）
+    AutoBoss = false, -- 自动刷 Shin Eva Godzilla
 }
 
 local farmTarget = nil
@@ -294,6 +302,38 @@ local function anyEnemyInRange(pos, range)
     end
     return false
 end
+
+-- Shin Eva Boss（Workspace.Live，名字带空格用模式匹配）
+local function getShinGodzilla()
+    local live = workspace:FindFirstChild("Live")
+    if not live then return nil end
+    local myChar = localPlayer.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local myPos = myHrp and myHrp.Position or Vector3.zero
+    local best, bestD = nil, math.huge
+    for _, m in ipairs(live:GetChildren()) do
+        if m:IsA("Model") and string.match(m.Name, "^AI_Shin Eva Godzilla_%d+$") then
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            local thrp = m:FindFirstChild("HumanoidRootPart")
+            if hum and thrp and hum.Health > 0 then
+                local d = (myPos - thrp.Position).Magnitude
+                if d < bestD then
+                    best, bestD = m, d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function bossInRange(pos, range)
+    local boss = getShinGodzilla()
+    if not boss then return false end
+    local thrp = boss:FindFirstChild("HumanoidRootPart")
+    if not thrp then return false end
+    return (pos - thrp.Position).Magnitude <= (range or 200)
+end
+
 
 -- 连续确认目标，避免一帧误判就开追
 local enemyConfirmChar = nil
@@ -524,6 +564,12 @@ end)
 RunService.Heartbeat:Connect(function()
     if archetypeBusy then
         setHoldW(false)
+        return
+    end
+    -- 自动刷 BOSS：不打玩家/建筑，控制权交给 Boss 循环
+    if S.AutoBoss then
+        setHoldW(false)
+        farmTarget = nil
         return
     end
     if not (S.AutoFarm or S.AutoFarmEnemy) then
@@ -1394,10 +1440,16 @@ task.spawn(function()
     while true do
         local waitSec = tonumber(S.SafeSkillInterval) or 1.5
         task.wait(math.max(0.3, waitSec))
-        if not S.SafeSkill or archetypeBusy then
+        -- 刷 BOSS 时安全技能完全让路，不占移动/技能
+        if S.AutoBoss or archetypeBusy then
+            if S.AutoBoss then
+                safeSkillHolding = false
+            end
             if not S.SafeSkill then
                 safeSkillHolding = false
             end
+        elseif not S.SafeSkill then
+            safeSkillHolding = false
         else
             local char = localPlayer.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1405,8 +1457,9 @@ task.spawn(function()
             if hum and hum.Health > 0 and hrp then
                 local range = tonumber(S.SafeSkillRange) or 40
                 local enemyInSafe = anyEnemyInRange(hrp.Position, range)
-                -- 安全范围内没人 → 原地放技能（不追范围外的锁定目标）
-                if not enemyInSafe then
+                -- Boss 在安全范围内（或较近）时也不挂机放安全技能，去准备锁定
+                local bossNear = bossInRange(hrp.Position, math.max(range, 120))
+                if not enemyInSafe and not bossNear then
                     safeSkillHolding = true
                     local keys = {}
                     for _, name in ipairs(SKILL_ORDER_LIST) do
@@ -1419,6 +1472,8 @@ task.spawn(function()
                         safeSkillStep = safeSkillStep % #keys + 1
                         pressKey(key)
                     end
+                else
+                    safeSkillHolding = false
                 end
             end
         end
@@ -1482,6 +1537,190 @@ ESPLeft:AddToggle("ESPTracers", {
     Default = false,
     Callback = function(v) S.ESPTracers = v end,
 })
+ESPLeft:AddToggle("ESPLevel", {
+    Text = "等级显示",
+    Default = false,
+    Tooltip = "读取 Overhead 等级文字，显示在头顶",
+    Callback = function(v)
+        S.ESPLevel = v
+        if not v and not S.ESPHP then
+            -- 清理在循环里做
+        end
+    end,
+})
+ESPLeft:AddToggle("ESPHP", {
+    Text = "血量显示",
+    Default = false,
+    Tooltip = "显示 Humanoid 当前/最大血量",
+    Callback = function(v) S.ESPHP = v end,
+})
+ESPLeft:AddLabel("等级/血量来自 Live 模型 Overhead", true)
+
+-- ===================== 等级 + 血量 ESP（Live 模型） =====================
+local levelHpGui = nil
+local levelHpLabels = {} -- [modelName] = { level=TextLabel, hp=TextLabel }
+local LEVEL_HP_TEXT_SIZE = 16
+local LEVEL_HP_Y_OFFSET = 3
+
+local function ensureLevelHpGui()
+    if levelHpGui and levelHpGui.Parent then return levelHpGui end
+    local pg = localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 5)
+    if not pg then return nil end
+    local old = pg:FindFirstChild("LevelHpESP")
+    if old then old:Destroy() end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "LevelHpESP"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = pg
+    levelHpGui = gui
+    return gui
+end
+
+local function makeLevelHpLabel(name, color)
+    local gui = ensureLevelHpGui()
+    if not gui then return nil end
+    local lab = Instance.new("TextLabel")
+    lab.Name = name
+    lab.BackgroundTransparency = 1
+    lab.TextColor3 = color
+    lab.TextStrokeTransparency = 0.2
+    lab.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lab.Font = Enum.Font.GothamBold
+    lab.TextSize = LEVEL_HP_TEXT_SIZE
+    lab.Text = ""
+    lab.Visible = false
+    lab.ZIndex = 20
+    lab.Parent = gui
+    return lab
+end
+
+local function getModelLevelText(model)
+    local oh = model:FindFirstChild("Overhead")
+    if not oh then return nil end
+    local frame = oh:FindFirstChild("Frame")
+    if not frame then return nil end
+    local lvl = frame:FindFirstChild("Level")
+    if not lvl then return nil end
+    local lab = lvl:FindFirstChildOfClass("TextLabel")
+    return lab and lab.Text or nil
+end
+
+local function getModelWorldPos(model)
+    local oh = model:FindFirstChild("Overhead")
+    local part = (oh and oh.Adornee) or model:FindFirstChild("Head") or model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
+    if part and part:IsA("BasePart") then
+        return part.Position + Vector3.new(0, LEVEL_HP_Y_OFFSET, 0)
+    end
+    return nil
+end
+
+local function clearLevelHpESP()
+    for name, pair in pairs(levelHpLabels) do
+        pcall(function()
+            if pair.level then pair.level:Destroy() end
+            if pair.hp then pair.hp:Destroy() end
+        end)
+        levelHpLabels[name] = nil
+    end
+    if levelHpGui then
+        pcall(function() levelHpGui:Destroy() end)
+        levelHpGui = nil
+    end
+end
+
+local cam = workspace.CurrentCamera
+local levelHpAccum = 0
+RunService.RenderStepped:Connect(function(dt)
+    if not (S.ESPLevel or S.ESPHP) then
+        if next(levelHpLabels) then
+            clearLevelHpESP()
+        end
+        return
+    end
+    -- 降频约 15~20fps，减轻压力
+    levelHpAccum = levelHpAccum + dt
+    if levelHpAccum < 0.05 then return end
+    levelHpAccum = 0
+
+    cam = workspace.CurrentCamera or cam
+    if not cam then return end
+    local live = workspace:FindFirstChild("Live")
+    if not live then return end
+
+    ensureLevelHpGui()
+    local seen = {}
+    local myChar = localPlayer.Character
+
+    for _, model in ipairs(live:GetChildren()) do
+        if model:IsA("Model") then
+            local isSelf = myChar and model.Name == myChar.Name
+            if not isSelf then
+                seen[model.Name] = true
+                local pair = levelHpLabels[model.Name]
+                if not pair then
+                    pair = {
+                        level = makeLevelHpLabel(model.Name .. "_Lv", Color3.fromRGB(255, 255, 0)),
+                        hp = makeLevelHpLabel(model.Name .. "_Hp", Color3.fromRGB(0, 255, 100)),
+                    }
+                    levelHpLabels[model.Name] = pair
+                end
+
+                local pos = getModelWorldPos(model)
+                if pos then
+                    local screen, onScreen = cam:WorldToViewportPoint(pos)
+                    if onScreen and screen.Z > 0 then
+                        local sx, sy = screen.X, screen.Y
+                        if S.ESPLevel and pair.level then
+                            local txt = getModelLevelText(model)
+                            if txt and txt ~= "" then
+                                pair.level.Text = txt
+                                pair.level.Position = UDim2.fromOffset(sx - pair.level.TextBounds.X * 0.5, sy)
+                                pair.level.Visible = true
+                            else
+                                pair.level.Visible = false
+                            end
+                        elseif pair.level then
+                            pair.level.Visible = false
+                        end
+
+                        if S.ESPHP and pair.hp then
+                            local hum = model:FindFirstChildOfClass("Humanoid")
+                            if hum and hum.Health > 0 then
+                                pair.hp.Text = string.format("HP : %d / %d", math.floor(hum.Health), math.floor(hum.MaxHealth))
+                                local yOff = (S.ESPLevel and 18) or 0
+                                pair.hp.Position = UDim2.fromOffset(sx - pair.hp.TextBounds.X * 0.5, sy + yOff)
+                                pair.hp.Visible = true
+                            else
+                                pair.hp.Visible = false
+                            end
+                        elseif pair.hp then
+                            pair.hp.Visible = false
+                        end
+                    else
+                        if pair.level then pair.level.Visible = false end
+                        if pair.hp then pair.hp.Visible = false end
+                    end
+                else
+                    if pair.level then pair.level.Visible = false end
+                    if pair.hp then pair.hp.Visible = false end
+                end
+            end
+        end
+    end
+
+    for name, pair in pairs(levelHpLabels) do
+        if not seen[name] then
+            pcall(function()
+                if pair.level then pair.level:Destroy() end
+                if pair.hp then pair.hp:Destroy() end
+            end)
+            levelHpLabels[name] = nil
+        end
+    end
+end)
+
 
 ExtraLeft:AddToggle("AutoRadiation", {
     Text = "自动辐射技能",
@@ -1520,6 +1759,278 @@ task.spawn(function()
     end
 end)
 
+-- ===================== Boss 计时传送（固定坐标，阈值单选） =====================
+-- 用户实测 Boss 点，无需记录位置
+local BOSS_TARGET = Vector3.new(1918.1197509765625, 70.69638061523438, 876.7719116210938)
+local BOSS_REDO_DIST = 30 -- 已在目标附近则不重复传
+
+local BOSS_THRESHOLD_OPTIONS = {
+    ["1s"] = 1,
+    ["5s"] = 5,
+    ["1 min"] = 60,
+    ["10min"] = 600,
+    ["20min"] = 1200,
+    ["28min"] = 1680,
+}
+
+local function getBossTimerLabel()
+    local map = workspace:FindFirstChild("Map")
+    local bp = map and map:FindFirstChild("BossPortal")
+    local bb = bp and bp:FindFirstChild("BillboardAttach")
+    local timer = bb and bb:FindFirstChild("BossTimer")
+    return timer and timer:FindFirstChild("TextLabel")
+end
+
+-- 解析 "Boss Spawn In\n19:58\n(2/3)" -> 剩余秒数
+local function parseBossSeconds(text)
+    if not text then return nil end
+    local mm, ss = string.match(text, "(%d+):(%d+)")
+    if mm and ss then
+        return tonumber(mm) * 60 + tonumber(ss)
+    end
+    return nil
+end
+
+-- 远距离传送：分段推进 + 预加载，避免「太远无法传送」被拦/拉回
+local BOSS_STEP = 90 -- 每段最大距离（stud）
+local function teleportToBossFixed()
+    local char = localPlayer.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp then return false end
+    local dist = (hrp.Position - BOSS_TARGET).Magnitude
+    if dist < BOSS_REDO_DIST then
+        return false
+    end
+
+    -- 预加载目标附近地形（StreamingEnabled 地图关键）
+    pcall(function()
+        localPlayer:RequestStreamAroundAsync(BOSS_TARGET, 8)
+    end)
+
+    local function setPos(pos)
+        local cf = CFrame.new(pos)
+        pcall(function()
+            if hum then hum:ChangeState(Enum.HumanoidStateType.Freefall) end
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            char:PivotTo(cf)
+        end)
+        pcall(function()
+            hrp.CFrame = cf
+            hrp.AssemblyLinearVelocity = Vector3.zero
+        end)
+    end
+
+    -- 分段传送：一次跳太远容易被反作弊/流式加载挡回
+    local from = hrp.Position
+    local to = BOSS_TARGET
+    local total = (to - from).Magnitude
+    if total > BOSS_STEP then
+        local steps = math.ceil(total / BOSS_STEP)
+        for i = 1, steps do
+            char = localPlayer.Character
+            hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return false end
+            local alpha = i / steps
+            local mid = from:Lerp(to, alpha)
+            -- 中途略抬高，减少卡地形
+            if i < steps then
+                mid = mid + Vector3.new(0, 8, 0)
+            end
+            setPos(mid)
+            task.wait(0.05)
+        end
+    else
+        setPos(to)
+    end
+
+    -- 终点再钉一次，防止被服务器回弹
+    task.wait(0.08)
+    char = localPlayer.Character
+    hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp and (hrp.Position - BOSS_TARGET).Magnitude > BOSS_REDO_DIST then
+        setPos(BOSS_TARGET)
+        task.wait(0.05)
+        setPos(BOSS_TARGET)
+    end
+
+    print("[巫 ka] 已分段传送至 Boss:", BOSS_TARGET, "原距离≈", math.floor(total))
+    return true
+end
+
+ExtraBoss:AddToggle("BossTP", {
+    Text = "自动传送至 Boss",
+    Default = false,
+    Tooltip = "倒计时 ≤ 所选时间时，传送到固定 Boss 坐标",
+    Callback = function(v)
+        S.BossTP = v
+        print("[巫 ka] Boss 传送:", v)
+    end,
+})
+
+ExtraBoss:AddDropdown("BossTPThreshold", {
+    Text = "传送阈值（≤即传）",
+    Values = { "1s", "5s", "1 min", "10min", "20min", "28min" },
+    Default = "10min",
+    Multi = false,
+    Callback = function(value)
+        local key = tostring(value)
+        local sec = BOSS_THRESHOLD_OPTIONS[key]
+        if sec then
+            S.BossTPThreshold = sec
+        else
+            S.BossTPThreshold = 600
+        end
+        print("[巫 ka] Boss 阈值:", key, "=", S.BossTPThreshold, "秒")
+        pcall(function()
+            Library:Notify("Boss 阈值: " .. key .. "（≤即传送）", 2)
+        end)
+    end,
+})
+
+ExtraBoss:AddButton({
+    Text = "立即传送到 Boss",
+    Func = function()
+        if teleportToBossFixed() then
+            pcall(function() Library:Notify("已传送至 Boss", 2) end)
+        else
+            pcall(function() Library:Notify("已在 Boss 附近或角色未加载", 2) end)
+        end
+    end,
+})
+
+ExtraBoss:AddLabel("固定坐标；远距自动分段传送（防太远传不过去）", true)
+
+ExtraBoss:AddToggle("AutoBoss", {
+    Text = "自动刷 BOSS（Shin Eva）",
+    Default = false,
+    Tooltip = "检测到 Boss 刷新即锁定；只打 Boss，不打玩家；安全技能自动让路",
+    Callback = function(v)
+        S.AutoBoss = v
+        if v then
+            safeSkillHolding = false
+            farmTarget = nil
+            setHoldW(false)
+        else
+            setHoldW(false)
+        end
+        print("[巫 ka] 自动刷 BOSS:", v)
+    end,
+})
+
+ExtraBoss:AddLabel("团体战只锁 Boss；刷新即追；安全技能遇 Boss 让路", true)
+
+-- ========== 自动刷 BOSS 逻辑 ==========
+local function stepToward(hrp, targetPos, step)
+    local from = hrp.Position
+    local delta = targetPos - from
+    local dist = delta.Magnitude
+    if dist < 1 then return end
+    step = math.min(step or 90, dist)
+    local mid = from + delta.Unit * step
+    -- 略抬高减少卡地形
+    mid = Vector3.new(mid.X, math.max(mid.Y, from.Y), mid.Z) + Vector3.new(0, 4, 0)
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CFrame = CFrame.lookAt(mid, Vector3.new(targetPos.X, mid.Y, targetPos.Z))
+    end)
+end
+
+task.spawn(function()
+    while task.wait(0.12) do
+        if not S.AutoBoss or archetypeBusy then
+            if not S.AutoBoss then
+                -- 不抢控制
+            end
+        else
+            local char = localPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not hrp or not hum or hum.Health <= 0 then
+                setHoldW(false)
+            else
+                -- 只锁定 Boss，绝不攻击玩家
+                local boss = getShinGodzilla()
+                if not boss then
+                    setHoldW(false)
+                    -- 竞技场未刷新：原地等待
+                else
+                    local thrp = boss:FindFirstChild("HumanoidRootPart")
+                    local bhum = boss:FindFirstChildOfClass("Humanoid")
+                    if not thrp or not bhum or bhum.Health <= 0 then
+                        setHoldW(false)
+                    else
+                        local tpos = thrp.Position
+                        local dist = (hrp.Position - tpos).Magnitude
+                        local castR = tonumber(S.SkillCastRange) or 18
+                        local attackR = math.max(castR + 6, 28)
+
+                        if dist > 160 then
+                            -- 超远：分段贴近（同 Boss 传送思路）
+                            setHoldW(false)
+                            stepToward(hrp, tpos, 90)
+                        elseif dist > attackR then
+                            -- 中距：朝向 + 前进
+                            pcall(function()
+                                hrp.CFrame = CFrame.lookAt(
+                                    hrp.Position,
+                                    Vector3.new(tpos.X, hrp.Position.Y, tpos.Z)
+                                )
+                            end)
+                            setHoldW(true)
+                        else
+                            -- 攻击距离内：站定输出
+                            setHoldW(false)
+                            pcall(function()
+                                hrp.CFrame = CFrame.lookAt(
+                                    hrp.Position,
+                                    Vector3.new(tpos.X, hrp.Position.Y, tpos.Z)
+                                )
+                            end)
+                            castSkill(true)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 初始化默认阈值对应秒数
+S.BossTPThreshold = BOSS_THRESHOLD_OPTIONS["10min"] or 600
+
+local bossTPOnceFired = false
+task.spawn(function()
+    while task.wait(0.5) do
+        if not S.BossTP then
+            bossTPOnceFired = false
+        else
+            local lbl = getBossTimerLabel()
+            local secs = lbl and parseBossSeconds(lbl.Text)
+            if secs and secs > 0 then
+                local th = tonumber(S.BossTPThreshold) or 600
+                if secs <= th then
+                    -- 仅传送一次：本轮阈值内不重复传
+                    if not bossTPOnceFired then
+                        if teleportToBossFixed() then
+                            bossTPOnceFired = true
+                            pcall(function()
+                                Library:Notify("Boss 剩余 " .. secs .. "s，已传送（仅一次）", 3)
+                            end)
+                        end
+                    end
+                else
+                    -- 倒计时重新高于阈值后，允许下一轮再传一次
+                    bossTPOnceFired = false
+                end
+            end
+        end
+    end
+end)
+
 ExtraLeft:AddButton({
     Text = "关闭全部功能",
     Func = function()
@@ -1531,10 +2042,14 @@ ExtraLeft:AddButton({
         S.DoubleSpeed = false
         S.ESP = false
         S.ESPTracers = false
+        S.ESPLevel = false
+        S.ESPHP = false
         S.AutoRadiation = false
         S.SafeSkill = false
+        S.BossTP = false
+        S.AutoBoss = false
         pcall(function()
-            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","AutoRadiation","SafeSkill"}) do
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","ESPLevel","ESPHP","AutoRadiation","SafeSkill","BossTP","AutoBoss"}) do
                 if Toggles[name] then Toggles[name]:SetValue(false) end
             end
         end)
