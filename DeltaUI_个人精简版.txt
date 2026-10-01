@@ -9966,7 +9966,6 @@ local function wasaiSetAntiFling(enabled)
     end
 end
 
-local 
 -- ========== 高权限侦察工具实现 ==========
 local wasaiRemoteSpy = { active = false, logs = {}, maxLogs = 80, oldNamecall = nil }
 
@@ -10356,7 +10355,7 @@ local function wasaiLoadIY()
     return "Infinite Yield 加载失败: " .. lastErr
 end
 
-function wasaiExecuteToolCall(tool, args)
+local function wasaiExecuteToolCall(tool, args)
     wasaiTrackToolCall()
     local ok, result = pcall(function()
         if tool == "list_children" then
