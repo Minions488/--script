@@ -1863,7 +1863,7 @@ end
 ExtraBoss:AddToggle("BossTP", {
     Text = "自动传送至 Boss",
     Default = false,
-    Tooltip = "倒计时 ≤ 所选时间时，传送到固定 Boss 坐标",
+    Tooltip = "倒计时≤所选时间传一次；打完Boss时间重置后，再计时到阈值再传一次",
     Callback = function(v)
         S.BossTP = v
         print("[巫 ka] Boss 传送:", v)
@@ -1885,7 +1885,7 @@ ExtraBoss:AddDropdown("BossTPThreshold", {
         end
         print("[巫 ka] Boss 阈值:", key, "=", S.BossTPThreshold, "秒")
         pcall(function()
-            Library:Notify("Boss 阈值: " .. key .. "（≤即传送）", 2)
+            Library:Notify("Boss 阈值: " .. key .. "（≤传一次，重置后再传）", 2)
         end)
     end,
 })
@@ -2058,12 +2058,15 @@ task.spawn(function()
     local stuckCheckAt = 0
     local stuckPos = nil
     local lastStuckJumpAt = 0
-    local lastStatusAt = 0
     local lastLockName = nil
+    local notifiedNoBoss = false   -- 未检测到：整段开启周期只提示一次
+    local notifiedLost = false     -- 目标丢失：只提示一次
     while task.wait(0.1) do
         if not S.AutoBoss or archetypeBusy then
             if not S.AutoBoss then
                 lastLockName = nil
+                notifiedNoBoss = false
+                notifiedLost = false
             end
         else
             local char = localPlayer.Character
@@ -2087,17 +2090,19 @@ task.spawn(function()
                         hum:Move(Vector3.zero)
                     end)
                     stuckPos = nil
+                    -- 检测仍在后台跑；提示整段开启只弹一次
                     if lastLockName ~= nil then
                         lastLockName = nil
+                        if not notifiedLost then
+                            notifiedLost = true
+                            pcall(function()
+                                Library:Notify("自动刷 BOSS：目标丢失，等待刷新", 2)
+                            end)
+                        end
+                    elseif not notifiedNoBoss then
+                        notifiedNoBoss = true
                         pcall(function()
-                            Library:Notify("自动刷 BOSS：目标丢失，等待刷新", 2)
-                        end)
-                    end
-                    local now = tick()
-                    if now - lastStatusAt >= 8 then
-                        lastStatusAt = now
-                        pcall(function()
-                            Library:Notify("自动刷 BOSS：未检测到 Boss（请先进入 Boss 房/等待刷新）", 3)
+                            Library:Notify("自动刷 BOSS：未检测到 Boss（后台持续检测中）", 3)
                         end)
                     end
                 else
@@ -2122,6 +2127,7 @@ task.spawn(function()
                         local bname = boss.Name
                         if lastLockName ~= bname then
                             lastLockName = bname
+                            notifiedLost = false  -- 再次丢失时可再提示一次
                             pcall(function()
                                 Library:Notify(string.format("已锁定 Boss（距离 %.0f）", dist), 2)
                             end)
@@ -2191,31 +2197,47 @@ end)
 -- 初始化默认阈值对应秒数
 S.BossTPThreshold = BOSS_THRESHOLD_OPTIONS["10min"] or 600
 
+-- 自动传送 Boss：本轮倒计时 ≤ 阈值 → 只传一次；
+-- 检测到倒计时重置（打完 Boss 后时间跳回）→ 重新计时，再到达阈值再传一次
 local bossTPOnceFired = false
+local bossTPLastSecs = nil
 task.spawn(function()
     while task.wait(0.5) do
         if not S.BossTP then
             bossTPOnceFired = false
+            bossTPLastSecs = nil
         else
             local lbl = getBossTimerLabel()
             local secs = lbl and parseBossSeconds(lbl.Text)
             if secs and secs > 0 then
                 local th = tonumber(S.BossTPThreshold) or 600
-                if secs <= th then
-                    -- 仅传送一次：本轮阈值内不重复传
-                    if not bossTPOnceFired then
-                        if teleportToBossFixed() then
-                            bossTPOnceFired = true
-                            pcall(function()
-                                Library:Notify("Boss 剩余 " .. secs .. "s，已传送（仅一次）", 3)
-                            end)
-                        end
-                    end
-                else
-                    -- 倒计时重新高于阈值后，允许下一轮再传一次
+
+                -- 时间重置检测：剩余秒数明显回升（Boss 打完后倒计时重新开始）
+                if bossTPLastSecs and secs > bossTPLastSecs + 30 then
+                    bossTPOnceFired = false
+                    print("[巫 ka] Boss 倒计时已重置:", bossTPLastSecs, "->", secs, "，本轮可再传一次")
+                    pcall(function()
+                        Library:Notify("Boss 倒计时已重置，等待再次到达阈值后传送", 3)
+                    end)
+                elseif secs > th then
+                    -- 仍高于阈值：视为新一轮未到点，允许之后再传
                     bossTPOnceFired = false
                 end
+                bossTPLastSecs = secs
+
+                if secs <= th and not bossTPOnceFired then
+                    if teleportToBossFixed() then
+                        bossTPOnceFired = true
+                        local mm = math.floor(secs / 60)
+                        local ss = secs % 60
+                        pcall(function()
+                            Library:Notify(string.format("已传送至 Boss（剩余 %d:%02d，本轮仅一次）", mm, ss), 3)
+                        end)
+                        print("[巫 ka] BossTP 本轮已传送，secs=", secs, "th=", th)
+                    end
+                end
             end
+            -- secs 读不到（Boss 进行中等）不改 once 标记，等下次读到重置/回升再处理
         end
     end
 end)
