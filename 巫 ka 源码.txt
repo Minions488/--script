@@ -2048,9 +2048,9 @@ ExtraBoss:AddButton({
 })
 
 -- ========== 自动刷 BOSS 逻辑 ==========
--- 纯 Humanoid 模拟移动：禁止 CFrame/PivotTo/stepToward 位移；MoveTo 只作寻路目标
+-- 纯 Humanoid 世界坐标移动：不用按 W（按 W 会跟镜头走）；无 Boss 时完全停住
 local function faceBoss(hrp, tpos)
-    -- 不写 CFrame；转向交给 Humanoid.AutoRotate + Move 方向
+    -- 不写 CFrame
 end
 
 task.spawn(function()
@@ -2058,27 +2058,48 @@ task.spawn(function()
     local stuckCheckAt = 0
     local stuckPos = nil
     local lastStuckJumpAt = 0
+    local lastStatusAt = 0
+    local lastLockName = nil
     while task.wait(0.1) do
         if not S.AutoBoss or archetypeBusy then
-            -- 关闭 / 拾取原型占用时不抢控制
+            if not S.AutoBoss then
+                lastLockName = nil
+            end
         else
             local char = localPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if not hrp or not hum or hum.Health <= 0 then
+                -- 绝不按住 W，避免变成「镜头朝哪走哪」
                 setHoldW(false)
                 stuckPos = nil
+                lastLockName = nil
             else
                 pcall(function()
                     hum.AutoRotate = true
                 end)
 
-                -- 只锁定 Shin Eva Boss，绝不 pickTarget / 打玩家
+                -- 只锁定真正的 Shin Eva Boss；未刷出则原地等待
                 local boss = getShinGodzilla()
                 if not boss then
                     setHoldW(false)
-                    pcall(function() hum:Move(Vector3.zero) end)
+                    pcall(function()
+                        hum:Move(Vector3.zero)
+                    end)
                     stuckPos = nil
+                    if lastLockName ~= nil then
+                        lastLockName = nil
+                        pcall(function()
+                            Library:Notify("自动刷 BOSS：目标丢失，等待刷新", 2)
+                        end)
+                    end
+                    local now = tick()
+                    if now - lastStatusAt >= 8 then
+                        lastStatusAt = now
+                        pcall(function()
+                            Library:Notify("自动刷 BOSS：未检测到 Boss（请先进入 Boss 房/等待刷新）", 3)
+                        end)
+                    end
                 else
                     local thrp = boss:FindFirstChild("HumanoidRootPart")
                     local bhum = boss:FindFirstChildOfClass("Humanoid")
@@ -2086,6 +2107,7 @@ task.spawn(function()
                         setHoldW(false)
                         pcall(function() hum:Move(Vector3.zero) end)
                         stuckPos = nil
+                        lastLockName = nil
                     else
                         local tpos = thrp.Position
                         local myPos = hrp.Position
@@ -2093,20 +2115,36 @@ task.spawn(function()
                         local castR = tonumber(S.SkillCastRange) or 18
                         local attackR = math.max(castR + 8, 32)
                         local now = tick()
-                        local flatTarget = Vector3.new(tpos.X, myPos.Y, tpos.Z)
                         local flat = Vector3.new(tpos.X - myPos.X, 0, tpos.Z - myPos.Z)
+                        local flatTarget = Vector3.new(tpos.X, myPos.Y, tpos.Z)
+
+                        -- 锁定提示（只在换目标时弹一次）
+                        local bname = boss.Name
+                        if lastLockName ~= bname then
+                            lastLockName = bname
+                            pcall(function()
+                                Library:Notify(string.format("已锁定 Boss（距离 %.0f）", dist), 2)
+                            end)
+                            print("[巫 ka] AutoBoss 锁定:", bname, "dist=", math.floor(dist))
+                        end
+
+                        -- 关键：不用 setHoldW(true)。按住 W 会按镜头方向走，看起来像「镜头往哪走哪」
+                        setHoldW(false)
 
                         if dist <= attackR then
-                            -- 攻击距离：停步输出
-                            setHoldW(false)
                             pcall(function()
                                 hum:Move(Vector3.zero)
                             end)
                             stuckPos = nil
+                            -- 近战：用 Move 轻微朝向目标以辅助转向，再放技能
+                            if flat.Magnitude > 1 then
+                                pcall(function()
+                                    hum:Move(flat.Unit * 0.05, false)
+                                end)
+                            end
                             castSkill(true)
                         else
-                            -- 远距 / 中距：按 W + Move，每 0.5s 补一次 MoveTo（非瞬移）
-                            setHoldW(true)
+                            -- 世界坐标朝 Boss 走（relative=false，与镜头无关）
                             if flat.Magnitude > 1 then
                                 pcall(function()
                                     hum:Move(flat.Unit, false)
@@ -2119,13 +2157,11 @@ task.spawn(function()
                                 end)
                             end
 
-                            -- 卡住判定：约 0.5s 看一次位移
                             if now - stuckCheckAt >= 0.5 then
                                 stuckCheckAt = now
                                 if stuckPos and (myPos - stuckPos).Magnitude < 2 then
                                     if now - lastStuckJumpAt >= 1.0 then
                                         lastStuckJumpAt = now
-                                        -- 只跳 + 重发 MoveTo，禁止 CFrame 脱困
                                         pcall(function()
                                             hum.Jump = true
                                         end)
