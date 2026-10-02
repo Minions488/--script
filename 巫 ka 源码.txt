@@ -567,8 +567,8 @@ RunService.Heartbeat:Connect(function()
         return
     end
     -- 自动刷 BOSS：不打玩家/建筑，控制权交给 Boss 循环
+    -- AutoBoss 有独立循环控制走位，这里只跳过刷怪，不要 setHoldW(false) 冲掉前进
     if S.AutoBoss then
-        setHoldW(false)
         farmTarget = nil
         return
     end
@@ -1939,11 +1939,21 @@ local function stepToward(hrp, targetPos, step)
     end)
 end
 
+local function faceBoss(hrp, tpos)
+    pcall(function()
+        local look = Vector3.new(tpos.X, hrp.Position.Y, tpos.Z)
+        if (look - hrp.Position).Magnitude > 0.5 then
+            hrp.CFrame = CFrame.lookAt(hrp.Position, look)
+        end
+    end)
+end
+
 task.spawn(function()
-    while task.wait(0.12) do
+    while task.wait(0.1) do
         if not S.AutoBoss or archetypeBusy then
+            -- 关闭时不抢控制；archetype 忙碌时也不走 Boss
             if not S.AutoBoss then
-                -- 不抢控制
+                -- leave hold state to other systems
             end
         else
             local char = localPlayer.Character
@@ -1956,40 +1966,55 @@ task.spawn(function()
                 local boss = getShinGodzilla()
                 if not boss then
                     setHoldW(false)
-                    -- 竞技场未刷新：原地等待
+                    pcall(function() hum:Move(Vector3.zero) end)
                 else
                     local thrp = boss:FindFirstChild("HumanoidRootPart")
                     local bhum = boss:FindFirstChildOfClass("Humanoid")
                     if not thrp or not bhum or bhum.Health <= 0 then
                         setHoldW(false)
+                        pcall(function() hum:Move(Vector3.zero) end)
                     else
                         local tpos = thrp.Position
                         local dist = (hrp.Position - tpos).Magnitude
                         local castR = tonumber(S.SkillCastRange) or 18
-                        local attackR = math.max(castR + 6, 28)
+                        local attackR = math.max(castR + 8, 32)
 
-                        if dist > 160 then
-                            -- 超远：分段贴近（同 Boss 传送思路）
+                        faceBoss(hrp, tpos)
+
+                        if dist > 140 then
+                            -- 超远：分段贴近 + MoveTo
                             setHoldW(false)
-                            stepToward(hrp, tpos, 90)
-                        elseif dist > attackR then
-                            -- 中距：朝向 + 前进
+                            stepToward(hrp, tpos, 80)
                             pcall(function()
-                                hrp.CFrame = CFrame.lookAt(
-                                    hrp.Position,
-                                    Vector3.new(tpos.X, hrp.Position.Y, tpos.Z)
-                                )
+                                hum:MoveTo(Vector3.new(tpos.X, hrp.Position.Y, tpos.Z))
                             end)
+                        elseif dist > attackR then
+                            -- 中距：面向 + 按住 W + Humanoid:Move / MoveTo（双保险）
                             setHoldW(true)
+                            pcall(function()
+                                local flat = Vector3.new(tpos.X - hrp.Position.X, 0, tpos.Z - hrp.Position.Z)
+                                if flat.Magnitude > 1 then
+                                    hum:Move(flat.Unit, false)
+                                end
+                                hum:MoveTo(Vector3.new(tpos.X, hrp.Position.Y, tpos.Z))
+                            end)
+                            -- 若几乎没位移，补一小段 step，避免卡在原地只靠 W
+                            if dist > attackR + 15 then
+                                local before = hrp.Position
+                                task.wait(0.08)
+                                char = localPlayer.Character
+                                hrp = char and char:FindFirstChild("HumanoidRootPart")
+                                if hrp and (hrp.Position - before).Magnitude < 2 then
+                                    stepToward(hrp, tpos, 35)
+                                end
+                            end
                         else
                             -- 攻击距离内：站定输出
                             setHoldW(false)
                             pcall(function()
-                                hrp.CFrame = CFrame.lookAt(
-                                    hrp.Position,
-                                    Vector3.new(tpos.X, hrp.Position.Y, tpos.Z)
-                                )
+                                hum:Move(Vector3.zero)
                             end)
+                            faceBoss(hrp, tpos)
                             castSkill(true)
                         end
                     end
