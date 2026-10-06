@@ -70,6 +70,38 @@ end
 -------------------------------------------------
 local KEY_FILE = "WuScript_SavedKey.txt"
 local FORCE_KEY_FILE = "WuScript_ForceKeyEntry.txt"
+local WU_UI_CFG_FILE = "WuScript_UIConfig.txt" -- 缩放/字体大小/粗细 记忆
+
+-- UI 配置记忆（与卡密同样用 writefile/readfile）
+local function WuLoadUIConfig()
+    local cfg = { scale = 1, fontScale = 1, fontWeight = "Bold" }
+    pcall(function()
+        if isfile and isfile(WU_UI_CFG_FILE) and readfile then
+            local raw = tostring(readfile(WU_UI_CFG_FILE) or "")
+            local a, b, c = raw:match("^([%d%.]+)|([%d%.]+)|([%w]+)")
+            if a then cfg.scale = math.clamp(tonumber(a) or 1, 0.5, 1.5) end
+            if b then cfg.fontScale = math.clamp(tonumber(b) or 1, 0.8, 1.4) end
+            if c and c ~= "" then cfg.fontWeight = c end
+        end
+    end)
+    getgenv().WuUIScale = cfg.scale
+    getgenv().WuFontScale = cfg.fontScale
+    getgenv().WuFontWeight = cfg.fontWeight
+    return cfg
+end
+
+local function WuSaveUIConfig()
+    pcall(function()
+        if not writefile then return end
+        local scale = tonumber(getgenv().WuUIScale) or 1
+        local fs = tonumber(getgenv().WuFontScale) or 1
+        local fw = tostring(getgenv().WuFontWeight or "Bold")
+        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", scale, fs, fw))
+    end)
+end
+
+getgenv().WuSaveUIConfig = WuSaveUIConfig
+WuLoadUIConfig()
 -- 卡密：by wu（Patriot 会去掉空格，所以输入 by wu 或 bywu 都可以）
 local CURRENT_KEY = "by wu"
 
@@ -4991,28 +5023,45 @@ local EspTab = Window:AddTab("ESP")
 local MasterSection = EspTab:AddSection("主控开关")
 
 local ESPEnabled = false
+
+-- 无需手动「初始化/加载模块」：开关即用（模块在脚本后段已内嵌）
+local function WuEnsureNeuroESP()
+    getgenv().Neuro = getgenv().Neuro or {}
+    local E = getgenv().Neuro
+    E.ESP = E.ESP or {
+        Enabled = false,
+        BoxESP = true,
+        BoxStyle = "Corner",
+        BoxThickness = 1,
+        BoxFilled = false,
+        BoxFillTransparency = 0.7,
+        TracerESP = false,
+        HealthESP = true,
+        NameESP = true,
+    }
+    return E.ESP
+end
+
 MasterSection:AddToggle({
-    Name = "启用 Neuro ESP",
+    Name = "启用透视 (ESP)",
     Default = false,
     Callback = function(state)
         ESPEnabled = state
-        if getgenv().Neuro and getgenv().Neuro.ESP then
-            getgenv().Neuro.ESP.Enabled = state
-            Window:Notify({Title = "ESP", Content = state and "已开启" or "已关闭", Duration = 2})
-        else
-            Window:Notify({Title = "ESP", Content = "请先加载 Neuro 模块", Duration = 2})
+        local esp = WuEnsureNeuroESP()
+        esp.Enabled = state
+        -- 若完整模块尚未跑完，短轮询一次把 Enabled 同步过去
+        if state then
+            task.spawn(function()
+                for _ = 1, 30 do
+                    if getgenv().Neuro and getgenv().Neuro.ESP then
+                        getgenv().Neuro.ESP.Enabled = true
+                        break
+                    end
+                    task.wait(0.1)
+                end
+            end)
         end
-    end
-})
-
-MasterSection:AddButton({
-    Name = "加载 Neuro ESP 模块",
-    Callback = function()
-        if getgenv().Neuro then
-            Window:Notify({Title = "ESP", Content = "Neuro 模块已加载", Duration = 2})
-        else
-            Window:Notify({Title = "ESP", Content = "加载失败，请检查脚本", Duration = 2})
-        end
+        Window:Notify({Title = "透视", Content = state and "已开启" or "已关闭", Duration = 2})
     end
 })
 
@@ -5635,6 +5684,7 @@ getgenv().Neuro = getgenv().Neuro or {}
 local Environment = getgenv().Neuro
 Environment.ServiceConnections = Environment.ServiceConnections or {}
 
+local prevESP = Environment.ESP
 Environment.ESP = {
     Enabled = false,
     BoxESP = true,
@@ -5663,6 +5713,14 @@ Environment.ESP = {
     RefreshRate = 0,
     RawRenderAPI = false,
 }
+
+-- 保留用户已在 UI 里开过的开关（避免模块后加载把 Enabled 打回 false）
+if type(prevESP) == "table" then
+    for k, v in pairs(prevESP) do
+        Environment.ESP[k] = v
+    end
+end
+
 
 local ESP = Environment.ESP
 local RunService = game:GetService("RunService")
@@ -8162,6 +8220,7 @@ task.spawn(function()
             task.delay(0.2, function()
                 if getgenv().WuRefreshScroll then getgenv().WuRefreshScroll() end
             end)
+            pcall(WuSaveUIConfig)
         end
 
         SettingsPage:Slider({
@@ -8176,31 +8235,50 @@ task.spawn(function()
             end
         })
 
-        SettingsPage:Section("字体大小")
-        SettingsPage:Slider({
-            Title = "字体大小(%)",
-            Min = 80,
-            Max = 140,
-            Value = 100,
-            Rounding = 0,
-            Suffix = "%",
-            Callback = function(v)
-                local mul = (tonumber(v) or 100) / 100
-                getgenv().WuFontScale = mul
+        local function WuWeightEnum(name)
+            name = tostring(name or "Bold")
+            local map = {
+                Thin = Enum.FontWeight.Thin,
+                ExtraLight = Enum.FontWeight.ExtraLight,
+                Light = Enum.FontWeight.Light,
+                Regular = Enum.FontWeight.Regular,
+                Medium = Enum.FontWeight.Medium,
+                SemiBold = Enum.FontWeight.SemiBold,
+                Bold = Enum.FontWeight.Bold,
+                ExtraBold = Enum.FontWeight.ExtraBold,
+                Heavy = Enum.FontWeight.Heavy,
+            }
+            return map[name] or Enum.FontWeight.Bold
+        end
+
+        local function WuApplyFontStyle()
+            local mul = tonumber(getgenv().WuFontScale) or 1
+            local wname = tostring(getgenv().WuFontWeight or "Bold")
+            local weight = WuWeightEnum(wname)
+            local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Italic)
+            pcall(function()
+                local hosts = {}
+                local h = (gethui and gethui()) or nil
+                if h then table.insert(hosts, h) end
+                pcall(function() table.insert(hosts, game:GetService("CoreGui")) end)
                 pcall(function()
-                    local host = (gethui and gethui()) or game:GetService("CoreGui")
+                    local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+                    if pg then table.insert(hosts, pg) end
+                end)
+                for _, host in ipairs(hosts) do
                     for _, gui in ipairs(host:GetChildren()) do
-                        if not gui:IsA("ScreenGui") then
-                            -- skip
-                        else
-                            local hasWu = false
-                            for _, d in ipairs(gui:GetDescendants()) do
-                                if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫") then
-                                    hasWu = true
-                                    break
+                        if gui:IsA("ScreenGui") then
+                            local hasWu = gui:GetAttribute("WuScriptUI") == true
+                            if not hasWu then
+                                for _, d in ipairs(gui:GetDescendants()) do
+                                    if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫") then
+                                        hasWu = true
+                                        break
+                                    end
                                 end
                             end
                             if hasWu then
+                                gui:SetAttribute("WuScriptUI", true)
                                 for _, inst in ipairs(gui:GetDescendants()) do
                                     if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
                                         local origin = inst:GetAttribute("WuBaseTextSize")
@@ -8209,12 +8287,50 @@ task.spawn(function()
                                             inst:SetAttribute("WuBaseTextSize", origin)
                                         end
                                         inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 10, 40)
+                                        pcall(function()
+                                            inst.FontFace = face
+                                        end)
                                     end
                                 end
                             end
                         end
                     end
-                end)
+                end
+            end)
+            WuSaveUIConfig()
+        end
+
+        -- 启动时应用已记忆的缩放/字体
+        task.defer(function()
+            task.wait(0.25)
+            WuApplyScale(getgenv().WuUIScale or 1)
+            WuApplyFontStyle()
+        end)
+
+        SettingsPage:Section("字体")
+        SettingsPage:Slider({
+            Title = "字体大小(%)",
+            Min = 80,
+            Max = 140,
+            Value = math.floor((getgenv().WuFontScale or 1) * 100 + 0.5),
+            Rounding = 0,
+            Suffix = "%",
+            Callback = function(v)
+                getgenv().WuFontScale = (tonumber(v) or 100) / 100
+                WuApplyFontStyle()
+            end
+        })
+        SettingsPage:Dropdown({
+            Title = "字体粗细",
+            List = { "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Heavy" },
+            Value = tostring(getgenv().WuFontWeight or "Bold"),
+            Multi = false,
+            Callback = function(v)
+                if type(v) == "table" then
+                    for k, on in pairs(v) do if on then v = k break end end
+                end
+                getgenv().WuFontWeight = tostring(v or "Bold")
+                WuApplyFontStyle()
             end
         })
 
