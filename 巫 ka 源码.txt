@@ -105,6 +105,8 @@ local ExtraBoss = Tabs.Extra:AddRightGroupbox("Boss 传送")
 local S = {
     AutoFarm = false,
     AutoFarmEnemy = false, -- 只打敌人，不打建筑
+    EnemyDetectRange = 140,
+    StuckSuicide = false, -- 升高后仍卡住约 5 秒自杀
     AutoRespawn = false,
     AutoEscape = false,
     DoubleSpeed = false,
@@ -228,6 +230,8 @@ local stuckPos = nil
 local stuckSince = 0
 local stuckSkillFired = false
 local stuckHopFired = false
+local stuckSuicideFired = false
+local stuckHopAt = 0
 local clearingBuilding = nil
 
 local function pressKey(key)
@@ -353,7 +357,10 @@ local function collectEnemyCandidates(pos, useHP, useDist, hpLimit, distLimit)
                 local okE, thrp, hum, p = isValidEnemyCharacter(char, pos)
                 if okE and thrp and hum and p then
                     local d = dist2(pos, p)
-                    if d <= ENEMY_MAX_RANGE then
+                    local maxR = tonumber(S.EnemyDetectRange) or ENEMY_MAX_RANGE
+                    if maxR < 20 then maxR = 20 end
+                    if maxR > 2000 then maxR = 2000 end
+                    if d <= maxR then
                         local pass = true
                         if useHP and hum.Health > hpLimit then pass = false end
                         if useDist and d > distLimit then pass = false end
@@ -622,6 +629,8 @@ RunService.Heartbeat:Connect(function()
             stuckSince = tick()
             stuckSkillFired = false
             stuckHopFired = false
+            stuckSuicideFired = false
+            stuckHopAt = 0
         else
             local elapsed = tick() - stuckSince
             if elapsed > 2 and not stuckSkillFired then
@@ -640,10 +649,41 @@ RunService.Heartbeat:Connect(function()
                     hum:Move(Vector3.zero, false)
                 end)
                 setHoldW(false)
+                -- 升高只更新水平参照点，不重算整段卡住计时
                 stuckPos = dest
-                stuckSince = tick()
+                stuckHopAt = tick()
                 stuckSkillFired = false
                 print("[Kaiju] 卡住 11 秒，小幅升高绕障")
+            end
+            -- 升高后水平位置几乎不变，再约 5 秒 → 自动自杀
+            if S.StuckSuicide and stuckHopFired and stuckHopAt > 0 and not stuckSuicideFired then
+                if (tick() - stuckHopAt) > 5 then
+                    local stillStuck = true
+                    if stuckPos then
+                        local dx = pos.X - stuckPos.X
+                        local dz = pos.Z - stuckPos.Z
+                        if math.sqrt(dx * dx + dz * dz) > 8 then
+                            stillStuck = false
+                        end
+                    end
+                    if stillStuck then
+                        stuckSuicideFired = true
+                        pcall(function()
+                            local c = localPlayer.Character
+                            local h = c and c:FindFirstChildOfClass("Humanoid")
+                            if h and h.Health > 0 then
+                                h.Health = 0
+                                print("[Kaiju] 升高后仍卡住约 5 秒，自动自杀")
+                            end
+                        end)
+                        stuckPos = nil
+                        stuckSince = 0
+                        stuckHopAt = 0
+                    else
+                        -- 已经挪开了，取消自杀等待
+                        stuckHopAt = 0
+                    end
+                end
             end
         end
     else
@@ -651,6 +691,8 @@ RunService.Heartbeat:Connect(function()
         stuckSince = 0
         stuckSkillFired = false
         stuckHopFired = false
+        stuckSuicideFired = false
+        stuckHopAt = 0
     end
 
     -- 目标失效 / 幽灵目标则松开并重选（防河岸对着空气狂按）
@@ -1286,6 +1328,29 @@ FarmLeft:AddToggle("AutoFarmEnemy", {
     Callback = function(v)
         S.AutoFarmEnemy = v
         if v then pcall(function() localPlayer.CameraMode = Enum.CameraMode.Classic end) end
+    end,
+})
+FarmLeft:AddInput("EnemyDetectRange", {
+    Text = "敌人检测范围",
+    Default = "140",
+    Placeholder = "stud，默认 140，建议 40~300",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        if n and n >= 20 then
+            S.EnemyDetectRange = math.clamp(n, 20, 2000)
+        else
+            S.EnemyDetectRange = 140
+        end
+        print("[Kaiju] 敌人检测范围 =", S.EnemyDetectRange)
+    end,
+})
+FarmLeft:AddToggle("StuckSuicide", {
+    Text = "卡住后自动自杀",
+    Default = false,
+    Tooltip = "升高绕障后若水平位置几乎不变约 5 秒则自杀（可配合自动复活）",
+    Callback = function(v)
+        S.StuckSuicide = v
     end,
 })
 FarmLeft:AddToggle("AutoEscape", {
@@ -2509,7 +2574,7 @@ ExtraLeft:AddButton({
         S.BossTP = false
         S.AutoBoss = false
         pcall(function()
-            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","ESPLevel","ESPHP","AutoRadiation","SafeSkill","BossTP","AutoBoss"}) do
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","StuckSuicide","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","ESPLevel","ESPHP","AutoRadiation","SafeSkill","BossTP","AutoBoss"}) do
                 if Toggles[name] then Toggles[name]:SetValue(false) end
             end
         end)
