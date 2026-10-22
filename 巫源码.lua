@@ -169,6 +169,7 @@ pcall(function()
     end
 end)
 
+local keyOk = false -- 声明在外层，避免备用卡密框泄漏成全局变量
 local Patriot
 do
     local okP, resP = pcall(function()
@@ -202,7 +203,7 @@ if not Patriot then
         title.Text, title.TextColor3, title.Font, title.TextSize = "巫 script · 输入卡密", Color3.new(1,1,1), Enum.Font.GothamBold, 16
         local tb = Instance.new("TextBox", f)
         tb.Size, tb.Position = UDim2.new(1, -20, 0, 34), UDim2.fromOffset(10, 48)
-        tb.PlaceholderText, tb.Text = "by wu", ""
+        tb.PlaceholderText, tb.Text = "请输入卡密", ""
         tb.BackgroundColor3, tb.TextColor3 = Color3.fromRGB(35, 38, 45), Color3.new(1,1,1)
         Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 6)
         local btn = Instance.new("TextButton", f)
@@ -312,7 +313,7 @@ Patriot.Theme = {
 Patriot.Shop = { Enabled = false }
 Patriot.Changelog = {}
 
-local keyOk = false
+keyOk = false
 local keyClosed = false
 Patriot.Callbacks.OnSuccess = function()
     keyOk = true
@@ -718,6 +719,11 @@ local okLib, Library = pcall(function()
         local keybind = opts.ToggleKey or opts.Keybind or Enum.KeyCode.RightControl
         local scale = tonumber(opts.Scale) or 0.95
 
+        -- 创建前记录已有 ScreenGui，创建后取差集即为本窗口（不再按文字全局扫描）
+        local wuHost = (gethui and gethui()) or game:GetService("CoreGui")
+        local before = {}
+        for _, g in ipairs(wuHost:GetChildren()) do before[g] = true end
+
         local rawWin = MH:CreateWindow({
             Title = title,
             Description = subtitle,
@@ -729,23 +735,32 @@ local okLib, Library = pcall(function()
             Tags = { {"巫", "sparkles"} },
         })
 
-        -- 尽量给根 GUI 打标，方便缩放只影响本 UI
-        task.defer(function()
-            pcall(function()
-                local host = (gethui and gethui()) or game:GetService("CoreGui")
-                for _, sg in ipairs(host:GetChildren()) do
-                    if sg:IsA("ScreenGui") then
-                        for _, d in ipairs(sg:GetDescendants()) do
-                            if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫 script") then
-                                sg:SetAttribute("WuScriptUI", true)
-                                getgenv().WuScript_GUI = sg
-                                return
-                            end
+        -- 给根 GUI 打标，缩放/字体只影响本 UI
+        local function markGui(sg)
+            sg:SetAttribute("WuScriptUI", true)
+            getgenv().WuScript_GUI = sg
+        end
+        for _, g in ipairs(wuHost:GetChildren()) do
+            if g:IsA("ScreenGui") and not before[g] then
+                markGui(g)
+                break
+            end
+        end
+        if not getgenv().WuScript_GUI or getgenv().WuScript_GUI.Parent == nil then
+            -- 兜底：库可能延迟创建 GUI，最多等 2 秒按新增子节点定位（只扫一次）
+            task.spawn(function()
+                local t0 = tick()
+                while tick() - t0 < 2 and not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) do
+                    for _, g in ipairs(wuHost:GetChildren()) do
+                        if g:IsA("ScreenGui") and not before[g] then
+                            markGui(g)
+                            return
                         end
                     end
+                    task.wait(0.1)
                 end
             end)
-        end)
+        end
 
         local Window = {}
         Window._raw = rawWin
@@ -859,36 +874,6 @@ local Window = Library:Window({
     AutoScale = false,
 })
 
--- 保险：绝不改非巫 UI 的 UIScale；若发现误伤则还原为 1
-task.defer(function()
-    task.wait(0.2)
-    pcall(function()
-        local function isWu(inst)
-            local r = inst
-            for _ = 1, 25 do
-                if not r then return false end
-                if r:GetAttribute("WuScriptUI") then return true end
-                if r:IsA("ScreenGui") then
-                    for _, d in ipairs(r:GetDescendants()) do
-                        if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫 script") then
-                            return true
-                        end
-                    end
-                    return false
-                end
-                r = r.Parent
-            end
-            return false
-        end
-        local host = (gethui and gethui()) or game:GetService("CoreGui")
-        for _, us in ipairs(host:GetDescendants()) do
-            if us:IsA("UIScale") and us.Name == "WuOnlyUIScale" and not isWu(us) then
-                us:Destroy()
-            end
-        end
-    end)
-end)
-
 local function notify(title, desc, dur)
     pcall(function()
         Library:Notification({
@@ -997,9 +982,17 @@ do
     end
 
     local _NewPage = Window.NewPage
+    -- 每个页签配独立图标（图标名为 MugiHub/Lucide 风格，库里没有的会自动退回 "folder"）
+    local WU_TAB_ICONS = {
+        ["通用功能"] = "home", ["皮移植"] = "shirt", ["服务器信息"] = "server",
+        ["通用1"] = "layers", ["范围设置"] = "target", ["甩飞与传送"] = "zap",
+        ["工具"] = "wrench", ["趣味"] = "smile", ["各类服务器脚本"] = "gamepad-2",
+        ["ESP"] = "eye", ["额外功能"] = "plus-circle", ["自瞄"] = "crosshair",
+        ["玩家管理"] = "users", ["更多脚本"] = "folder",
+    }
     function Window:AddTab(name)
         local ok, page = pcall(function()
-            return _NewPage(self, { Title = tostring(name), Desc = "", Icon = "plus" })
+            return _NewPage(self, { Title = tostring(name), Desc = "", Icon = WU_TAB_ICONS[tostring(name)] or "folder" })
         end)
         if not ok then
             warn("[巫] NewPage失败", name, page)
@@ -1027,49 +1020,14 @@ do
 end
 
 getgenv().WuRealWindow = Window
--- 标记巫 UI，缩放时只动自己
-task.defer(function()
-    task.wait(0.3)
-    pcall(function()
-        local host = (gethui and gethui()) or game:GetService("CoreGui")
-        for _, g in ipairs(host:GetDescendants()) do
-            if (g:IsA("TextLabel") or g:IsA("TextButton")) and tostring(g.Text):find("巫 script") then
-                local r = g
-                while r and not r:IsA("ScreenGui") do r = r.Parent end
-                if r then r:SetAttribute("WuScriptUI", true) end
-            end
-        end
-    end)
-end)
-
 -- 放大窗口边缘拉伸热区（仅巫 script 窗口，绝不改 Delta 等其它 UI）
 task.defer(function()
     task.wait(0.5)
     pcall(function()
-        local function isWuRoot(inst)
-            local r = inst
-            for _ = 1, 20 do
-                if not r then return false end
-                if r:GetAttribute("WuScriptUI") == true then return true end
-                if r:IsA("ScreenGui") then
-                    for _, d in ipairs(r:GetDescendants()) do
-                        if (d:IsA("TextLabel") or d:IsA("TextButton")) then
-                            local tx = tostring(d.Text)
-                            if tx == "巫 script" or tx:find("巫 script") then
-                                return true
-                            end
-                        end
-                    end
-                    return false
-                end
-                r = r.Parent
-            end
-            return false
-        end
-
-        local host = (gethui and gethui()) or game:GetService("CoreGui")
-        for _, btn in ipairs(host:GetDescendants()) do
-            if btn:IsA("TextButton") and isWuRoot(btn) then
+        local root = getgenv().WuScript_GUI
+        if not root then return end
+        for _, btn in ipairs(root:GetDescendants()) do
+            if btn:IsA("TextButton") then
                 local sz = btn.Size
                 if sz.X.Offset > 0 and sz.X.Offset <= 6 and sz.Y.Scale >= 0.9 then
                     local w = 18
@@ -1094,6 +1052,27 @@ task.defer(function()
         end
     end)
 end)
+
+-- 统一的"加载远程脚本"按钮回调：防重复点击；失败时清除标记，允许重试
+local function WuLoader(url, doneMsg)
+    return function()
+        if _G.LoadedScripts[url] then
+            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[url] = true
+        local ok, err = pcall(function()
+            loadstring(game:HttpGet(url))()
+        end)
+        if ok then
+            Window:Notify({Title = "提示", Content = doneMsg or "已加载", Duration = 2})
+        else
+            _G.LoadedScripts[url] = nil
+            warn("[巫 script] 加载失败:", url, err)
+            Window:Notify({Title = "加载失败", Content = "网络或脚本出错，可再点一次重试", Duration = 3})
+        end
+    end
+end
 
 local okFeat, errFeat = pcall(function()
 local MainTab = Window:AddTab("通用功能")
@@ -1859,18 +1838,7 @@ ToolSection:AddButton({
 
 ToolSection:AddButton({
     Name = "帧率优化2",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps3"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "帧率优化2已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 帧率优化2", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps3", "已加载 帧率优化2")
 })
 
 -------------------------------------------------
@@ -1918,18 +1886,7 @@ end})
 -- ===== 加载 hitbox 扩展器（带防重复） =====
 HitboxSection:AddButton({
     Name = "点击加载hitbox扩展器",
-    Callback = function()
-        local url = "https://pastefy.app/ItfO0tdg/raw"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "hitbox扩展器已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "hitbox扩展器已加载", Duration = 2})
-    end
+    Callback = WuLoader("https://pastefy.app/ItfO0tdg/raw", "hitbox扩展器已加载")
 })
 
 -------------------------------------------------
@@ -2603,18 +2560,7 @@ UtilSection2:AddButton({
 
 UtilSection2:AddButton({
     Name = "防挂机",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Proxylol/roblox-scripts/refs/heads/main/AntiAFK.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "防挂机已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 防挂机", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Proxylol/roblox-scripts/refs/heads/main/AntiAFK.lua", "已加载 防挂机")
 })
 
 local autoInteractEnabled = false
@@ -3187,17 +3133,7 @@ MiscSection:AddButton({
 local function addToolButton(name, url, notifyContent)
     MiscSection:AddButton({
         Name = name,
-        Callback = function()
-            if _G.LoadedScripts[url] then
-                Window:Notify({Title = "提示", Content = name .. " 已加载，请勿重复点击", Duration = 2})
-                return
-            end
-            _G.LoadedScripts[url] = true
-            pcall(function()
-                loadstring(game:HttpGet(url))()
-            end)
-            Window:Notify({Title = "提示", Content = notifyContent or name .. " 已加载", Duration = 2})
-        end
+        Callback = WuLoader(url, notifyContent or (name .. " 已加载")),
     })
 end
 
@@ -3210,7 +3146,56 @@ addToolButton("黑洞特效", "https://rawscripts.net/raw/Universal-Script-Super
 -- 标签页 8：服务器脚本
 -------------------------------------------------
 local Tab6 = Window:AddTab("各类服务器脚本")
+
+-- 快速搜索：输入关键字回车 → 下方下拉只列出匹配项 → 选中即加载（脚本太多时不用一直滑）
+local WuTsbIndex = {}
+local WuTsbDrop
+local function WuTsbSetOptions(list)
+    if WuTsbDrop and type(WuTsbDrop.SetOptions) == "function" then
+        pcall(function() WuTsbDrop:SetOptions(list) end)
+    end
+end
+local SearchSection = Tab6:AddSection("快速搜索")
+SearchSection:AddTextbox({
+    Name = "搜索脚本（输入关键字回车）",
+    Placeholder = "例如 doors / 战争 / blox",
+    Callback = function(text)
+        text = tostring(text or ""):lower()
+        local hits = {}
+        for _, e in ipairs(WuTsbIndex) do
+            if text == "" or e.name:lower():find(text, 1, true) then
+                table.insert(hits, e.name)
+            end
+        end
+        WuTsbSetOptions(hits)
+        Window:Notify({Title = "搜索", Content = "找到 " .. #hits .. " 个", Duration = 2})
+    end
+})
+WuTsbDrop = SearchSection:AddDropdown({
+    Name = "搜索结果（选中即加载）",
+    Options = {},
+    Callback = function(sel)
+        if type(sel) == "table" then sel = sel[1] end
+        for _, e in ipairs(WuTsbIndex) do
+            if e.name == sel then
+                pcall(e.cb)
+                return
+            end
+        end
+    end
+})
+
 local TsbSection = Tab6:AddSection("服务器脚本")
+do
+    -- 记录每个按钮，供上面的搜索使用
+    local rawAdd = TsbSection.AddButton
+    TsbSection.AddButton = function(self, opts)
+        if type(opts) == "table" and opts.Name and opts.Callback then
+            table.insert(WuTsbIndex, { name = tostring(opts.Name), cb = opts.Callback })
+        end
+        return rawAdd(self, opts)
+    end
+end
 
 -- 翻译脚本放最上面（不带编号）
 TsbSection:AddButton({
@@ -3237,328 +3222,102 @@ TsbSection:AddButton({
 
 TsbSection:AddButton({
     Name = "1. tsb脚本",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/ATrainz/Phantasm/refs/heads/main/Games/TSB.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 tsb脚本", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/ATrainz/Phantasm/refs/heads/main/Games/TSB.lua", "已加载 tsb脚本")
 })
 
 TsbSection:AddButton({
     Name = "2. 内脏与黑火药4.1",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/wzhxll/Invincible-Willow-Leaf/refs/heads/main/Skin%20HUB%204.1.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 内脏与黑火药4.1", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/wzhxll/Invincible-Willow-Leaf/refs/heads/main/Skin%20HUB%204.1.lua", "已加载 内脏与黑火药4.1")
 })
 
 TsbSection:AddButton({
     Name = "3. doors最佳剧本",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/bocaj111004/Abysall/refs/heads/main/Loader.luau"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 doors最佳剧本", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/bocaj111004/Abysall/refs/heads/main/Loader.luau", "已加载 doors最佳剧本")
 })
 
 TsbSection:AddButton({
     Name = "4. 被遗弃",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 被遗弃", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/lua", "已加载 被遗弃")
 })
 
 TsbSection:AddButton({
     Name = "5. 动物医院",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download"
-        local key = "动物医院"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 动物医院", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 动物医院")
 })
 
 TsbSection:AddButton({
     Name = "6. 储存猎人:开发世界",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download"
-        local key = "储存猎人:开发世界"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 储存猎人:开发世界", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 储存猎人:开发世界")
 })
 
 TsbSection:AddButton({
     Name = "7. 彩虹朋友",
-    Callback = function()
-        local url = "https://wilonity.xyz/script-hub.lua"
-        local key = "彩虹朋友"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 彩虹朋友", Duration = 2})
-    end
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 彩虹朋友")
 })
 
 TsbSection:AddButton({
     Name = "8. 暴力区",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download"
-        local key = "暴力区"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 暴力区", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 暴力区")
 })
 
 TsbSection:AddButton({
     Name = "9. 竞争对手",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/imshrak/rivals/refs/heads/main/main"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 竞争对手", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/imshrak/rivals/refs/heads/main/main", "已加载 竞争对手")
 })
 
 TsbSection:AddButton({
     Name = "10. 狙击竞技场",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/imshrak/sniperarena/main/menu"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 狙击竞技场", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/imshrak/sniperarena/main/menu", "已加载 狙击竞技场")
 })
 
 TsbSection:AddButton({
     Name = "11. 出售柠檬",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/tempvoxels-web/Sell-Lemons/refs/heads/main/unobfus-sell-lemons-v1.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 出售柠檬", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/tempvoxels-web/Sell-Lemons/refs/heads/main/unobfus-sell-lemons-v1.lua", "已加载 出售柠檬")
 })
 
 TsbSection:AddButton({
     Name = "12. 养鸡场",
-    Callback = function()
-        local url = "https://pastefy.app/qBmAubwR/raw"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 养鸡场", Duration = 2})
-    end
+    Callback = WuLoader("https://pastefy.app/qBmAubwR/raw", "已加载 养鸡场")
 })
 
 TsbSection:AddButton({
     Name = "13. the mimic",
-    Callback = function()
-        local url = "https://wilonity.xyz/script-hub.lua"
-        local key = "the mimic"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 the mimic", Duration = 2})
-    end
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 the mimic")
 })
 
 TsbSection:AddButton({
     Name = "14. 已追捕",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/ATGFAIL/ATGHub/main/Dark-Deception-Hunted.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 已追捕", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/ATGFAIL/ATGHub/main/Dark-Deception-Hunted.lua", "已加载 已追捕")
 })
 
 TsbSection:AddButton({
     Name = "15. 一键点击",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/ishakkakosik/FluxX/refs/heads/main/FluxX.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 一键点击", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/ishakkakosik/FluxX/refs/heads/main/FluxX.lua", "已加载 一键点击")
 })
 
 TsbSection:AddButton({
     Name = "16. 驾驶帝国",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Kenniel123/Axonic-Driving-Empire/refs/heads/main/Axonic%20Driving%20Empire"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 驾驶帝国", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Kenniel123/Axonic-Driving-Empire/refs/heads/main/Axonic%20Driving%20Empire", "已加载 驾驶帝国")
 })
 
 TsbSection:AddButton({
     Name = "17. 刀战竞技场",
-    Callback = function()
-        local url = "https://pastefy.app/iizD2kA3/raw"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 刀战竞技场", Duration = 2})
-    end
+    Callback = WuLoader("https://pastefy.app/iizD2kA3/raw", "已加载 刀战竞技场")
 })
 
 TsbSection:AddButton({
     Name = "18. 军火库",
-    Callback = function()
-        local url = "https://trace-host.vercel.app/trace.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 军火库", Duration = 2})
-    end
+    Callback = WuLoader("https://trace-host.vercel.app/trace.lua", "已加载 军火库")
 })
 
 TsbSection:AddButton({
     Name = "19. 进击泰坦革命",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/TITANIC-HUB/THUB/main/Loader.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 进击泰坦革命", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/TITANIC-HUB/THUB/main/Loader.lua", "已加载 进击泰坦革命")
 })
 
 TsbSection:AddButton({
     Name = "20. 吃播游戏",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download"
-        local key = "吃播游戏"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 吃播游戏", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 吃播游戏")
 })
 
 TsbSection:AddButton({
@@ -3579,329 +3338,102 @@ TsbSection:AddButton({
 
 TsbSection:AddButton({
     Name = "22. +1速度逃离键盘",
-    Callback = function()
-        local url = "https://pastebin.com/raw/JML4K8L8"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 +1速度逃离键盘", Duration = 2})
-    end
+    Callback = WuLoader("https://pastebin.com/raw/JML4K8L8", "已加载 +1速度逃离键盘")
 })
 
 TsbSection:AddButton({
     Name = "23. 学乱",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download"
-        local key = "学乱"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 学乱", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 学乱")
 })
 
 TsbSection:AddButton({
     Name = "24. nico的下一个机器人",
-    Callback = function()
-        local url = "https://gist.githubusercontent.com/olivernodex/e77feda9ee5cafac0a0a26d63ecbad5e/raw/NicosMenu.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 nico的下一个机器人", Duration = 2})
-    end
+    Callback = WuLoader("https://gist.githubusercontent.com/olivernodex/e77feda9ee5cafac0a0a26d63ecbad5e/raw/NicosMenu.lua", "已加载 nico的下一个机器人")
 })
 
 TsbSection:AddButton({
     Name = "25. 方块侏罗纪自动刷",
-    Callback = function()
-        local url = "https://obfuscatorhub.onrender.com/api/8ea6z3xd"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 方块侏罗纪自动刷", Duration = 2})
-    end
+    Callback = WuLoader("https://obfuscatorhub.onrender.com/api/8ea6z3xd", "已加载 方块侏罗纪自动刷")
 })
 
 TsbSection:AddButton({
     Name = "26. 破坏者谜团",
-    Callback = function()
-        local url = "https://cdn.cdnpastebin.com/api/paste/XejZw89q/raw"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 破坏者谜团", Duration = 2})
-    end
+    Callback = WuLoader("https://cdn.cdnpastebin.com/api/paste/XejZw89q/raw", "已加载 破坏者谜团")
 })
 
 TsbSection:AddButton({
     Name = "27. 墨水游戏",
-    Callback = function()
-        local url = "https://wilonity.xyz/script-hub.lua"
-        local key = "墨水游戏"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 墨水游戏", Duration = 2})
-    end
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 墨水游戏")
 })
 
 TsbSection:AddButton({
     Name = "28. blox fruit",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Kenniel123/BloxFruits/refs/heads/main/BloxFruits"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 blox fruit", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Kenniel123/BloxFruits/refs/heads/main/BloxFruits", "已加载 blox fruit")
 })
 
 TsbSection:AddButton({
     Name = "29. 监狱人生强力剧本",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/idkazul/b/main/script.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 监狱人生强力剧本", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/idkazul/b/main/script.lua", "已加载 监狱人生强力剧本")
 })
 
 TsbSection:AddButton({
     Name = "30. 柔术战场",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/elopz-dev/Elopez/refs/heads/main/leakd_obfuscated.lua%20(2).txt"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 柔术战场", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/elopz-dev/Elopez/refs/heads/main/leakd_obfuscated.lua%20(2).txt", "已加载 柔术战场")
 })
 
 TsbSection:AddButton({
     Name = "31. 成长斗兽鸡",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "成长斗兽鸡"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 成长斗兽鸡", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 成长斗兽鸡")
 })
 
 TsbSection:AddButton({
     Name = "32. 挖掘和清洗",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "挖掘和清洗"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 挖掘和清洗", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 挖掘和清洗")
 })
 
 TsbSection:AddButton({
     Name = "33. 刀波球",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joshhhie/rise/refs/heads/main/loader.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 刀波球", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joshhhie/rise/refs/heads/main/loader.lua", "已加载 刀波球")
 })
 
 TsbSection:AddButton({
     Name = "34. 圣地亚哥角色扮演",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Floysy/Roblox-scripts/refs/heads/main/SanDiegoBorderRP.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 圣地亚哥角色扮演", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Floysy/Roblox-scripts/refs/heads/main/SanDiegoBorderRP.lua", "已加载 圣地亚哥角色扮演")
 })
 
 TsbSection:AddButton({
     Name = "35. 贪婪的种植者",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "贪婪的种植者"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 贪婪的种植者", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 贪婪的种植者")
 })
 
 TsbSection:AddButton({
     Name = "36. 在山上采矿",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "在山上采矿"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 在山上采矿", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 在山上采矿")
 })
 
 TsbSection:AddButton({
     Name = "37. 蓝锁：竞争对手",
-    Callback = function()
-        local url = "https://wilonity.xyz/script-hub.lua"
-        local key = "蓝锁：竞争对手"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 蓝锁：竞争对手", Duration = 2})
-    end
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 蓝锁：竞争对手")
 })
 
 TsbSection:AddButton({
     Name = "38. 实用篮球",
-    Callback = function()
-        local url = "https://gist.githubusercontent.com/Lua-Hemisphere/fce3025e29f51cae9285dbffa436199c/raw/gistfile1.txt"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 实用篮球", Duration = 2})
-    end
+    Callback = WuLoader("https://gist.githubusercontent.com/Lua-Hemisphere/fce3025e29f51cae9285dbffa436199c/raw/gistfile1.txt", "已加载 实用篮球")
 })
 
 TsbSection:AddButton({
     Name = "39. the rake",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/unrexl/Scripts/refs/heads/main/TheRakev2"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 the rake", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/unrexl/Scripts/refs/heads/main/TheRakev2", "已加载 the rake")
 })
 
 TsbSection:AddButton({
     Name = "40. 森林中的 99 夜",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/caomod2077/Script/refs/heads/main/FoxnameHub.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 森林中的 99 夜", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/caomod2077/Script/refs/heads/main/FoxnameHub.lua", "已加载 森林中的 99 夜")
 })
 
 TsbSection:AddButton({
     Name = "41. Blox Strike",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/604034a335c161140a71b2aba35d61e3df97b9f3721c2a7e01e99d015222f069/download"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 Blox Strike", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/604034a335c161140a71b2aba35d61e3df97b9f3721c2a7e01e99d015222f069/download", "已加载 Blox Strike")
 })
 
 TsbSection:AddButton({
@@ -3922,67 +3454,22 @@ TsbSection:AddButton({
 
 TsbSection:AddButton({
     Name = "43. 一次尘土飞扬的旅行",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/xelorascripts/aDustyTrip/main/script.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 一次尘土飞扬的旅行", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/xelorascripts/aDustyTrip/main/script.lua", "已加载 一次尘土飞扬的旅行")
 })
 
 TsbSection:AddButton({
     Name = "44. 独自在家",
-    Callback = function()
-        local url = "https://rawscripts.net/raw/Home-Alone-HORROR-WIP-gui-v1-27061"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 独自在家", Duration = 2})
-    end
+    Callback = WuLoader("https://rawscripts.net/raw/Home-Alone-HORROR-WIP-gui-v1-27061", "已加载 独自在家")
 })
 
 TsbSection:AddButton({
     Name = "45. 刀战",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/AAPVdev/scripts/refs/heads/main/UI_LimbExtender.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 刀战", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/AAPVdev/scripts/refs/heads/main/UI_LimbExtender.lua", "已加载 刀战")
 })
 
 TsbSection:AddButton({
     Name = "46. 偷走一颗蛋",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "偷走一颗蛋"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 偷走一颗蛋", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 偷走一颗蛋")
 })
 
 TsbSection:AddButton({
@@ -4012,85 +3499,27 @@ TsbSection:AddButton({
 
 TsbSection:AddButton({
     Name = "48. 怪物跑者",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Bac0nHck/Scripts/refs/heads/main/MonsterRunners.lua"
-        local key = "怪物跑者"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 怪物跑者", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Bac0nHck/Scripts/refs/heads/main/MonsterRunners.lua", "已加载 怪物跑者")
 })
 
 TsbSection:AddButton({
     Name = "49. 兵工厂",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/MyxRojav/MYXHUB/refs/heads/main/myxarsenal.lua"
-        local key = "兵工厂"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 兵工厂", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/MyxRojav/MYXHUB/refs/heads/main/myxarsenal.lua", "已加载 兵工厂")
 })
 
 TsbSection:AddButton({
     Name = "50. 合并核弹",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/genduuu/Merge-A-Nuke/refs/heads/main/obfuscated_firebutton_mergenuke.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 合并核弹", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/genduuu/Merge-A-Nuke/refs/heads/main/obfuscated_firebutton_mergenuke.lua", "已加载 合并核弹")
 })
 
 TsbSection:AddButton({
     Name = "51. +1龙卷风逃脱",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua"
-        local key = "+1龙卷风逃脱"
-        if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[key] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 +1龙卷风逃脱", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 +1龙卷风逃脱")
 })
 
 TsbSection:AddButton({
     Name = "52. 钓鱼",
-    Callback = function()
-        local url = "https://api.jnkie.com/api/v1/luascripts/public/4fa5547b587b1f3110ad121fd9650a8256ed00c0c73ae49ecf07d2130a206125/download"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 钓鱼", Duration = 2})
-    end
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/4fa5547b587b1f3110ad121fd9650a8256ed00c0c73ae49ecf07d2130a206125/download", "已加载 钓鱼")
 })
 
 TsbSection:AddButton({
@@ -4112,18 +3541,7 @@ TsbSection:AddButton({
 -- 新增：巫的离家同盟自动刷金币
 TsbSection:AddButton({
     Name = "54. 巫的离开同盟自动刷",
-    Callback = function()
-        local url = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/runaways%E8%87%AA%E5%8A%A8%E9%80%9A%E5%85%B3"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "脚本已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 巫的离开同盟自动刷", Duration = 2})
-    end
+    Callback = WuLoader("https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/runaways%E8%87%AA%E5%8A%A8%E9%80%9A%E5%85%B3", "已加载 巫的离开同盟自动刷")
 })
 
 -- 新增：别回头
@@ -4170,18 +3588,7 @@ TsbSection:AddButton({
 
 TsbSection:AddButton({
     Name = "57. 狂野西部",
-    Callback = function()
-        local url = "https://gitlab.com/soluna-development/api/-/raw/main/src/scripts/The-Wild-West.lua"
-        if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "狂野西部 已加载，请勿重复点击", Duration = 2})
-            return
-        end
-        _G.LoadedScripts[url] = true
-        pcall(function()
-            loadstring(game:HttpGet(url))()
-        end)
-        Window:Notify({Title = "提示", Content = "已加载 狂野西部", Duration = 2})
-    end
+    Callback = WuLoader("https://gitlab.com/soluna-development/api/-/raw/main/src/scripts/The-Wild-West.lua", "已加载 狂野西部")
 })
 
 TsbSection:AddButton({
@@ -4220,6 +3627,13 @@ TsbSection:AddButton({
         Window:Notify({Title = "提示", Content = "已加载 刀战暴力子追（免卡）", Duration = 2})
     end
 })
+
+-- 按钮都登记完毕：搜索下拉先列出全部
+do
+    local all = {}
+    for _, e in ipairs(WuTsbIndex) do table.insert(all, e.name) end
+    WuTsbSetOptions(all)
+end
 
 
 -------------------------------------------------
@@ -7464,60 +6878,25 @@ end)
 
 -------------------------------------------------
 
--- 缩放后强制刷新滚动区域（解决缩小后滑不到底）
+-- 缩放后刷新滚动区域：只用 AutomaticCanvasSize，不再手算 CanvasSize（避免底部多出空白）
 local function WuIsWuScreenGui(sg)
-    if not sg then return false end
-    if sg:GetAttribute("WuScriptUI") == true then return true end
-    -- 标题精确匹配，避免误伤其它 UI
-    for _, d in ipairs(sg:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            local tx = tostring(d.Text)
-            if tx == "巫 script" or tx:find("巫 script") == 1 or tx:find("by wu") then
-                -- by wu 单独不够稳，需与 巫 同屏
-            end
-            if tx:find("巫 script") then
-                return true
-            end
-        end
-    end
-    return false
+    return sg ~= nil and sg == getgenv().WuScript_GUI
+end
+
+local function WuFixScroll(sf)
+    pcall(function()
+        sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        sf.CanvasSize = UDim2.new(0, 0, 0, 0)
+        sf.ScrollingEnabled = true
+    end)
 end
 
 local function WuRefreshScroll()
-    pcall(function()
-        local hosts = {}
-        local h = (gethui and gethui()) or nil
-        if h then table.insert(hosts, h) end
-        pcall(function() table.insert(hosts, game:GetService("CoreGui")) end)
-        pcall(function()
-            local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
-            if pg then table.insert(hosts, pg) end
-        end)
-
-        local seen = {}
-        for _, host in ipairs(hosts) do
-            for _, sg in ipairs(host:GetChildren()) do
-                if sg:IsA("ScreenGui") and WuIsWuScreenGui(sg) and not seen[sg] then
-                    seen[sg] = true
-                    sg:SetAttribute("WuScriptUI", true)
-                    for _, sf in ipairs(sg:GetDescendants()) do
-                        if sf:IsA("ScrollingFrame") then
-                            pcall(function()
-                                sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
-                                sf.ScrollingEnabled = true
-                                local layout = sf:FindFirstChildOfClass("UIListLayout")
-                                    or sf:FindFirstChildOfClass("UIGridLayout")
-                                if layout then
-                                    local y = layout.AbsoluteContentSize.Y + 40
-                                    sf.CanvasSize = UDim2.new(0, 0, 0, math.max(y * 1.15 + 60, sf.AbsoluteSize.Y + 40))
-                                end
-                            end)
-                        end
-                    end
-                end
-            end
-        end
-    end)
+    local root = getgenv().WuScript_GUI
+    if not root or not root.Parent then return end
+    for _, sf in ipairs(root:GetDescendants()) do
+        if sf:IsA("ScrollingFrame") then WuFixScroll(sf) end
+    end
 end
 
 getgenv().WuRefreshScroll = WuRefreshScroll
@@ -7537,83 +6916,41 @@ task.spawn(function()
 
         SettingsPage:Section("界面")
 
-        -- 只缩放「巫 script」窗口，不影响 Delta 等其它 UI
-        local function WuIsOurGui(obj)
-            local r = obj
-            for _ = 1, 15 do
-                if not r then return false end
-                if r:GetAttribute("WuScriptUI") == true then return true end
-                if r:IsA("ScreenGui") or r:IsA("Frame") then
-                    for _, d in ipairs(r:GetDescendants()) do
-                        if (d:IsA("TextLabel") or d:IsA("TextButton")) then
-                            local tx = tostring(d.Text)
-                            if tx:find("巫 script") or tx:find("巫script") then
-                                return true
-                            end
-                        end
-                    end
-                end
-                r = r.Parent
+        -- 防抖：滑条拖动时只在停手 0.25 秒后才真正应用并存盘
+        local function WuDebounce(delay, fn)
+            local token = 0
+            return function(...)
+                token = token + 1
+                local my, args = token, table.pack(...)
+                task.delay(delay, function()
+                    if my == token then fn(table.unpack(args, 1, args.n)) end
+                end)
             end
-            return false
         end
 
         local function WuApplyScale(scale)
             scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
             getgenv().WuUIScale = scale
-            pcall(function()
-                local host = (gethui and gethui()) or game:GetService("CoreGui")
-                -- 优先：已标记的巫 UI 根
-                local roots = {}
-                for _, g in ipairs(host:GetDescendants()) do
-                    if g:IsA("ScreenGui") and WuIsOurGui(g) then
-                        table.insert(roots, g)
-                    end
+            local root = getgenv().WuScript_GUI
+            if not root or not root.Parent then return end
+            local main = root:FindFirstChildWhichIsA("Frame", false)
+            if not main then
+                for _, ch in ipairs(root:GetChildren()) do
+                    if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
                 end
-                -- 也检查 PlayerGui
-                pcall(function()
-                    local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
-                    if pg then
-                        for _, g in ipairs(pg:GetChildren()) do
-                            if g:IsA("ScreenGui") and WuIsOurGui(g) then
-                                table.insert(roots, g)
-                            end
-                        end
-                    end
-                end)
-                for _, root in ipairs(roots) do
-                    root:SetAttribute("WuScriptUI", true)
-                    -- 在窗口主 Frame 上放 UIScale，而不是扫全游戏
-                    local main = root:FindFirstChildWhichIsA("Frame", false)
-                    if not main then
-                        for _, ch in ipairs(root:GetChildren()) do
-                            if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then
-                                main = ch
-                                break
-                            end
-                        end
-                    end
-                    local target = main or root
-                    local us = target:FindFirstChild("WuOnlyUIScale")
-                    if not us then
-                        -- 清掉误加在其它地方的不管；只在我们根下创建专用 Scale
-                        us = Instance.new("UIScale")
-                        us.Name = "WuOnlyUIScale"
-                        us.Parent = target
-                    end
-                    us:SetAttribute("ManualScale", true)
-                    us.Scale = scale
-                end
-            end)
-            task.defer(function()
-                task.wait(0.05)
-                if getgenv().WuRefreshScroll then getgenv().WuRefreshScroll() end
-            end)
-            task.delay(0.2, function()
-                if getgenv().WuRefreshScroll then getgenv().WuRefreshScroll() end
-            end)
+            end
+            local target = main or root
+            local us = target:FindFirstChild("WuOnlyUIScale")
+            if not us then
+                us = Instance.new("UIScale")
+                us.Name = "WuOnlyUIScale"
+                us.Parent = target
+            end
+            us.Scale = scale
+            WuRefreshScroll()
             pcall(WuSaveUIConfig)
         end
+        local WuApplyScaleDebounced = WuDebounce(0.25, WuApplyScale)
 
         SettingsPage:Slider({
             Title = "界面缩放(%)",
@@ -7623,80 +6960,57 @@ task.spawn(function()
             Rounding = 0,
             Suffix = "%",
             Callback = function(v)
-                WuApplyScale((tonumber(v) or 100) / 100)
+                WuApplyScaleDebounced((tonumber(v) or 100) / 100)
             end
         })
 
-        local function WuWeightEnum(name)
-            name = tostring(name or "Bold")
-            local map = {
-                Thin = Enum.FontWeight.Thin,
-                ExtraLight = Enum.FontWeight.ExtraLight,
-                Light = Enum.FontWeight.Light,
-                Regular = Enum.FontWeight.Regular,
-                Medium = Enum.FontWeight.Medium,
-                SemiBold = Enum.FontWeight.SemiBold,
-                Bold = Enum.FontWeight.Bold,
-                ExtraBold = Enum.FontWeight.ExtraBold,
-                Heavy = Enum.FontWeight.Heavy,
-            }
-            return map[name] or Enum.FontWeight.Bold
+        local WU_WEIGHTS = {
+            Thin = Enum.FontWeight.Thin, ExtraLight = Enum.FontWeight.ExtraLight,
+            Light = Enum.FontWeight.Light, Regular = Enum.FontWeight.Regular,
+            Medium = Enum.FontWeight.Medium, SemiBold = Enum.FontWeight.SemiBold,
+            Bold = Enum.FontWeight.Bold, ExtraBold = Enum.FontWeight.ExtraBold,
+            Heavy = Enum.FontWeight.Heavy,
+        }
+
+        -- 只处理巫 UI 自己的 ScreenGui；新增的文字控件会在 DescendantAdded 后自动套用
+        local function WuStyleText(inst, mul, face)
+            if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+                local origin = inst:GetAttribute("WuBaseTextSize")
+                if not origin then
+                    origin = inst.TextSize
+                    inst:SetAttribute("WuBaseTextSize", origin)
+                end
+                inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 10, 40)
+                pcall(function() inst.FontFace = face end)
+            end
         end
 
         local function WuApplyFontStyle()
+            local root = getgenv().WuScript_GUI
+            if not root or not root.Parent then return end
             local mul = tonumber(getgenv().WuFontScale) or 1
-            local wname = tostring(getgenv().WuFontWeight or "Bold")
-            local weight = WuWeightEnum(wname)
-            local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Italic)
-            pcall(function()
-                local hosts = {}
-                local h = (gethui and gethui()) or nil
-                if h then table.insert(hosts, h) end
-                pcall(function() table.insert(hosts, game:GetService("CoreGui")) end)
-                pcall(function()
-                    local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
-                    if pg then table.insert(hosts, pg) end
-                end)
-                for _, host in ipairs(hosts) do
-                    for _, gui in ipairs(host:GetChildren()) do
-                        if gui:IsA("ScreenGui") then
-                            local hasWu = gui:GetAttribute("WuScriptUI") == true
-                            if not hasWu then
-                                for _, d in ipairs(gui:GetDescendants()) do
-                                    if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫") then
-                                        hasWu = true
-                                        break
-                                    end
-                                end
-                            end
-                            if hasWu then
-                                gui:SetAttribute("WuScriptUI", true)
-                                for _, inst in ipairs(gui:GetDescendants()) do
-                                    if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
-                                        local origin = inst:GetAttribute("WuBaseTextSize")
-                                        if not origin then
-                                            origin = inst.TextSize
-                                            inst:SetAttribute("WuBaseTextSize", origin)
-                                        end
-                                        inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 10, 40)
-                                        pcall(function()
-                                            inst.FontFace = face
-                                        end)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
-            WuSaveUIConfig()
+            local weight = WU_WEIGHTS[tostring(getgenv().WuFontWeight or "Bold")] or Enum.FontWeight.Bold
+            -- 原来是 Italic（斜体），中文斜体不好看；想要斜体改成 Enum.FontStyle.Italic
+            local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Normal)
+            for _, inst in ipairs(root:GetDescendants()) do
+                WuStyleText(inst, mul, face)
+            end
+            pcall(WuSaveUIConfig)
         end
+        local WuApplyFontDebounced = WuDebounce(0.25, WuApplyFontStyle)
 
-        -- 启动时应用已记忆的缩放/字体
+        -- 启动时应用已记忆的缩放/字体；之后新增控件（懒加载的页）也补上样式
         task.defer(function()
             task.wait(0.25)
             WuApplyScale(getgenv().WuUIScale or 1)
             WuApplyFontStyle()
+            local root = getgenv().WuScript_GUI
+            if root then
+                root.DescendantAdded:Connect(function(inst)
+                    if inst:IsA("ScrollingFrame") then WuFixScroll(inst) end
+                    WuApplyFontDebounced()
+                end)
+            end
         end)
 
         SettingsPage:Section("字体")
@@ -7709,7 +7023,7 @@ task.spawn(function()
             Suffix = "%",
             Callback = function(v)
                 getgenv().WuFontScale = (tonumber(v) or 100) / 100
-                WuApplyFontStyle()
+                WuApplyFontDebounced()
             end
         })
         SettingsPage:Dropdown({
@@ -7722,7 +7036,7 @@ task.spawn(function()
                     for k, on in pairs(v) do if on then v = k break end end
                 end
                 getgenv().WuFontWeight = tostring(v or "Bold")
-                WuApplyFontStyle()
+                WuApplyFontDebounced()
             end
         })
 
@@ -7761,34 +7075,9 @@ task.spawn(function()
         })
 
         print("[巫 script] 设置板块已创建")
-        -- 初次 + 定时刷新滚动，防止长列表被裁切
+        -- 初次刷新滚动区域（之后新增的 ScrollingFrame 由 DescendantAdded 处理）
         task.defer(WuRefreshScroll)
         task.delay(0.5, WuRefreshScroll)
-        task.delay(1.0, WuRefreshScroll)
-        pcall(function()
-            local hosts = {(gethui and gethui()) or game:GetService("CoreGui")}
-            for _, host in ipairs(hosts) do
-                for _, sg in ipairs(host:GetChildren()) do
-                    if sg:IsA("ScreenGui") and WuIsWuScreenGui(sg) then
-                        for _, sf in ipairs(sg:GetDescendants()) do
-                            if sf:IsA("ScrollingFrame") then
-                                local layout = sf:FindFirstChildOfClass("UIListLayout")
-                                if layout and not layout:GetAttribute("WuScrollHook") then
-                                    layout:SetAttribute("WuScrollHook", true)
-                                    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-                                        pcall(function()
-                                            local y = layout.AbsoluteContentSize.Y + 50
-                                            sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
-                                            sf.CanvasSize = UDim2.new(0, 0, 0, math.max(y * 1.15 + 60, 1))
-                                        end)
-                                    end)
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end)
 
     end)
     if not ok then
