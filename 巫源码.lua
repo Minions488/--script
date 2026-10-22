@@ -508,1473 +508,324 @@ WuApplyAntiCheat()
 
 -- 加载动画已删除（保持极简）
 
-print("[巫 script] 加载 BreezeUI...")
+print("[巫 script] 加载 MugiHub...")
 local okLib, Library = pcall(function()
-    return loadstring([=[-- BreezeUI-based library for 巫 script (Vita-compatible API)
--- Design from Kaisorius/BreezeUI, extended with Slider/Dropdown/Input/Notify
+    local MugiHub = loadstring(game:HttpGet("https://raw.githubusercontent.com/4MugiHub/MugiHub/refs/heads/main/Mugi"))()
+    assert(type(MugiHub) == "table" and type(MugiHub.Library) == "table", "MugiHub.Library 无效")
+    local MH = MugiHub.Library
 
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-
-local player = Players.LocalPlayer
-local Default = Font.fromName("Montserrat", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
-
--- 伪静态玻璃 · iOS 圆润风格
-local Theme = {
-    Accent = Color3.fromRGB(140, 210, 255),
-    Background = Color3.fromRGB(22, 26, 34),
-    Card = Color3.fromRGB(32, 38, 48),
-    Run = Color3.fromRGB(40, 48, 60),
-    Text = Color3.fromRGB(235, 240, 248),
-    TextDim = Color3.fromRGB(160, 170, 185),
-    Border = Color3.fromRGB(200, 220, 255),
-    Knob = Color3.fromRGB(230, 240, 255),
-    GlassMain = 0.18,
-    GlassCard = 0.28,
-    GlassRun = 0.22,
-    GlassBorder = 0.55, -- 更接近无边框：描边很淡
-    RadiusMain = 22,
-    RadiusCard = 16,
-    RadiusBtn = 12,
-}
-
-local function applyGlass(frame, kind)
-    if not frame then return end
-    kind = kind or "card"
-    if kind == "main" then
-        frame.BackgroundTransparency = Theme.GlassMain
-    elseif kind == "run" then
-        frame.BackgroundTransparency = Theme.GlassRun
-    else
-        frame.BackgroundTransparency = Theme.GlassCard
-    end
-end
-
--- 空灵点按音效（多音源轮换，避免单调）
-local CLICK_SOUNDS = {
-    "rbxassetid://6895079853",
-    "rbxassetid://9117382259",
-    "rbxassetid://421058925",
-}
-local _clickIdx = 0
-local function playClickSound()
-    pcall(function()
-        _clickIdx = (_clickIdx % #CLICK_SOUNDS) + 1
-        local s = Instance.new("Sound")
-        s.SoundId = CLICK_SOUNDS[_clickIdx]
-        s.Volume = 0.35
-        s.PlaybackSpeed = 1.05 + math.random() * 0.12
-        s.Parent = game:GetService("SoundService")
-        s:Play()
-        s.Ended:Connect(function()
-            pcall(function() s:Destroy() end)
-        end)
-        task.delay(2, function()
-            pcall(function() s:Destroy() end)
-        end)
-    end)
-end
-
--- 屏幕微抖（抖主窗口，不改摄像机）
-local function shakeGui(target, intensity)
-    intensity = intensity or 3
-    if not target or not target.Parent then return end
-    local origin = target.Position
-    task.spawn(function()
-        for i = 1, 4 do
-            local ox = (math.random() - 0.5) * 2 * intensity
-            local oy = (math.random() - 0.5) * 2 * intensity
-            target.Position = UDim2.new(
-                origin.X.Scale, origin.X.Offset + ox,
-                origin.Y.Scale, origin.Y.Offset + oy
-            )
-            task.wait(0.02)
-        end
-        target.Position = origin
-    end)
-end
-
--- 按钮：放大 + 倾斜 + 高光
-local function bindPressFx(btn, hostFrame)
-    if not btn then return end
-    local sc = btn:FindFirstChild("PressScale")
-    if not sc then
-        sc = Instance.new("UIScale")
-        sc.Name = "PressScale"
-        sc.Scale = 1
-        sc.Parent = btn
-    end
-    local hl = btn:FindFirstChild("PressHighlight")
-    if not hl then
-        hl = Instance.new("Frame")
-        hl.Name = "PressHighlight"
-        hl.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        hl.BackgroundTransparency = 1
-        hl.BorderSizePixel = 0
-        hl.Size = UDim2.fromScale(1, 1)
-        hl.ZIndex = (btn.ZIndex or 1) + 1
-        hl.Active = false
-        hl.Parent = btn
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, Theme.RadiusBtn)
-        c.Parent = hl
-    end
-    btn.MouseButton1Down:Connect(function()
-        playClickSound()
-        TweenService:Create(sc, TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.08}):Play()
-        TweenService:Create(btn, TweenInfo.new(0.1), {Rotation = (math.random() > 0.5 and 4 or -4)}):Play()
-        TweenService:Create(hl, TweenInfo.new(0.1), {BackgroundTransparency = 0.72}):Play()
-        if hostFrame then shakeGui(hostFrame, 2.5) end
-    end)
-    local function release()
-        TweenService:Create(sc, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
-        TweenService:Create(btn, TweenInfo.new(0.16), {Rotation = 0}):Play()
-        TweenService:Create(hl, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
-    end
-    btn.MouseButton1Up:Connect(release)
-    btn.MouseLeave:Connect(release)
-end
-
-local function parentGui(sg)
-    local ok = pcall(function()
-        if gethui then
-            sg.Parent = gethui()
-            return
-        end
-    end)
-    if sg.Parent then return end
-    pcall(function() sg.Parent = game:GetService("CoreGui") end)
-    if not sg.Parent then
-        sg.Parent = player:WaitForChild("PlayerGui")
-    end
-end
-
-local function corner(r, p)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 9)
-    c.Parent = p
-    return c
-end
-
-local function stroke(col, th, p)
-    local s = Instance.new("UIStroke")
-    s.Color = col or Theme.Border
-    s.Thickness = th or 0.9
-    s.Transparency = Theme.GlassBorder or 0.55
-    s.Parent = p
-    return s
-end
-
-local Library = {}
-Library.__index = Library
-
-function Library:SetTheme(th)
-    if type(th) ~= "table" then return end
-    if th.Accent then Theme.Accent = th.Accent end
-    if th.Background then Theme.Background = th.Background end
-    if th.Text then Theme.Text = th.Text end
-    if th.TextDim then Theme.TextDim = th.TextDim end
-end
-
-function Library:Notification(opts)
-    opts = opts or {}
-    local title = tostring(opts.Title or "提示")
-    local desc = tostring(opts.Desc or opts.Content or "")
-    local dur = tonumber(opts.Duration) or 2
-
-    local host = Instance.new("ScreenGui")
-    host.Name = "BreezeNotify"
-    host.ResetOnSpawn = false
-    host.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    host.DisplayOrder = 200
-    parentGui(host)
-
-    local card = Instance.new("Frame")
-    card.AnchorPoint = Vector2.new(1, 0)
-    card.Position = UDim2.new(1, -16, 0, 60)
-    card.Size = UDim2.new(0, 280, 0, 70)
-    card.BackgroundColor3 = Theme.Background
-    card.BackgroundTransparency = Theme.GlassMain
-    card.BorderSizePixel = 0
-    card.Parent = host
-    corner(12, card)
-    local ns = stroke(Theme.Border, 1.2, card)
-    ns.Transparency = 0.4
-
-    local t = Instance.new("TextLabel")
-    t.BackgroundTransparency = 1
-    t.Position = UDim2.new(0, 14, 0, 10)
-    t.Size = UDim2.new(1, -28, 0, 22)
-    t.FontFace = Default
-    t.Text = title
-    t.TextColor3 = Theme.Text
-    t.TextSize = 16
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.Parent = card
-
-    local d = Instance.new("TextLabel")
-    d.BackgroundTransparency = 1
-    d.Position = UDim2.new(0, 14, 0, 34)
-    d.Size = UDim2.new(1, -28, 0, 28)
-    d.FontFace = Default
-    d.Text = desc
-    d.TextColor3 = Theme.TextDim
-    d.TextSize = 13
-    d.TextWrapped = true
-    d.TextXAlignment = Enum.TextXAlignment.Left
-    d.Parent = card
-
-    card.BackgroundTransparency = 1
-    t.TextTransparency = 1
-    d.TextTransparency = 1
-    TweenService:Create(card, TweenInfo.new(0.2), {BackgroundTransparency = 0}):Play()
-    TweenService:Create(t, TweenInfo.new(0.2), {TextTransparency = 0}):Play()
-    TweenService:Create(d, TweenInfo.new(0.2), {TextTransparency = 0}):Play()
-
-    task.delay(dur, function()
+    local function notifyMH(opts)
+        opts = opts or {}
+        local content = opts.Content or opts.Desc or opts.Text or opts.Message or ""
+        local title = opts.Title
+        local delay = tonumber(opts.Duration or opts.Delay) or 3
+        local typ = opts.Type
         pcall(function()
-            TweenService:Create(card, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
-            TweenService:Create(t, TweenInfo.new(0.2), {TextTransparency = 1}):Play()
-            TweenService:Create(d, TweenInfo.new(0.2), {TextTransparency = 1}):Play()
-            task.wait(0.22)
-            host:Destroy()
-        end)
-    end)
-end
-
-function Library:Window(opts)
-    opts = opts or {}
-    local Window = {}
-    local fullWidth, fullHeight = 560, 440
-    local smallWidth, smallHeight = fullWidth * 0.85, fullHeight * 0.85
-
-    local screengui = Instance.new("ScreenGui")
-    screengui.Name = "BreezeUI_Wu"
-    screengui.ResetOnSpawn = false
-    screengui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screengui.DisplayOrder = 50
-    screengui:SetAttribute("WuScriptUI", true)
-    parentGui(screengui)
-    Window.ScreenGui = screengui
-    getgenv().WuScript_GUI = screengui
-
-    local frame = Instance.new("Frame")
-    frame.Name = "Main"
-    frame.AnchorPoint = Vector2.new(0.5, 0.5)
-    frame.BackgroundColor3 = Theme.Background
-    frame.BorderSizePixel = 0
-    frame.Position = UDim2.fromScale(0.5, 0.5)
-    frame.Size = UDim2.new(0, fullWidth, 0, fullHeight)
-    frame.Active = true
-    frame.Parent = screengui
-    applyGlass(frame, "main")
-    corner(Theme.RadiusMain, frame)
-    -- 无边框感：描边极淡
-    local mainStroke = stroke(Theme.Border, 0.8, frame)
-    mainStroke.Transparency = 0.72
-
-    -- 主 UI 打开时背景模糊（Roblox BlurEffect 为全场景；缩小/关闭时关闭）
-    local worldBlur = Instance.new("BlurEffect")
-    worldBlur.Name = "WuGlassBlur"
-    worldBlur.Size = 0
-    worldBlur.Enabled = true
-    pcall(function() worldBlur.Parent = game:GetService("Lighting") end)
-    local function setWorldBlur(on)
-        if not worldBlur or not worldBlur.Parent then return end
-        if on then
-            TweenService:Create(worldBlur, TweenInfo.new(0.28, Enum.EasingStyle.Quad), {Size = 16}):Play()
-        else
-            TweenService:Create(worldBlur, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {Size = 0}):Play()
-        end
-    end
-    setWorldBlur(true)
-    screengui.Destroying:Connect(function()
-        pcall(function()
-            if worldBlur then
-                worldBlur.Size = 0
-                worldBlur:Destroy()
-            end
-        end)
-    end)
-
-    -- 标题区按黄金比例垂直居中（φ≈0.618 落在标题带内），避免原版偏高
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.FontFace = Default
-    title.Position = UDim2.new(0, 20, 0, 14)
-    title.Size = UDim2.new(0.55, 0, 0, 24)
-    title.Text = opts.Title or opts.Name or "巫 script"
-    title.TextColor3 = Theme.Text
-    title.TextSize = 21
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.TextYAlignment = Enum.TextYAlignment.Center
-    title.TextTruncate = Enum.TextTruncate.AtEnd
-    title.Parent = frame
-
-    local desc = Instance.new("TextLabel")
-    desc.BackgroundTransparency = 1
-    desc.FontFace = Default
-    desc.Position = UDim2.new(0, 20, 0, 36)
-    desc.Size = UDim2.new(0.55, 0, 0, 16)
-    desc.Text = opts.SubTitle or opts.Description or "by wu"
-    desc.TextColor3 = Theme.TextDim
-    desc.TextSize = 13
-    desc.TextXAlignment = Enum.TextXAlignment.Left
-    desc.TextYAlignment = Enum.TextYAlignment.Center
-    desc.Parent = frame
-
-    -- Drag
-    local dragging, dragInput, dragStart, startPos
-    local dragHandle = Instance.new("Frame")
-    dragHandle.BackgroundTransparency = 1
-    dragHandle.Size = UDim2.new(1, -150, 0, 48)
-    dragHandle.Position = UDim2.new(0, 0, 0, 0)
-    dragHandle.Active = true
-    dragHandle.ZIndex = 5
-    dragHandle.Parent = frame
-
-    dragHandle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    dragHandle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-
-    -- Top buttons
-    local topBtnHost = Instance.new("Frame")
-    topBtnHost.BackgroundTransparency = 1
-    topBtnHost.Position = UDim2.new(1, -145, 0, 8)
-    topBtnHost.Size = UDim2.new(0, 135, 0, 35)
-    topBtnHost.ZIndex = 10
-    topBtnHost.Parent = frame
-    local tbs = stroke(Theme.Border, 1.2, topBtnHost)
-    tbs.Transparency = 0.4
-    corner(Theme.RadiusBtn, topBtnHost)
-
-    local minimize = Instance.new("TextButton")
-    minimize.BackgroundColor3 = Theme.Run
-    minimize.BackgroundTransparency = Theme.GlassRun
-    minimize.BorderSizePixel = 0
-    minimize.FontFace = Default
-    minimize.TextSize = 22
-    minimize.Position = UDim2.new(0, 8, 0, 5)
-    minimize.Size = UDim2.new(0, 55, 0, 25)
-    minimize.Text = "-"
-    minimize.TextColor3 = Theme.TextDim
-    minimize.AutoButtonColor = false
-    minimize.ZIndex = 11
-    minimize.Active = true
-    minimize.Parent = topBtnHost
-    corner(Theme.RadiusBtn, minimize)
-    bindPressFx(minimize, frame)
-    local minScale = Instance.new("UIScale")
-    minScale.Scale = 1
-    minScale.Parent = minimize
-
-    local closeBtn = Instance.new("TextButton")
-    closeBtn.BackgroundColor3 = Theme.Run
-    closeBtn.BackgroundTransparency = Theme.GlassRun
-    closeBtn.BorderSizePixel = 0
-    closeBtn.FontFace = Default
-    closeBtn.TextSize = 22
-    closeBtn.Position = UDim2.new(1, -63, 0, 5)
-    closeBtn.Size = UDim2.new(0, 55, 0, 25)
-    closeBtn.Text = "×"
-    closeBtn.TextColor3 = Theme.TextDim
-    closeBtn.AutoButtonColor = false
-    closeBtn.ZIndex = 11
-    closeBtn.Active = true
-    closeBtn.Parent = topBtnHost
-    corner(Theme.RadiusBtn, closeBtn)
-    bindPressFx(closeBtn, frame)
-    local closeScale = Instance.new("UIScale")
-    closeScale.Scale = 1
-    closeScale.Parent = closeBtn
-
-    -- Open float button (draggable + trail + tilt)
-    local openFloat = Instance.new("Frame")
-    openFloat.Name = "OpenFloat"
-    openFloat.BackgroundColor3 = Theme.Background
-    openFloat.BackgroundTransparency = Theme.GlassMain
-    openFloat.Position = UDim2.new(0.5, -50, 0.05, 0)
-    openFloat.Size = UDim2.new(0, 100, 0, 36)
-    openFloat.Visible = false
-    openFloat.Active = true
-    openFloat.ZIndex = 80
-    openFloat.Parent = screengui
-    corner(14, openFloat)
-    -- 边缘描边：常态边框；按住时变成贴在按钮边缘的白色泛光（不是背后图层）
-    local openEdge = Instance.new("UIStroke")
-    openEdge.Color = Theme.Border
-    openEdge.Thickness = 1.0
-    openEdge.Transparency = 0.55
-    openEdge.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    openEdge.Parent = openFloat
-    local openLbl = Instance.new("TextLabel")
-    openLbl.BackgroundTransparency = 1
-    openLbl.Size = UDim2.new(1, 0, 1, 0)
-    openLbl.FontFace = Default
-    openLbl.Text = "Open"
-    openLbl.TextColor3 = Theme.Text
-    openLbl.TextSize = 16
-    openLbl.ZIndex = 81
-    openLbl.Parent = openFloat
-    local openBtn = Instance.new("TextButton")
-    openBtn.BackgroundTransparency = 1
-    openBtn.Size = UDim2.new(1, 0, 1, 0)
-    openBtn.Text = ""
-    openBtn.Active = true
-    openBtn.ZIndex = 82
-    openBtn.Parent = openFloat
-    bindPressFx(openBtn, openFloat)
-    local openTilt = Instance.new("UIScale")
-    openTilt.Scale = 1
-    openTilt.Parent = openFloat
-
-    local trailFolder = Instance.new("Folder")
-    trailFolder.Name = "Trails"
-    trailFolder.Parent = screengui
-
-    local function setOpenEdgeGlow(on)
-        if on then
-            TweenService:Create(openEdge, TweenInfo.new(0.12), {
-                Color = Color3.fromRGB(255, 255, 255),
-                Thickness = 2.6,
-                Transparency = 0.12,
-            }):Play()
-        else
-            TweenService:Create(openEdge, TweenInfo.new(0.18), {
-                Color = Theme.Border,
-                Thickness = 1.3,
-                Transparency = 0,
-            }):Play()
-        end
-    end
-
-    local function spawnTrail(pos)
-        -- 块状粒子拖尾（多颗小方块散开）
-        for i = 1, 4 do
-            local size = 6 + math.random(0, 8)
-            local block = Instance.new("Frame")
-            block.BackgroundColor3 = Theme.Accent
-            block.BackgroundTransparency = 0.15 + math.random() * 0.25
-            block.BorderSizePixel = 0
-            block.Size = UDim2.new(0, size, 0, size)
-            block.AnchorPoint = Vector2.new(0.5, 0.5)
-            local jx = (math.random() - 0.5) * 18
-            local jy = (math.random() - 0.5) * 14
-            block.Position = UDim2.new(0, pos.X + jx, 0, pos.Y + jy)
-            block.Rotation = math.random(-25, 25)
-            block.ZIndex = 70
-            block.Parent = trailFolder
-            -- 小圆角方块，保持“一块一块”
-            local c = Instance.new("UICorner")
-            c.CornerRadius = UDim.new(0, 2)
-            c.Parent = block
-            local life = 0.28 + math.random() * 0.25
-            TweenService:Create(block, TweenInfo.new(life, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Position = UDim2.new(0, pos.X + jx + (math.random() - 0.5) * 22, 0, pos.Y + jy + (math.random() - 0.5) * 18),
-                Size = UDim2.new(0, math.max(2, size * 0.35), 0, math.max(2, size * 0.35)),
-                BackgroundTransparency = 1,
-                Rotation = block.Rotation + math.random(-40, 40),
-            }):Play()
-            task.delay(life + 0.05, function()
-                pcall(function() block:Destroy() end)
-            end)
-        end
-    end
-
-    local floatDragging = false
-    local floatDragStart, floatStartPos
-    local floatMoved = false
-    local lastTrailT = 0
-    -- 记住 Open 球最后拖到的位置，避免再次缩小时弹回初始点
-    local lastFloatPos = openFloat.Position
-
-    local function releaseFloat()
-        if not floatDragging then return end
-        floatDragging = false
-        lastFloatPos = openFloat.Position
-        TweenService:Create(openFloat, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {Rotation = 0}):Play()
-        TweenService:Create(openTilt, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {Scale = 1}):Play()
-        setOpenEdgeGlow(false)
-    end
-
-    openBtn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            floatDragging = true
-            floatMoved = false
-            floatDragStart = input.Position
-            floatStartPos = openFloat.Position
-            -- 按住轻微倾斜（固定小角度，避免乱抖）
-            openFloat.Rotation = 8
-            openTilt.Scale = 0.96
-            setOpenEdgeGlow(true)
-        end
-    end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            releaseFloat()
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if not floatDragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            local delta = input.Position - floatDragStart
-            if math.abs(delta.X) > 4 or math.abs(delta.Y) > 4 then
-                floatMoved = true
-            end
-            openFloat.Position = UDim2.new(
-                floatStartPos.X.Scale, floatStartPos.X.Offset + delta.X,
-                floatStartPos.Y.Scale, floatStartPos.Y.Offset + delta.Y
-            )
-            lastFloatPos = openFloat.Position
-            -- 倾斜随水平拖动方向变化（-15° ~ 15°）
-            local tilt = math.clamp(delta.X * 0.08, -15, 15)
-            openFloat.Rotation = tilt
-            local now = tick()
-            if now - lastTrailT > 0.032 then
-                lastTrailT = now
-                local abs = openFloat.AbsolutePosition
-                local sz = openFloat.AbsoluteSize
-                local len = math.sqrt(delta.X * delta.X + delta.Y * delta.Y)
-                local ox, oy = -sz.X * 0.45, 0
-                if len > 1 then
-                    ox = -(delta.X / len) * (sz.X * 0.5)
-                    oy = -(delta.Y / len) * (sz.Y * 0.5)
-                end
-                spawnTrail(Vector2.new(abs.X + sz.X * 0.5 + ox, abs.Y + sz.Y * 0.5 + oy))
-            end
-        end
-    end)
-
-    local animating = false
-    local savedPageVisibility = {} -- remember which tab contents were visible
-
-    -- Minimize: whole UI shrinks into Open float (do NOT toggle all children Visible)
-    local function doMinimize()
-        if animating or not frame.Visible then return end
-        animating = true
-
-        -- remember tab content visibility so restore won't stack pages
-        savedPageVisibility = {}
-        for _, ch in ipairs(frame:GetChildren()) do
-            if ch:IsA("ScrollingFrame") and ch.Name ~= "Tabs" then
-                savedPageVisibility[ch] = ch.Visible
-            end
-        end
-
-        local abs = frame.AbsolutePosition
-        local sz = frame.AbsoluteSize
-        -- 优先缩到上次拖动的 Open 位置，否则用窗口顶部中心
-        local targetX, targetY
-        if lastFloatPos then
-            targetX = lastFloatPos.X.Offset
-            targetY = lastFloatPos.Y.Offset
-            -- 若用了 Scale，折算到像素近似
-            if lastFloatPos.X.Scale ~= 0 or lastFloatPos.Y.Scale ~= 0 then
-                local cam = workspace.CurrentCamera
-                local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-                targetX = lastFloatPos.X.Scale * vp.X + lastFloatPos.X.Offset
-                targetY = lastFloatPos.Y.Scale * vp.Y + lastFloatPos.Y.Offset
-            end
-        else
-            targetX = abs.X + sz.X * 0.5 - 50
-            targetY = abs.Y + 12
-        end
-
-        frame.ClipsDescendants = true
-        local info = TweenInfo.new(0.36, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
-        frame.AnchorPoint = Vector2.new(0.5, 0)
-        frame.Position = UDim2.new(0, abs.X + sz.X * 0.5, 0, abs.Y)
-
-        local tw1 = TweenService:Create(frame, info, {
-            Size = UDim2.new(0, 100, 0, 36),
-            Position = UDim2.new(0, targetX + 50, 0, targetY),
-        })
-        TweenService:Create(title, info, {TextTransparency = 1}):Play()
-        TweenService:Create(desc, info, {TextTransparency = 1}):Play()
-        tw1:Play()
-        tw1.Completed:Wait()
-
-        frame.Visible = false
-        frame.ClipsDescendants = false
-        setWorldBlur(false)
-
-        -- 重置主窗几何，但 Open 球留在记住的位置
-        frame.Size = UDim2.new(0, fullWidth, 0, fullHeight)
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.Position = UDim2.fromScale(0.5, 0.5)
-        frame.BackgroundTransparency = Theme.GlassMain
-        mainStroke.Transparency = 0.72
-        title.TextTransparency = 0
-        desc.TextTransparency = 0
-
-        openFloat.Position = UDim2.new(0, targetX, 0, targetY)
-        lastFloatPos = openFloat.Position
-        openFloat.Size = UDim2.new(0, 100, 0, 36)
-        openFloat.BackgroundTransparency = Theme.GlassMain
-        openLbl.TextTransparency = 0
-        openFloat.Visible = true
-        openFloat.Rotation = 0
-        openTilt.Scale = 1
-        animating = false
-    end
-
-    local function doRestore()
-        if animating or frame.Visible then return end
-        animating = true
-        local startPos = openFloat.Position
-        openFloat.Visible = false
-        
-        -- restore only previously-visible tab pages (prevent overlap)
-        for ch, vis in pairs(savedPageVisibility) do
-            if ch and ch.Parent then
-                ch.Visible = vis and true or false
-            end
-        end
-
-        frame.Visible = true
-        frame.ClipsDescendants = true
-        setWorldBlur(true)
-        frame.AnchorPoint = Vector2.new(0.5, 0)
-        frame.Position = UDim2.new(0, startPos.X.Offset + 50, 0, startPos.Y.Offset)
-        frame.Size = UDim2.new(0, 100, 0, 36)
-        title.TextTransparency = 1
-        desc.TextTransparency = 1
-
-        local info = TweenInfo.new(0.36, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-        local tw = TweenService:Create(frame, info, {
-            Size = UDim2.new(0, fullWidth, 0, fullHeight),
-            Position = UDim2.fromScale(0.5, 0.5),
-            AnchorPoint = Vector2.new(0.5, 0.5),
-        })
-        tw:Play()
-        task.delay(0.12, function()
-            TweenService:Create(title, TweenInfo.new(0.18), {TextTransparency = 0}):Play()
-            TweenService:Create(desc, TweenInfo.new(0.18), {TextTransparency = 0}):Play()
-        end)
-        tw.Completed:Wait()
-        frame.ClipsDescendants = false
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.Position = UDim2.fromScale(0.5, 0.5)
-        -- 主窗回中，但记住 Open 球仍在 startPos，下次缩小回到那里
-        lastFloatPos = startPos
-        animating = false
-    end
-
-    -- Destroy UI + stop all features
-    local function doDestroy()
-        getgenv().WuScript_Running = false
-        pcall(function()
-            if getgenv().WuAntiCheat then
-                getgenv().WuAntiCheat.Enabled = false
-                getgenv().WuAntiCheat.AntiKickEnabled = false
-            end
-        end)
-        pcall(function()
-            local g = getgenv()
-            for _, k in ipairs({
-                "HitboxEnabled", "WatchPlayerEnabled", "WatchCountEnabled",
-                "NoclipEnabled", "FlyEnabled", "EspEnabled", "AimbotEnabled",
-                "SilentAimEnabled", "SpeedEnabled", "InfiniteJump",
-            }) do
-                if g[k] ~= nil then g[k] = false end
-                if _G[k] ~= nil then _G[k] = false end
-            end
-            _G.AdonisBypass = false
-        end)
-        pcall(function()
-            if opts.OnClose then opts.OnClose() end
-        end)
-        pcall(function()
-            if getgenv().WuScript_GUI and getgenv().WuScript_GUI ~= screengui then
-                getgenv().WuScript_GUI:Destroy()
-            end
-        end)
-        pcall(function()
-            if worldBlur then
-                worldBlur.Size = 0
-                worldBlur:Destroy()
-            end
-        end)
-        pcall(function() screengui:Destroy() end)
-        getgenv().WuScript_GUI = nil
-        getgenv().WuRealWindow = nil
-    end
-
-    Window.Destroy = doDestroy
-    Window.Minimize = doMinimize
-    Window.Restore = doRestore
-
-    -- × 确认关闭弹窗
-    local confirmOverlay = Instance.new("Frame")
-    confirmOverlay.Name = "CloseConfirm"
-    confirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    confirmOverlay.BackgroundTransparency = 0.45
-    confirmOverlay.BorderSizePixel = 0
-    confirmOverlay.Size = UDim2.fromScale(1, 1)
-    confirmOverlay.Visible = false
-    confirmOverlay.ZIndex = 120
-    confirmOverlay.Parent = frame
-    corner(14, confirmOverlay)
-
-    local confirmCard = Instance.new("Frame")
-    confirmCard.AnchorPoint = Vector2.new(0.5, 0.5)
-    confirmCard.Position = UDim2.fromScale(0.5, 0.5)
-    confirmCard.Size = UDim2.new(0, 300, 0, 150)
-    confirmCard.BackgroundColor3 = Theme.Background
-    confirmCard.BackgroundTransparency = Theme.GlassMain
-    confirmCard.BorderSizePixel = 0
-    confirmCard.ZIndex = 121
-    confirmCard.Parent = confirmOverlay
-    corner(14, confirmCard)
-    local cStroke = stroke(Theme.Border, 1.3, confirmCard)
-    cStroke.Transparency = 0.35
-
-    local confirmTitle = Instance.new("TextLabel")
-    confirmTitle.BackgroundTransparency = 1
-    confirmTitle.Position = UDim2.new(0, 18, 0, 18)
-    confirmTitle.Size = UDim2.new(1, -36, 0, 28)
-    confirmTitle.FontFace = Default
-    confirmTitle.Text = "确定关闭脚本？"
-    confirmTitle.TextColor3 = Theme.Text
-    confirmTitle.TextSize = 18
-    confirmTitle.TextXAlignment = Enum.TextXAlignment.Left
-    confirmTitle.ZIndex = 122
-    confirmTitle.Parent = confirmCard
-
-    local confirmDesc = Instance.new("TextLabel")
-    confirmDesc.BackgroundTransparency = 1
-    confirmDesc.Position = UDim2.new(0, 18, 0, 50)
-    confirmDesc.Size = UDim2.new(1, -36, 0, 36)
-    confirmDesc.FontFace = Default
-    confirmDesc.Text = "关闭后将销毁 UI 并停止已开启的功能。"
-    confirmDesc.TextColor3 = Theme.TextDim
-    confirmDesc.TextSize = 13
-    confirmDesc.TextWrapped = true
-    confirmDesc.TextXAlignment = Enum.TextXAlignment.Left
-    confirmDesc.ZIndex = 122
-    confirmDesc.Parent = confirmCard
-
-    local btnYes = Instance.new("TextButton")
-    btnYes.BackgroundColor3 = Theme.Run
-    btnYes.BackgroundTransparency = Theme.GlassRun
-    btnYes.BorderSizePixel = 0
-    btnYes.Position = UDim2.new(0, 18, 1, -48)
-    btnYes.Size = UDim2.new(0, 120, 0, 32)
-    btnYes.FontFace = Default
-    btnYes.Text = "是"
-    btnYes.TextColor3 = Theme.Text
-    btnYes.TextSize = 14
-    btnYes.AutoButtonColor = true
-    btnYes.Active = true
-    btnYes.ZIndex = 123
-    btnYes.Parent = confirmCard
-    corner(Theme.RadiusBtn, btnYes)
-    bindPressFx(btnYes, frame)
-
-    local btnNo = Instance.new("TextButton")
-    btnNo.BackgroundColor3 = Theme.Run
-    btnNo.BackgroundTransparency = Theme.GlassRun
-    btnNo.BorderSizePixel = 0
-    btnNo.AnchorPoint = Vector2.new(1, 0)
-    btnNo.Position = UDim2.new(1, -18, 1, -48)
-    btnNo.Size = UDim2.new(0, 120, 0, 32)
-    btnNo.FontFace = Default
-    btnNo.Text = "点错了"
-    btnNo.TextColor3 = Theme.Text
-    btnNo.TextSize = 14
-    btnNo.AutoButtonColor = true
-    btnNo.Active = true
-    btnNo.ZIndex = 123
-    btnNo.Parent = confirmCard
-    corner(Theme.RadiusBtn, btnNo)
-    bindPressFx(btnNo, frame)
-
-    btnYes.MouseButton1Click:Connect(function()
-        confirmOverlay.Visible = false
-        doDestroy()
-    end)
-    btnNo.MouseButton1Click:Connect(function()
-        confirmOverlay.Visible = false
-    end)
-
-    minimize.MouseButton1Click:Connect(function()
-        task.spawn(doMinimize)
-    end)
-    closeBtn.MouseButton1Click:Connect(function()
-        confirmOverlay.Visible = true
-    end)
-    openBtn.MouseButton1Click:Connect(function()
-        if floatMoved then return end
-        task.spawn(doRestore)
-    end)
-
-    -- Toggle key = minimize / restore only
-    local toggleKey = opts.ToggleKey or Enum.KeyCode.RightControl
-    UserInputService.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        if input.KeyCode == toggleKey then
-            if frame.Visible then
-                task.spawn(doMinimize)
+            if title and tostring(title) ~= "" then
+                MH:SetNotification({
+                    Title = tostring(title),
+                    Content = tostring(content),
+                    Delay = delay,
+                    Type = typ,
+                })
             else
-                task.spawn(doRestore)
+                MH:SetNotification({
+                    Content = tostring(content),
+                    Delay = delay,
+                    Type = typ,
+                })
             end
-        end
-    end)
-
-    -- Tabs sidebar
-    local tabf = Instance.new("ScrollingFrame")
-    tabf.Name = "Tabs"
-    tabf.BackgroundTransparency = 1
-    tabf.BorderSizePixel = 0
-    tabf.Position = UDim2.new(0, 12, 0, 56)
-    tabf.Size = UDim2.new(0, 155, 1, -68)
-    tabf.CanvasSize = UDim2.new(0, 0, 0, 0)
-    tabf.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    tabf.ScrollBarThickness = 3
-    tabf.ScrollBarImageColor3 = Theme.TextDim
-    tabf.Parent = frame
-    corner(Theme.RadiusCard, tabf)
-    local tfs = stroke(Theme.Border, 1.1, tabf)
-    tfs.Transparency = 0.5
-    local tabPad = Instance.new("UIPadding")
-    tabPad.PaddingTop = UDim.new(0, 8)
-    tabPad.PaddingBottom = UDim.new(0, 8)
-    tabPad.PaddingLeft = UDim.new(0, 8)
-    tabPad.PaddingRight = UDim.new(0, 8)
-    tabPad.Parent = tabf
-    local tabLayout = Instance.new("UIListLayout")
-    tabLayout.Padding = UDim.new(0, 7)
-    tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    tabLayout.Parent = tabf
-
-    local pages = {}
-    local pageCount = 0
-    local currentPage
-
-    local function makeCard(parent)
-        local card = Instance.new("Frame")
-        card.BackgroundColor3 = Theme.Card
-        card.BorderSizePixel = 0
-        card.Size = UDim2.new(1, 0, 0, 58)
-        card.Parent = parent
-        applyGlass(card, "card")
-        corner(Theme.RadiusCard, card)
-        local st = stroke(Theme.Border, 0.8, card)
-        st.Transparency = 0.65
-        return card
+        end)
     end
 
-    local function makePageApi(content)
-        local Page = {}
-
-        function Page:Section(text)
-            local lab = Instance.new("TextLabel")
-            lab.BackgroundTransparency = 1
-            lab.Size = UDim2.new(1, 0, 0, 22)
-            lab.FontFace = Default
-            lab.Text = tostring(text or "")
-            lab.TextColor3 = Theme.Accent
-            lab.TextSize = 14
-            lab.TextXAlignment = Enum.TextXAlignment.Left
-            lab.Parent = content
-            return Page
-        end
-
-        function Page:Label(opts)
-            opts = opts or {}
-            local lab = Instance.new("TextLabel")
-            lab.BackgroundTransparency = 1
-            lab.Size = UDim2.new(1, 0, 0, 20)
-            lab.FontFace = Default
-            lab.Text = tostring(opts.Title or opts.Text or "")
-            lab.TextColor3 = Theme.TextDim
-            lab.TextSize = 13
-            lab.TextXAlignment = Enum.TextXAlignment.Left
-            lab.Parent = content
-            return Page
-        end
-
-        function Page:Button(opts)
-            opts = opts or {}
-            local card = makeCard(content)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(1, -105, 0, 25)
-            t.FontFace = Default
-            t.Text = opts.Title or opts.Name or "Button"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 16
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.TextTruncate = Enum.TextTruncate.AtEnd
-            t.Parent = card
-            local d = Instance.new("TextLabel")
-            d.BackgroundTransparency = 1
-            d.Position = UDim2.new(0, 14, 0, 32)
-            d.Size = UDim2.new(1, -105, 0, 18)
-            d.FontFace = Default
-            d.Text = opts.Desc or opts.Description or ""
-            d.TextColor3 = Theme.TextDim
-            d.TextSize = 13
-            d.TextXAlignment = Enum.TextXAlignment.Left
-            d.Parent = card
-            local btn = Instance.new("TextButton")
-            btn.BackgroundColor3 = Theme.Run
-            btn.BackgroundTransparency = Theme.GlassRun
-            btn.BorderSizePixel = 0
-            btn.FontFace = Default
-            btn.AnchorPoint = Vector2.new(1, 0.5)
-            btn.Position = UDim2.new(1, -10, 0.5, 0)
-            btn.Size = UDim2.new(0, 60, 0, 30)
-            btn.Text = opts.Text or "Run"
-            btn.TextColor3 = Theme.Text
-            btn.TextSize = 13
-            btn.AutoButtonColor = true
-            btn.Active = true
-            btn.ZIndex = 3
-            btn.Parent = card
-            corner(Theme.RadiusBtn, btn)
-            bindPressFx(btn, frame)
-            btn.MouseButton1Click:Connect(function()
-                if opts.Callback then
-                    task.spawn(function()
-                        pcall(opts.Callback)
-                    end)
-                end
+    local function wrapSection(sec)
+        local S = {}
+        local function call(method, args)
+            local ok, res = pcall(function()
+                return sec[method](sec, args)
             end)
-            return Page
+            if not ok then
+                warn("[巫][MugiHub]", method, res)
+            end
+            return res
         end
 
-        function Page:Toggle(opts)
-            opts = opts or {}
-            local card = makeCard(content)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(1, -90, 0, 25)
-            t.FontFace = Default
-            t.Text = opts.Title or opts.Name or "Toggle"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 16
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.Parent = card
-            local d = Instance.new("TextLabel")
-            d.BackgroundTransparency = 1
-            d.Position = UDim2.new(0, 14, 0, 32)
-            d.Size = UDim2.new(1, -90, 0, 18)
-            d.FontFace = Default
-            d.Text = opts.Desc or opts.Description or ""
-            d.TextColor3 = Theme.TextDim
-            d.TextSize = 13
-            d.TextXAlignment = Enum.TextXAlignment.Left
-            d.Parent = card
-
-            local toggleBtn = Instance.new("TextButton")
-            toggleBtn.BackgroundColor3 = Theme.Run
-            toggleBtn.BackgroundTransparency = Theme.GlassRun
-            toggleBtn.BorderSizePixel = 0
-            toggleBtn.AnchorPoint = Vector2.new(1, 0.5)
-            toggleBtn.Position = UDim2.new(1, -10, 0.5, 0)
-            toggleBtn.Size = UDim2.new(0, 48, 0, 26)
-            toggleBtn.Text = ""
-            toggleBtn.AutoButtonColor = false
-            toggleBtn.Active = true
-            toggleBtn.ZIndex = 3
-            toggleBtn.Parent = card
-            corner(13, toggleBtn)
-            bindPressFx(toggleBtn, frame)
-            local knob = Instance.new("Frame")
-            knob.BackgroundColor3 = Color3.fromRGB(125, 125, 130)
-            knob.BorderSizePixel = 0
-            knob.AnchorPoint = Vector2.new(0, 0.5)
-            knob.Position = UDim2.new(0, 4, 0.5, 0)
-            knob.Size = UDim2.new(0, 18, 0, 18)
-            knob.Parent = toggleBtn
-            corner(9, knob)
-
-            local value = opts.Value == true or opts.Default == true
-            local function apply()
-                local bg = value and Color3.fromRGB(55, 54, 61) or Theme.Run
-                local kc = value and Theme.Knob or Color3.fromRGB(125, 125, 130)
-                local pos = value and UDim2.new(1, -22, 0.5, 0) or UDim2.new(0, 4, 0.5, 0)
-                TweenService:Create(toggleBtn, TweenInfo.new(0.18), {BackgroundColor3 = bg}):Play()
-                TweenService:Create(knob, TweenInfo.new(0.18), {Position = pos, BackgroundColor3 = kc}):Play()
-            end
-            apply()
-            toggleBtn.MouseButton1Click:Connect(function()
-                value = not value
-                apply()
-                if opts.Callback then
-                    task.spawn(function()
-                        pcall(opts.Callback, value)
-                    end)
-                end
-            end)
-            local obj = {}
-            function obj:GetValue() return value end
-            function obj:SetValue(v)
-                value = v and true or false
-                apply()
-                if opts.Callback then pcall(opts.Callback, value) end
-            end
-            return obj
+        function S:AddButton(t)
+            t = t or {}
+            call("AddButton", {
+                Name = t.Name or t.Title or "按钮",
+                Callback = t.Callback or function() end,
+                Icon = t.Icon,
+            })
+            return S
+        end
+        function S:Button(t)
+            return S:AddButton(t)
         end
 
-        function Page:Slider(opts)
-            opts = opts or {}
-            local min = tonumber(opts.Min) or 0
-            local max = tonumber(opts.Max) or 100
-            if max <= min then max = min + 1 end
-            local value = tonumber(opts.Value or opts.Default) or min
-            value = math.clamp(value, min, max)
+        function S:AddToggle(t)
+            t = t or {}
+            local def = false
+            if t.Default == true or t.Value == true or t.State == true then def = true end
+            return call("AddToggle", {
+                Name = t.Name or t.Title or "开关",
+                Default = def,
+                Callback = t.Callback or function() end,
+            }) or S
+        end
+        function S:Toggle(t)
+            return S:AddToggle(t)
+        end
 
-            local card = makeCard(content)
-            card.Size = UDim2.new(1, 0, 0, 64)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(0.7, 0, 0, 20)
-            t.FontFace = Default
-            t.Text = opts.Title or opts.Name or "Slider"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 15
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.Parent = card
-            local valLab = Instance.new("TextLabel")
-            valLab.BackgroundTransparency = 1
-            valLab.Position = UDim2.new(1, -70, 0, 4)
-            valLab.Size = UDim2.new(0, 60, 0, 20)
-            valLab.FontFace = Default
-            valLab.Text = tostring(math.floor(value + 0.5)) .. (opts.Suffix or "")
-            valLab.TextColor3 = Theme.Accent
-            valLab.TextSize = 14
-            valLab.TextXAlignment = Enum.TextXAlignment.Right
-            valLab.Parent = card
+        function S:AddSlider(t)
+            t = t or {}
+            local minV = tonumber(t.Min) or 0
+            local maxV = tonumber(t.Max) or 100
+            local defV = tonumber(t.Default or t.Value) or minV
+            return call("AddSlider", {
+                Name = t.Name or t.Title or "滑条",
+                Min = minV,
+                Max = maxV,
+                Default = defV,
+                Increment = t.Increment or t.Rounding,
+                Suffix = t.Suffix or "",
+                Callback = t.Callback or function() end,
+            }) or S
+        end
+        function S:Slider(t)
+            return S:AddSlider(t)
+        end
 
-            local barBg = Instance.new("Frame")
-            barBg.BackgroundColor3 = Theme.Run
-            barBg.BackgroundTransparency = Theme.GlassRun
-            barBg.BorderSizePixel = 0
-            barBg.Position = UDim2.new(0, 14, 0, 36)
-            barBg.Size = UDim2.new(1, -28, 0, 10)
-            barBg.Parent = card
-            corner(5, barBg)
-            local fill = Instance.new("Frame")
-            fill.BackgroundColor3 = Theme.Accent
-            fill.BorderSizePixel = 0
-            fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
-            fill.Parent = barBg
-            corner(5, fill)
-            local hit = Instance.new("TextButton")
-            hit.BackgroundTransparency = 1
-            hit.Size = UDim2.new(1, 0, 1, 12)
-            hit.Position = UDim2.new(0, 0, 0, -6)
-            hit.Text = ""
-            hit.Active = true
-            hit.ZIndex = 4
-            hit.Parent = barBg
-
-            local sliding = false
-            local function setFromX(x)
-                local rel = math.clamp((x - barBg.AbsolutePosition.X) / math.max(barBg.AbsoluteSize.X, 1), 0, 1)
-                value = min + rel * (max - min)
-                if opts.Rounding == 0 then value = math.floor(value + 0.5) end
-                fill.Size = UDim2.new(rel, 0, 1, 0)
-                valLab.Text = tostring(math.floor(value + 0.5)) .. (opts.Suffix or "")
-                if opts.Callback then
-                    pcall(opts.Callback, value)
+        function S:AddDropdown(t)
+            t = t or {}
+            local opts = t.Options or t.List or {}
+            local def = t.Default or t.Value
+            local cb = t.Callback or function() end
+            -- MugiHub multi/single may return table; 兼容单选字符串
+            local function wrapCb(sel)
+                if type(sel) == "table" then
+                    if t.Multi then
+                        cb(sel)
+                    else
+                        cb(sel[1] or sel)
+                    end
+                else
+                    cb(sel)
                 end
             end
-            hit.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    sliding = true
-                    setFromX(input.Position.X)
-                end
-            end)
-            UserInputService.InputChanged:Connect(function(input)
-                if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                    setFromX(input.Position.X)
-                end
-            end)
-            UserInputService.InputEnded:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    sliding = false
-                end
-            end)
-            return Page
+            return call("AddDropdown", {
+                Name = t.Name or t.Title or "下拉",
+                Options = opts,
+                Default = def,
+                Multi = t.Multi and true or false,
+                Callback = wrapCb,
+            }) or S
+        end
+        function S:Dropdown(t)
+            return S:AddDropdown(t)
         end
 
-        function Page:Input(opts)
-            opts = opts or {}
-            local card = makeCard(content)
-            card.Size = UDim2.new(1, 0, 0, 58)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(1, -28, 0, 18)
-            t.FontFace = Default
-            t.Text = opts.Title or opts.Name or "Input"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 14
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.Parent = card
-            local box = Instance.new("TextBox")
-            box.BackgroundColor3 = Theme.Run
-            box.BackgroundTransparency = Theme.GlassRun
-            box.BorderSizePixel = 0
-            box.Position = UDim2.new(0, 14, 0, 26)
-            box.Size = UDim2.new(1, -28, 0, 26)
-            box.FontFace = Default
-            box.Text = tostring(opts.Value or "")
-            box.PlaceholderText = opts.Placeholder or ""
-            box.TextColor3 = Theme.Text
-            box.PlaceholderColor3 = Theme.TextDim
-            box.TextSize = 13
-            box.ClearTextOnFocus = false
-            box.Parent = card
-            corner(Theme.RadiusBtn, box)
-            local obj = { Box = box }
-            function obj:Set(v) box.Text = tostring(v or "") end
-            box.FocusLost:Connect(function(enter)
-                if opts.Callback then
-                    pcall(opts.Callback, box.Text)
-                end
-                if opts.ClearOnSubmit and enter then
-                    box.Text = ""
-                end
-            end)
-            return obj
+        function S:AddInput(t)
+            t = t or {}
+            return call("AddInput", {
+                Name = t.Name or t.Title or "输入",
+                Placeholder = t.PlaceholderText or t.Placeholder or "",
+                Default = t.Default or t.Value or "",
+                Callback = t.Callback or function() end,
+            })
+        end
+        function S:Input(t)
+            return S:AddInput(t)
+        end
+        function S:AddTextbox(t)
+            return S:AddInput(t)
         end
 
-        function Page:Dropdown(opts)
-            opts = opts or {}
-            local list = opts.List or opts.Options or {}
-            local value = opts.Value or opts.Default or (list[1])
-            local card = makeCard(content)
-            card.Size = UDim2.new(1, 0, 0, 58)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(1, -120, 0, 20)
-            t.FontFace = Default
-            t.Text = opts.Title or opts.Name or "Dropdown"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 15
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.Parent = card
-            local btn = Instance.new("TextButton")
-            btn.BackgroundColor3 = Theme.Run
-            btn.BackgroundTransparency = Theme.GlassRun
-            btn.BorderSizePixel = 0
-            btn.AnchorPoint = Vector2.new(1, 0.5)
-            btn.Position = UDim2.new(1, -10, 0.5, 0)
-            btn.Size = UDim2.new(0, 110, 0, 30)
-            btn.FontFace = Default
-            btn.Text = tostring(value or "Select")
-            btn.TextColor3 = Theme.Text
-            btn.TextSize = 12
-            btn.TextTruncate = Enum.TextTruncate.AtEnd
-            btn.AutoButtonColor = true
-            btn.Active = true
-            btn.ZIndex = 5
-            btn.Parent = card
-            corner(Theme.RadiusBtn, btn)
-            bindPressFx(btn, frame)
+        function S:AddKeybind(t)
+            t = t or {}
+            return call("AddKeybind", {
+                Name = t.Name or t.Title or "按键",
+                Default = t.Default or t.Value or Enum.KeyCode.Unknown,
+                Callback = t.Callback or t.OnPress or function() end,
+            })
+        end
+        function S:Keybind(t)
+            return S:AddKeybind(t)
+        end
 
-            local open = false
-            local drop
-            local function closeDrop()
-                if drop then
-                    pcall(function() drop:Destroy() end)
-                    drop = nil
-                end
-                open = false
+        function S:AddLabel(t)
+            local text = t
+            if type(t) == "table" then
+                text = t.Title or t.Name or t.Text or ""
             end
-            btn.MouseButton1Click:Connect(function()
-                if open then
-                    closeDrop()
-                    return
-                end
-                open = true
-                local itemH = 30
-                local maxShow = 6
-                local count = #list
-                local h = math.min(count, maxShow) * itemH + 8
-                local w = math.max(140, btn.AbsoluteSize.X + 20)
-
-                drop = Instance.new("ScrollingFrame")
-                drop.Name = "WuDropdown"
-                drop.BackgroundColor3 = Color3.fromRGB(24, 28, 36)
-                drop.BackgroundTransparency = 0.08 -- 更不透明，避免透出下层
-                drop.BorderSizePixel = 0
-                drop.Size = UDim2.new(0, w, 0, h)
-                drop.CanvasSize = UDim2.new(0, 0, 0, count * itemH + 8)
-                drop.ScrollBarThickness = 4
-                drop.ScrollBarImageColor3 = Theme.TextDim
-                drop.ClipsDescendants = true
-                drop.ZIndex = 200
-                -- 挂到 ScreenGui，避免被其它卡片盖住
-                local abs = btn.AbsolutePosition
-                local bsz = btn.AbsoluteSize
-                drop.Position = UDim2.new(0, abs.X + bsz.X - w, 0, abs.Y + bsz.Y + 4)
-                drop.Parent = screengui
-                corner(Theme.RadiusCard, drop)
-                local ds = stroke(Theme.Border, 1, drop)
-                ds.Transparency = 0.35
-                local pad = Instance.new("UIPadding")
-                pad.PaddingTop = UDim.new(0, 4)
-                pad.PaddingBottom = UDim.new(0, 4)
-                pad.Parent = drop
-                local lay = Instance.new("UIListLayout")
-                lay.Padding = UDim.new(0, 0)
-                lay.SortOrder = Enum.SortOrder.LayoutOrder
-                lay.Parent = drop
-                for i, item in ipairs(list) do
-                    local it = Instance.new("TextButton")
-                    it.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
-                    it.BackgroundTransparency = 1
-                    it.BorderSizePixel = 0
-                    it.Size = UDim2.new(1, -8, 0, itemH)
-                    it.FontFace = Default
-                    it.Text = "  " .. tostring(item)
-                    it.TextColor3 = Theme.Text
-                    it.TextSize = 13
-                    it.TextXAlignment = Enum.TextXAlignment.Left
-                    it.TextTruncate = Enum.TextTruncate.AtEnd
-                    it.AutoButtonColor = false
-                    it.Active = true
-                    it.ZIndex = 201
-                    it.LayoutOrder = i
-                    it.Parent = drop
-                    corner(8, it)
-                    it.MouseEnter:Connect(function()
-                        it.BackgroundTransparency = 0.55
-                    end)
-                    it.MouseLeave:Connect(function()
-                        it.BackgroundTransparency = 1
-                    end)
-                    it.MouseButton1Click:Connect(function()
-                        value = item
-                        btn.Text = tostring(item)
-                        if opts.Callback then pcall(opts.Callback, item) end
-                        closeDrop()
-                    end)
-                end
-            end)
-            -- 点击窗口其它区域关闭下拉
-            frame.InputBegan:Connect(function(input)
-                if not open then return end
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    task.defer(function()
-                        if open then closeDrop() end
-                    end)
-                end
-            end)
-            return Page
+            call("AddLabel", tostring(text or ""))
+            return S
+        end
+        function S:Label(t)
+            return S:AddLabel(t)
         end
 
-        function Page:Keybind(opts)
-            opts = opts or {}
-            local key = opts.Value or Enum.KeyCode.RightControl
-            local card = makeCard(content)
-            local t = Instance.new("TextLabel")
-            t.BackgroundTransparency = 1
-            t.Position = UDim2.new(0, 14, 0, 4)
-            t.Size = UDim2.new(1, -120, 0, 50)
-            t.FontFace = Default
-            t.Text = opts.Title or "Keybind"
-            t.TextColor3 = Theme.Text
-            t.TextSize = 15
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.Parent = card
-            local btn = Instance.new("TextButton")
-            btn.BackgroundColor3 = Theme.Run
-            btn.BackgroundTransparency = Theme.GlassRun
-            btn.BorderSizePixel = 0
-            btn.AnchorPoint = Vector2.new(1, 0.5)
-            btn.Position = UDim2.new(1, -10, 0.5, 0)
-            btn.Size = UDim2.new(0, 90, 0, 28)
-            btn.FontFace = Default
-            btn.Text = tostring(key and key.Name or "None")
-            btn.TextColor3 = Theme.Text
-            btn.TextSize = 12
-            btn.Active = true
-            btn.Parent = card
-            corner(Theme.RadiusBtn, btn)
-            bindPressFx(btn, frame)
-            local listening = false
-            btn.MouseButton1Click:Connect(function()
-                listening = true
-                btn.Text = "..."
-            end)
-            UserInputService.InputBegan:Connect(function(input, gp)
-                if not listening then return end
-                if input.UserInputType == Enum.UserInputType.Keyboard then
-                    key = input.KeyCode
-                    btn.Text = key.Name
-                    listening = false
-                    if opts.Callback then pcall(opts.Callback, key) end
-                end
-            end)
-            return Page
+        function S:AddParagraph(t)
+            t = t or {}
+            call("AddParagraph", {
+                Name = t.Title or t.Name or "",
+                Content = t.Content or t.Text or t.Desc or "",
+            })
+            return S
         end
 
-        return Page
+        return S
     end
 
-    function Window:NewPage(pageOpts)
-        pageOpts = pageOpts or {}
-        pageCount += 1
-        local name = tostring(pageOpts.Title or ("Page" .. pageCount))
+    local Library = {}
+    Library._MugiHub = MugiHub
+    Library._MH = MH
 
-        local tabButton = Instance.new("TextButton")
-        tabButton.BackgroundColor3 = Color3.fromRGB(35, 34, 40)
-        tabButton.BackgroundTransparency = 1
-        tabButton.BorderSizePixel = 0
-        tabButton.Size = UDim2.new(1, -16, 0, 40)
-        tabButton.LayoutOrder = pageCount
-        tabButton.FontFace = Default
-        tabButton.Text = name
-        tabButton.TextColor3 = Theme.TextDim
-        tabButton.TextSize = 14
-        tabButton.AutoButtonColor = false
-        tabButton.Active = true
-        tabButton.Parent = tabf
-        corner(14, tabButton)
-        bindPressFx(tabButton, frame)
+    function Library:Notification(opts)
+        notifyMH(opts)
+    end
+    function Library:Notify(opts)
+        notifyMH(opts)
+    end
+    function Library:SetNotification(opts)
+        notifyMH(opts)
+    end
 
-        local content = Instance.new("ScrollingFrame")
-        content.BackgroundTransparency = 1
-        content.BorderSizePixel = 0
-        content.Position = UDim2.new(0, 179, 0, 56)
-        content.Size = UDim2.new(1, -191, 1, -68)
-        content.CanvasSize = UDim2.new(0, 0, 0, 0)
-        content.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        content.ScrollBarThickness = 4
-        content.ScrollBarImageColor3 = Theme.TextDim
-        content.Visible = false
-        content.Parent = frame
-        local cpad = Instance.new("UIPadding")
-        cpad.PaddingLeft = UDim.new(0, 4)
-        cpad.PaddingRight = UDim.new(0, 6)
-        cpad.PaddingTop = UDim.new(0, 4)
-        cpad.PaddingBottom = UDim.new(0, 12)
-        cpad.Parent = content
-        local clay = Instance.new("UIListLayout")
-        clay.Padding = UDim.new(0, 8)
-        clay.SortOrder = Enum.SortOrder.LayoutOrder
-        clay.Parent = content
+    function Library:Window(opts)
+        opts = opts or {}
+        local title = tostring(opts.Title or "巫 script")
+        local subtitle = tostring(opts.SubTitle or opts.Subtitle or "by wu")
+        local keybind = opts.ToggleKey or opts.Keybind or Enum.KeyCode.RightControl
+        local scale = tonumber(opts.Scale) or 0.95
 
-        local page = makePageApi(content)
-        pages[name] = { Button = tabButton, Content = content, Page = page }
+        local rawWin = MH:CreateWindow({
+            Title = title,
+            Description = subtitle,
+            ["Tab Width"] = 112,
+            SizeUi = UDim2.fromOffset(520, 340),
+            Keybind = keybind,
+            Icon = opts.Icon or "hub",
+            Scale = scale,
+            Tags = { {"巫", "sparkles"} },
+        })
 
-        local function select()
-            for _, p in pairs(pages) do
-                p.Content.Visible = false
-                -- 未选中：变暗
-                TweenService:Create(p.Button, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {
-                    BackgroundTransparency = 0.85,
-                    TextColor3 = Color3.fromRGB(110, 118, 130),
-                }):Play()
-                local g = p.Button:FindFirstChild("TabGlow")
-                if g then
-                    TweenService:Create(g, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+        -- 尽量给根 GUI 打标，方便缩放只影响本 UI
+        task.defer(function()
+            pcall(function()
+                local host = (gethui and gethui()) or game:GetService("CoreGui")
+                for _, sg in ipairs(host:GetChildren()) do
+                    if sg:IsA("ScreenGui") then
+                        for _, d in ipairs(sg:GetDescendants()) do
+                            if (d:IsA("TextLabel") or d:IsA("TextButton")) and tostring(d.Text):find("巫 script") then
+                                sg:SetAttribute("WuScriptUI", true)
+                                getgenv().WuScript_GUI = sg
+                                return
+                            end
+                        end
+                    end
                 end
-            end
-            content.Visible = true
-            -- 选中：动态高亮
-            TweenService:Create(tabButton, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
-                BackgroundTransparency = 0.35,
-                TextColor3 = Theme.Text,
-            }):Play()
-            local glow = tabButton:FindFirstChild("TabGlow")
-            if not glow then
-                glow = Instance.new("Frame")
-                glow.Name = "TabGlow"
-                glow.BackgroundColor3 = Theme.Accent
-                glow.BackgroundTransparency = 1
-                glow.BorderSizePixel = 0
-                glow.Size = UDim2.fromScale(1, 1)
-                glow.ZIndex = 0
-                glow.Parent = tabButton
-                local gc = Instance.new("UICorner")
-                gc.CornerRadius = UDim.new(0, 14)
-                gc.Parent = glow
-            end
-            TweenService:Create(glow, TweenInfo.new(0.28, Enum.EasingStyle.Quad), {
-                BackgroundTransparency = 0.82,
-            }):Play()
-            currentPage = name
-            playClickSound()
+            end)
+        end)
+
+        local Window = {}
+        Window._raw = rawWin
+
+        function Window:Notify(o)
+            notifyMH(o)
         end
-        tabButton.MouseButton1Click:Connect(select)
-        if pageCount == 1 then select() end
-        return page
+        function Window:Notification(o)
+            notifyMH(o)
+        end
+
+        function Window:SetScale(v)
+            pcall(function()
+                if rawWin.SetScale then
+                    rawWin:SetScale(tonumber(v) or 1)
+                end
+            end)
+        end
+
+        function Window:Toggle()
+            pcall(function()
+                if rawWin.Toggle then rawWin:Toggle() end
+            end)
+        end
+
+        function Window:Destroy()
+            pcall(function()
+                if rawWin.Destroy then rawWin:Destroy() end
+            end)
+        end
+
+        local function makePageFromTab(tab, pageTitle)
+            local defaultSec = tab:AddSection(tostring(pageTitle or "功能"))
+            local current = wrapSection(defaultSec)
+            local Page = {}
+
+            function Page:Section(name)
+                local sec = tab:AddSection(tostring(name or "分组"))
+                current = wrapSection(sec)
+                -- 返回 Page，使 SettingsPage:Section(...); SettingsPage:Slider(...) 链式可用
+                return Page
+            end
+            function Page:AddSection(name)
+                local sec = tab:AddSection(tostring(name or "分组"))
+                return wrapSection(sec)
+            end
+
+            -- 直接挂在 Page 上的控件（走当前 section）
+            function Page:Button(t) return current:Button(t) end
+            function Page:Toggle(t) return current:Toggle(t) end
+            function Page:Slider(t) return current:Slider(t) end
+            function Page:Dropdown(t) return current:Dropdown(t) end
+            function Page:Input(t) return current:Input(t) end
+            function Page:Keybind(t) return current:Keybind(t) end
+            function Page:Label(t) return current:Label(t) end
+            function Page:AddButton(t) return current:AddButton(t) end
+            function Page:AddToggle(t) return current:AddToggle(t) end
+            function Page:AddSlider(t) return current:AddSlider(t) end
+            function Page:AddDropdown(t) return current:AddDropdown(t) end
+            function Page:AddInput(t) return current:AddInput(t) end
+            function Page:AddTextbox(t) return current:AddTextbox(t) end
+            function Page:AddKeybind(t) return current:AddKeybind(t) end
+            function Page:AddLabel(t) return current:AddLabel(t) end
+
+            return Page
+        end
+
+        function Window:NewPage(pageOpts)
+            pageOpts = pageOpts or {}
+            local name = tostring(pageOpts.Title or "Page")
+            local icon = pageOpts.Icon or "folder"
+            local tab = rawWin:AddTab({ name, icon })
+            return makePageFromTab(tab, name)
+        end
+
+        function Window:AddTab(name, icon)
+            local tab = rawWin:AddTab({ tostring(name), icon or "folder" })
+            local Page = makePageFromTab(tab, name)
+            -- 兼容旧代码 Tab:AddSection
+            function Page:AddSection(secName)
+                local sec = tab:AddSection(tostring(secName or "分组"))
+                return wrapSection(sec)
+            end
+            return Page
+        end
+
+        -- 兼容少数直接调用
+        Window.AddPage = Window.NewPage
+
+        return Window
     end
 
-    function Window:SetOpen(v)
-        frame.Visible = v and true or false
-        openFloat.Visible = not frame.Visible
-    end
-
-    function Window:ResetPos()
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.Position = UDim2.fromScale(0.5, 0.5)
-    end
-
-    -- open anim
-    task.defer(function()
-        frame.Size = UDim2.new(0, smallWidth, 0, smallHeight)
-        frame.BackgroundTransparency = 1
-        mainStroke.Transparency = 1
-        title.TextTransparency = 1
-        desc.TextTransparency = 1
-        local info = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-        TweenService:Create(frame, info, {Size = UDim2.new(0, fullWidth, 0, fullHeight), BackgroundTransparency = Theme.GlassMain}):Play()
-        TweenService:Create(mainStroke, info, {Transparency = 0.35}):Play()
-        TweenService:Create(title, info, {TextTransparency = 0}):Play()
-        TweenService:Create(desc, info, {TextTransparency = 0}):Play()
-    end)
-
-    return Window
-end
-
-return Library
-]=])()
+    return Library
 end)
+
 if not okLib or type(Library) ~= "table" then
-    warn("[巫 script] BreezeUI 失败:", Library)
+    warn("[巫 script] MugiHub 失败:", Library)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "巫 script", Text = "BreezeUI 加载失败", Duration = 8
+            Title = "巫 script", Text = "MugiHub 加载失败", Duration = 8
         })
     end)
     return
