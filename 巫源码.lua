@@ -1,0 +1,7324 @@
+--[[ 巫 script · VeloraUI · 完整功能移植 ]]
+print("[巫 script] 启动")
+pcall(function()
+    if getgenv().WuScript_GUI then getgenv().WuScript_GUI:Destroy() end
+end)
+getgenv().WuScript_Running = true
+_G.LoadedScripts = _G.LoadedScripts or {}
+
+-- 白名单门禁：只有名单内才能进入卡密界面，否则踢出
+-- 请把你的 UserId 填进 WuWhitelistUserIds
+-- 用户名可选填 WuWhitelistNames（不区分大小写）
+-------------------------------------------------
+local WuWhitelistEnabled = true -- 设为 false 可临时关闭白名单
+local WuWhitelistUserIds = {
+    -- 可选：UserId（更稳，改名也不影响）
+    -- 123456789,
+}
+local WuWhitelistNames = {
+    "AK91_JB",
+    "9191ccd",
+    "GOTUXT",
+}
+
+local function WuIsWhitelisted()
+    if not WuWhitelistEnabled then return true end
+    local lp = game:GetService("Players").LocalPlayer
+    if not lp then return false end
+    local uid = lp.UserId
+    for _, id in ipairs(WuWhitelistUserIds) do
+        if tonumber(id) == uid then return true end
+    end
+    local name = string.lower(tostring(lp.Name))
+    local dname = string.lower(tostring(lp.DisplayName or ""))
+    for _, n in ipairs(WuWhitelistNames) do
+        local ln = string.lower(tostring(n))
+        if ln == name or ln == dname then return true end
+    end
+    return false
+end
+
+if WuWhitelistEnabled then
+    -- 名单为空时：避免把自己锁死，仅提示并放行（请尽快填入 UserId）
+    local listEmpty = (#WuWhitelistUserIds == 0 and #WuWhitelistNames == 0)
+    if listEmpty then
+        warn("[巫 script] 白名单为空：请填写 WuWhitelistUserIds，否则任何人都能进卡密")
+    elseif not WuIsWhitelisted() then
+        -- 不在白名单：先复制作者联系方式到剪切板，再官方踢出
+        local contact = "3600136747"
+        pcall(function()
+            if setclipboard then
+                setclipboard(contact)
+            elseif toclipboard then
+                toclipboard(contact)
+            elseif Clipboard and Clipboard.set then
+                Clipboard.set(contact)
+            end
+        end)
+        pcall(function()
+            game:GetService("Players").LocalPlayer:Kick(
+                "错误代码：277\n你不在白名单内，无法使用此脚本。\n作者联系方式已复制到剪贴板：" .. contact
+            )
+        end)
+        return
+    end
+end
+
+-------------------------------------------------
+-- Patriot 卡密 UI + 记住系统
+-- 换卡密：只改下面 CURRENT_KEY
+-------------------------------------------------
+local KEY_FILE = "WuScript_SavedKey.txt"
+local FORCE_KEY_FILE = "WuScript_ForceKeyEntry.txt"
+local WU_UI_CFG_FILE = "WuScript_UIConfig.txt" -- 缩放/字体大小/粗细 记忆
+
+-- UI 配置记忆（与卡密同样用 writefile/readfile）
+local function WuLoadUIConfig()
+    -- 不再记忆/恢复 UI 缩放，每次启动固定为 1；仅保留字体配置
+    local cfg = { scale = 1, fontScale = 1, fontWeight = "Bold" }
+    pcall(function()
+        if isfile and isfile(WU_UI_CFG_FILE) and readfile then
+            local raw = tostring(readfile(WU_UI_CFG_FILE) or "")
+            local a, b, c = raw:match("^([%d%.]+)|([%d%.]+)|([%w]+)")
+            if b then cfg.fontScale = math.clamp(tonumber(b) or 1, 0.8, 1.4) end
+            if c and c ~= "" then cfg.fontWeight = c end
+        end
+    end)
+    getgenv().WuUIScale = 1
+    getgenv().WuFontScale = cfg.fontScale
+    getgenv().WuFontWeight = cfg.fontWeight
+    return cfg
+end
+
+local function WuSaveUIConfig()
+    pcall(function()
+        if not writefile then return end
+        -- 缩放不持久化，固定写 1
+        local fs = tonumber(getgenv().WuFontScale) or 1
+        local fw = tostring(getgenv().WuFontWeight or "Bold")
+        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", 1, fs, fw))
+    end)
+end
+
+getgenv().WuSaveUIConfig = WuSaveUIConfig
+WuLoadUIConfig()
+-- 卡密：by wu（Patriot 会去掉空格，所以输入 by wu 或 bywu 都可以）
+local CURRENT_KEY = "by wu"
+
+local function isValidPass(pass)
+    if not pass or pass == "" then return false end
+    -- Patriot 提交前会 gsub("%s+", "")，必须按去空格后比较
+    local normalized = tostring(pass):gsub("%s+", ""):lower()
+    local expected = tostring(CURRENT_KEY):gsub("%s+", ""):lower()
+    return normalized == expected and normalized ~= ""
+end
+
+local function clearSavedKey()
+    pcall(function()
+        local names = {
+            KEY_FILE,
+            "WuScript_SavedKey",
+            "WuScript_SavedKey.txt",
+            "Patriot_Key",
+            "Patriot_Key.txt",
+            "PatriotKey",
+            "PatriotKey.txt",
+            "patriot_key",
+            "patriot_key.txt",
+            "script_key",
+            "script_key.txt",
+            "SavedKey",
+            "SavedKey.txt",
+        }
+        for _, name in ipairs(names) do
+            pcall(function()
+                if isfile and isfile(name) then
+                    if delfile then delfile(name) else writefile(name, "") end
+                end
+            end)
+        end
+        -- 扫工作区里名字带 key 的文件（尽量清干净）
+        pcall(function()
+            if listfiles then
+                for _, f in ipairs(listfiles("")) do
+                    local low = tostring(f):lower()
+                    if low:find("key") and (low:find("wu") or low:find("patriot") or low:find("saved")) then
+                        if delfile then pcall(delfile, f) end
+                    end
+                end
+            end
+        end)
+        -- 下次强制弹出卡密框
+        if writefile then
+            writefile(FORCE_KEY_FILE, "1")
+        end
+        getgenv().WuForceKeyEntry = true
+        getgenv().SCRIPT_KEY = nil
+        getgenv().PatriotSavedKey = nil
+    end)
+end
+
+-- 允许重复执行时重新加载 Patriot
+pcall(function()
+    getgenv().PatriotLoaded = nil
+    getgenv().SCRIPT_KEY = nil
+    local hui = (gethui and gethui()) or game:GetService("CoreGui")
+    for _, n in ipairs({ "PatriotKeySystem", "PatriotKeylessSystem" }) do
+        local g = hui:FindFirstChild(n)
+        if g then g:Destroy() end
+    end
+end)
+
+local keyOk = false -- 声明在外层，避免备用卡密框泄漏成全局变量
+local Patriot
+do
+    local okP, resP = pcall(function()
+        return loadstring(game:HttpGet("https://raw.githubusercontent.com/SyndromeXph/Patriot-Key-System-Ui-Library/refs/heads/main/PatriotUi.luau"))()
+    end)
+    if okP and resP then
+        Patriot = resP
+    else
+        warn("[巫 script] Patriot 失败，简易卡密", resP)
+    end
+end
+
+if not Patriot then
+    -- 简易卡密
+    local saved = ""
+    pcall(function()
+        if isfile and isfile(KEY_FILE) then saved = readfile(KEY_FILE) or "" end
+    end)
+    if not isValidPass(saved) then
+        local done = false
+        local sg = Instance.new("ScreenGui")
+        sg.ResetOnSpawn = false
+        pcall(function() sg.Parent = game:GetService("CoreGui") end)
+        if not sg.Parent then sg.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui") end
+        local f = Instance.new("Frame", sg)
+        f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(320, 150), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+        f.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+        local title = Instance.new("TextLabel", f)
+        title.Size, title.Position, title.BackgroundTransparency = UDim2.new(1, -20, 0, 28), UDim2.fromOffset(10, 10), 1
+        title.Text, title.TextColor3, title.Font, title.TextSize = "巫 script · 输入卡密", Color3.new(1,1,1), Enum.Font.GothamBold, 16
+        local tb = Instance.new("TextBox", f)
+        tb.Size, tb.Position = UDim2.new(1, -20, 0, 34), UDim2.fromOffset(10, 48)
+        tb.PlaceholderText, tb.Text = "请输入卡密", ""
+        tb.BackgroundColor3, tb.TextColor3 = Color3.fromRGB(35, 38, 45), Color3.new(1,1,1)
+        Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 6)
+        local btn = Instance.new("TextButton", f)
+        btn.Size, btn.Position, btn.Text = UDim2.new(1, -20, 0, 34), UDim2.fromOffset(10, 100), "确认进入"
+        btn.BackgroundColor3, btn.TextColor3 = Color3.fromRGB(0, 170, 255), Color3.new(1,1,1)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+        local function try()
+            if isValidPass(tb.Text) then
+                pcall(function() if writefile then writefile(KEY_FILE, CURRENT_KEY) end end)
+                done = true
+                sg:Destroy()
+            else
+                tb.Text = ""
+                tb.PlaceholderText = "卡密错误"
+            end
+        end
+        btn.MouseButton1Click:Connect(try)
+        tb.FocusLost:Connect(function(e) if e then try() end end)
+        while not done do task.wait(0.1) end
+    end
+    keyOk = true
+else
+
+
+Patriot.Callbacks.OnVerify = function(key)
+    if isValidPass(key) then
+        pcall(function()
+            if writefile then
+                writefile(KEY_FILE, CURRENT_KEY)
+            end
+            -- 验证成功：取消强制输入标记
+            getgenv().WuForceKeyEntry = nil
+            if isfile and isfile(FORCE_KEY_FILE) and delfile then
+                delfile(FORCE_KEY_FILE)
+            elseif writefile then
+                writefile(FORCE_KEY_FILE, "0")
+            end
+        end)
+        return true
+    end
+    return {
+        valid = false,
+        error = "INVALID_KEY",
+        message = "卡密错误"
+    }
+end
+
+Patriot.Appearance = {
+    Title = "巫 script",
+    Subtitle = "输入卡密以继续",
+    Icon = "rbxassetid://98373426403561",
+    IconSize = UDim2.new(0, 30, 0, 30)
+}
+
+Patriot.Links = {
+    GetKey = "",
+    Discord = ""
+}
+
+-- 若点过「清除卡密」，禁止自动进
+local forceKey = false
+pcall(function()
+    if getgenv().WuForceKeyEntry then
+        forceKey = true
+    end
+    if isfile and isfile(FORCE_KEY_FILE) then
+        local ok, content = pcall(readfile, FORCE_KEY_FILE)
+        if ok and tostring(content) == "1" then
+            forceKey = true
+        end
+    end
+end)
+if forceKey then
+    pcall(clearSavedKey) -- 再清一次，防止残留
+end
+
+Patriot.Storage = {
+    FileName = "WuScript_SavedKey",
+    Remember = not forceKey,
+    AutoLoad = not forceKey
+}
+
+Patriot.Options = {
+    Keyless = false,
+    Blur = true,
+    Draggable = true
+}
+
+Patriot.Theme = {
+    Accent = Color3.fromRGB(0, 170, 255),
+    AccentHover = Color3.fromRGB(40, 190, 255),
+    Background = Color3.fromRGB(0, 0, 0),
+    Header = Color3.fromRGB(12, 16, 22),
+    Input = Color3.fromRGB(20, 24, 30),
+    Text = Color3.fromRGB(255, 255, 255),
+    TextDim = Color3.fromRGB(150, 160, 170),
+    Success = Color3.fromRGB(50, 220, 120),
+    Error = Color3.fromRGB(255, 60, 80),
+    Warning = Color3.fromRGB(255, 200, 60),
+    StatusIdle = Color3.fromRGB(0, 140, 200),
+    Discord = Color3.fromRGB(0, 170, 255),
+    DiscordHover = Color3.fromRGB(40, 190, 255),
+    Divider = Color3.fromRGB(30, 35, 45),
+    Pending = Color3.fromRGB(35, 40, 50)
+}
+
+Patriot.Shop = { Enabled = false }
+Patriot.Changelog = {}
+
+keyOk = false
+local keyClosed = false
+Patriot.Callbacks.OnSuccess = function()
+    keyOk = true
+end
+Patriot.Callbacks.OnFail = function() end
+Patriot.Callbacks.OnClose = function()
+    keyClosed = true
+end
+
+Patriot:Launch()
+
+-- 等待验证通过；关闭窗口则直接退出
+while not keyOk do
+    if keyClosed then
+        return
+    end
+    task.wait(0.1)
+end
+end -- Patriot / 简易卡密
+_G.AdonisBypass = true
+getgenv().WuAntiCheat = getgenv().WuAntiCheat or {
+    Enabled = true,
+    AntiKickEnabled = true,
+}
+
+local function WuApplyAntiCheat()
+    if not getgenv().WuAntiCheat or not getgenv().WuAntiCheat.Enabled then
+        return
+    end
+    if getgenv().WuAntiCheat._Applied then
+        return
+    end
+    getgenv().WuAntiCheat._Applied = true
+
+    print("[Universal Pro] Anti-Kick / Adonis Bypass 启动中...")
+
+    -- 1.5 ANTI-KICK（源码逻辑，立刻执行）
+    getgenv().WuAntiCheat.AntiKickEnabled = true
+    task.spawn(function()
+        local function softAntiKick()
+            if not getgenv().WuAntiCheat or not getgenv().WuAntiCheat.Enabled then return end
+            pcall(function()
+                local players = game:GetService("Players")
+                local lp = players.LocalPlayer
+                if lp then
+                    pcall(function()
+                        local oldKick = lp.Kick
+                        if oldKick then
+                            lp.Kick = function() return nil end
+                        end
+                    end)
+                end
+            end)
+        end
+        softAntiKick()
+        print("[Universal Pro] ✅ Anti-Kick 已启用")
+        while getgenv().WuAntiCheat and getgenv().WuAntiCheat.Enabled and getgenv().WuAntiCheat.AntiKickEnabled do
+            task.wait(30)
+            softAntiKick()
+        end
+    end)
+
+    -- 1.6 BYPASS ADONIS（源码逻辑）
+    task.spawn(function()
+        -- 几乎立刻执行，不等主界面
+        task.wait(0.15)
+        if not getgenv().WuAntiCheat or not getgenv().WuAntiCheat.Enabled then return end
+        if not _G.AdonisBypass then return end
+
+        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+        local function BypassAdonis()
+            if not _G.AdonisBypass then return end
+
+            local AdonisDetected = false
+            pcall(function()
+                for _, obj in pairs(game:GetDescendants()) do
+                    if obj.Name == "Adonis" or obj.Name == "AntiCheat" then
+                        AdonisDetected = true
+                        break
+                    end
+                end
+            end)
+
+            local remotes = {
+                "Adonis_Remote",
+                "Adonis_AntiCheat",
+                "Adonis_Check",
+                "Adonis_Validate",
+                "Adonis_Log",
+                "Adonis_Event"
+            }
+
+            if not AdonisDetected then
+                for _, remoteName in pairs(remotes) do
+                    local remote = ReplicatedStorage:FindFirstChild(remoteName)
+                    if remote then
+                        AdonisDetected = true
+                        break
+                    end
+                end
+            end
+
+            if AdonisDetected then
+                print("[Universal Pro] Adonis Anti-Cheat detectado! Aplicando bypass...")
+
+                for _, remoteName in pairs(remotes) do
+                    local remote = ReplicatedStorage:FindFirstChild(remoteName)
+                    if remote and remote:IsA("RemoteEvent") then
+                        pcall(function()
+                            remote.OnServerEvent:Connect(function()
+                                return
+                            end)
+                        end)
+                    end
+                end
+
+                pcall(function()
+                    if getgenv().WuNamecallHooked then return end
+                    local mt = getrawmetatable(game)
+                    local oldNamecall = mt.__namecall
+                    setreadonly(mt, false)
+                    mt.__namecall = newcclosure(function(self, ...)
+                        local method = getnamecallmethod()
+                        if getgenv().WuAntiCheat and getgenv().WuAntiCheat.Enabled then
+                            if method == "Kick" or method == "kick" then
+                                return nil
+                            end
+                            if method == "FireServer" or method == "InvokeServer" then
+                                local selfName = string.lower(tostring(self))
+                                if string.find(selfName, "adonis") or string.find(selfName, "anticheat") then
+                                    return nil
+                                end
+                            end
+                        end
+                        return oldNamecall(self, ...)
+                    end)
+                    setreadonly(mt, true)
+                    getgenv().WuNamecallHooked = true
+                end)
+
+                task.spawn(function()
+                    while getgenv().WuAntiCheat and getgenv().WuAntiCheat.Enabled and task.wait(0.5) do
+                        pcall(function()
+                            if getgenv and getgenv().Adonis then
+                                getgenv().Adonis.Detected = false
+                            end
+                            local logService = game:GetService("LogService")
+                            local logs = logService:GetLogHistory()
+                            for _, log in pairs(logs) do
+                                if log.message and (
+                                    string.find(log.message, "Universal Pro")
+                                    or string.find(log.message, "Silent Aim")
+                                    or string.find(log.message, "巫 script")
+                                ) then
+                                    -- 源码尝试清空相关日志痕迹（能力有限）
+                                    pcall(function() log.message = "" end)
+                                end
+                            end
+                        end)
+                    end
+                end)
+
+                print("[Universal Pro] ✅ Bypass do Adonis aplicado com sucesso!")
+            else
+                print("[Universal Pro] Adonis 未检测到，仅启用基础 Anti-Kick namecall")
+                pcall(function()
+                    if getgenv().WuAntiCheat._MTHooked then return end
+                    if getgenv().WuNamecallHooked then return end
+                    local mt = getrawmetatable(game)
+                    local oldNamecall = mt.__namecall
+                    setreadonly(mt, false)
+                    mt.__namecall = newcclosure(function(self, ...)
+                        local method = getnamecallmethod()
+                        if getgenv().WuAntiCheat and getgenv().WuAntiCheat.Enabled then
+                            if method == "Kick" or method == "kick" then
+                                return nil
+                            end
+                        end
+                        return oldNamecall(self, ...)
+                    end)
+                    setreadonly(mt, true)
+                    getgenv().WuNamecallHooked = true
+                    getgenv().WuAntiCheat._MTHooked = true
+                end)
+            end
+        end
+
+        pcall(BypassAdonis)
+    end)
+end
+
+getgenv().WuApplyAntiCheat = WuApplyAntiCheat
+
+-- 卡密通过后：第一优先执行反作弊（早于加载动画 / UI）
+WuApplyAntiCheat()
+
+-- 皮脚本移植：反挂机（被动，默认开启）
+getgenv().WuAntiAFK = (getgenv().WuAntiAFK ~= false)
+pcall(function()
+    local vu = game:GetService("VirtualUser")
+    local lp = game:GetService("Players").LocalPlayer
+    if not getgenv().WuAntiAFKConn then
+        getgenv().WuAntiAFKConn = lp.Idled:Connect(function()
+            if not getgenv().WuAntiAFK then return end
+            pcall(function()
+                vu:CaptureController()
+                vu:ClickButton2(Vector2.new())
+            end)
+        end)
+    end
+end)
+
+-- 加载动画已删除（保持极简）
+
+print("[巫 script] 加载 UI 库 (VeloraUI)...")
+-- VeloraUI: https://github.com/kismile36/VeloraUI
+-- 通过兼容层保留本脚本现有的 AddTab/AddSection/AddToggle 等调用，尽量不改动功能回调。
+local okLib, Library = pcall(function()
+    local CACHE = "WuScript_Velora_Cache.lua"
+    local urls = {
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/main/Velora.lua",
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/refs/heads/main/Velora.lua",
+        "https://cdn.jsdelivr.net/gh/kismile36/VeloraUI@main/Velora.lua",
+    }
+
+    local function httpGet(url)
+        local ok, res = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and type(res) == "string" and #res > 10000 then
+            return res
+        end
+        ok, res = pcall(function()
+            local req = (syn and syn.request) or http_request or request or (http and http.request)
+            if not req then return nil end
+            local r = req({ Url = url, Method = "GET" })
+            if type(r) == "table" then
+                local code = tonumber(r.StatusCode or r.Status)
+                if code and code >= 400 then return nil end
+                return r.Body or r.body
+            end
+            return nil
+        end)
+        if ok and type(res) == "string" and #res > 10000 then
+            return res
+        end
+        return nil
+    end
+
+    local src
+    pcall(function()
+        if isfile and isfile(CACHE) and readfile then
+            local cached = readfile(CACHE)
+            if type(cached) == "string"
+                and #cached > 10000
+                and cached:find("function Velora.new", 1, true)
+            then
+                src = cached
+                print("[巫 script] 使用 VeloraUI 本地缓存")
+            end
+        end
+    end)
+
+    if not src then
+        local lastError = "无可用下载源"
+        for _, url in ipairs(urls) do
+            print("[巫 script] 下载 VeloraUI:", tostring(url):sub(1, 78))
+            local body = httpGet(url)
+            if body and body:find("function Velora.new", 1, true) then
+                src = body
+                pcall(function()
+                    if writefile then writefile(CACHE, body) end
+                end)
+                print("[巫 script] VeloraUI 下载成功，字节:", #body)
+                break
+            end
+            lastError = "下载失败或内容无效"
+            task.wait(0.12)
+        end
+        if not src then error("VeloraUI " .. lastError) end
+    end
+
+    local chunk, compileError = loadstring(src)
+    assert(chunk, "VeloraUI 编译失败: " .. tostring(compileError))
+    local runOk, Velora = pcall(chunk)
+    assert(runOk, "VeloraUI 执行失败: " .. tostring(Velora))
+    assert(type(Velora) == "table" and type(Velora.new) == "function",
+        "Velora.new 无效")
+
+    local UI = Velora.new({
+        Name = "WuScript_Velora",
+        Parent = "Auto",
+        Theme = "Midnight",
+        Accent = Color3.fromRGB(105, 125, 255),
+        DestroyExisting = true,
+        IgnoreGuiInset = false,
+        ToggleKey = Enum.KeyCode.RightControl,
+        Mobile = true,
+        OpenButton = {
+            Title = "巫 script",
+            Icon = "巫",
+            Draggable = true,
+            OnlyIcon = false,
+            OnlyMobile = false,
+        },
+        Config = {
+            Folder = "WuScript_Velora",
+            File = "settings",
+            AutoSave = false,
+        },
+    })
+
+    local rawWindow = UI:CreateWindow({
+        Title = "巫 script",
+        Subtitle = "by wu",
+        Icon = "巫",
+        Size = UDim2.fromOffset(760, 560),
+        Resizable = true,
+        Search = true,
+        ShowUser = false,
+        CloseBehavior = "Destroy",
+        ConfirmOnClose = true,
+        CloseConfirmTitle = "是否关闭巫 script？",
+        CloseConfirmContent = "关闭后会销毁当前界面；可重新执行脚本再次打开。",
+        CloseConfirmCancel = "取消",
+        CloseConfirmConfirm = "关闭",
+    })
+
+    local Library = { _Velora = Velora, _UI = UI, _rawWindow = rawWindow }
+
+    local function notifyVelora(opts)
+        opts = opts or {}
+        if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
+        local title = tostring(opts.Title or "巫 script")
+        local content = tostring(opts.Content or opts.Desc or opts.Text or opts.Message or "")
+        local kind = opts.Type or opts.NotificationType
+        if not kind then
+            local low = string.lower(title .. " " .. content)
+            if low:find("失败", 1, true) or low:find("error", 1, true) then
+                kind = "Error"
+            elseif low:find("成功", 1, true) or low:find("完成", 1, true) then
+                kind = "Success"
+            elseif low:find("警告", 1, true) or low:find("注意", 1, true) then
+                kind = "Warning"
+            else
+                kind = "Info"
+            end
+        end
+        return UI:Notify({
+            Title = title,
+            Content = content,
+            Type = kind,
+            Duration = tonumber(opts.Duration or opts.Delay) or 3,
+        })
+    end
+
+    function Library:Notify(opts)
+        return notifyVelora(opts)
+    end
+    Library.Notification = Library.Notify
+
+    local function callControl(rawSection, method, options)
+        local ok, control = pcall(function()
+            return rawSection[method](rawSection, options)
+        end)
+        if ok and control then return control end
+        warn("[巫][VeloraUI] 控件创建失败:", method, control)
+        return nil
+    end
+
+    local function asList(value)
+        local result = {}
+        if type(value) ~= "table" then return result end
+        for _, item in ipairs(value) do
+            table.insert(result, tostring(item))
+        end
+        if #result == 0 then
+            local numeric = {}
+            for k, item in pairs(value) do
+                if type(k) == "number" then
+                    table.insert(numeric, { k = k, v = tostring(item) })
+                elseif item then
+                    table.insert(result, tostring(k))
+                end
+            end
+            table.sort(numeric, function(a, b) return a.k < b.k end)
+            for _, item in ipairs(numeric) do table.insert(result, item.v) end
+        end
+        return result
+    end
+
+    local function wrapSection(rawSection)
+        local S = { _raw = rawSection, Options = {} }
+
+        function S:AddButton(t)
+            t = t or {}
+            return callControl(rawSection, "AddButton", {
+                Title = tostring(t.Name or t.Title or "按钮"),
+                Description = tostring(t.Description or t.Desc or ""),
+                ActionText = tostring(t.Text or t.ActionText or "执行"),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Variant = t.Variant,
+                Danger = t.Danger == true,
+            }) or S
+        end
+        S.Button = S.AddButton
+
+        function S:AddToggle(t)
+            t = t or {}
+            return callControl(rawSection, "AddToggle", {
+                Title = tostring(t.Name or t.Title or "开关"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Default = t.Default == true or t.Value == true or t.State == true,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
+        end
+        S.Toggle = S.AddToggle
+
+        function S:AddSlider(t)
+            t = t or {}
+            local minV = tonumber(t.Min) or 0
+            local maxV = tonumber(t.Max) or 100
+            local defaultV = tonumber(t.Default)
+            if defaultV == nil then defaultV = tonumber(t.Value) end
+            if defaultV == nil then defaultV = minV end
+            -- Step/Increment 是实际步进；旧参数 Rounding 表示小数位数（0 即整数）。
+            local step = tonumber(t.Step or t.Increment)
+            if step == nil then
+                local rounding = tonumber(t.Rounding)
+                if rounding ~= nil then
+                    step = 10 ^ (-math.clamp(rounding, 0, 6))
+                else
+                    local span = math.abs(maxV - minV)
+                    if span <= 1 then step = 0.01
+                    elseif span <= 5 then step = 0.1
+                    else step = 1 end
+                end
+            end
+            if step <= 0 then step = 1 end
+            return callControl(rawSection, "AddSlider", {
+                Title = tostring(t.Name or t.Title or "滑条"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Min = minV,
+                Max = maxV,
+                Default = defaultV,
+                Step = step,
+                Suffix = tostring(t.Suffix or ""),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
+        end
+        S.Slider = S.AddSlider
+
+        function S:AddDropdown(t)
+            t = t or {}
+            local list = asList(t.Options or t.List or t.Values or {})
+            local multi = t.Multi == true or t.MultipleOptions == true
+            local emptyList = #list == 0
+            if emptyList then list = { "（暂无选项）" } end
+
+            local defaultValue = t.Default
+            if defaultValue == nil then defaultValue = t.Value end
+            if multi then
+                if type(defaultValue) ~= "table" then
+                    defaultValue = defaultValue ~= nil and { tostring(defaultValue) } or {}
+                else
+                    local filtered, allowed = {}, {}
+                    for _, option in ipairs(list) do allowed[option] = true end
+                    for _, selected in ipairs(defaultValue) do
+                        selected = tostring(selected)
+                        if allowed[selected] then table.insert(filtered, selected) end
+                    end
+                    defaultValue = filtered
+                end
+            else
+                if type(defaultValue) == "table" then defaultValue = defaultValue[1] end
+                if defaultValue ~= nil then defaultValue = tostring(defaultValue) end
+                local found = false
+                for _, option in ipairs(list) do
+                    if option == defaultValue then found = true break end
+                end
+                if not found then defaultValue = nil end
+            end
+
+            local api = callControl(rawSection, "AddDropdown", {
+                Title = tostring(t.Name or t.Title or "下拉选择"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Options = list,
+                Default = defaultValue,
+                Multi = multi,
+                AllowNone = true,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            })
+            if not api then return S end
+            api.Options = asList(t.Options or t.List or t.Values or {})
+            if emptyList and type(api.SetDisabled) == "function" then
+                pcall(function() api:SetDisabled(true, "暂无可用选项") end)
+            end
+
+            -- 兼容旧源码里的 SetOptions/Refresh 接口；空结果时用禁用占位项，避免误选。
+            local function setOptions(_, newValues)
+                local values = asList(newValues or {})
+                api.Options = values
+                if #values == 0 then
+                    pcall(function()
+                        api:SetValues({ "（无匹配项）" }, false)
+                        api:SetDisabled(true, "没有匹配项")
+                    end)
+                    return true
+                end
+                local ok = pcall(function()
+                    api:SetDisabled(false)
+                    api:SetValues(values, true)
+                end)
+                return ok
+            end
+            api.SetOptions = setOptions
+            api.Refresh = setOptions
+            return api
+        end
+        S.Dropdown = S.AddDropdown
+
+        function S:AddTextbox(t)
+            t = t or {}
+            return callControl(rawSection, "AddInput", {
+                Title = tostring(t.Name or t.Title or "输入"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Placeholder = tostring(t.PlaceholderText or t.Placeholder or ""),
+                Default = tostring(t.Default or t.Value or ""),
+                ClearOnSubmit = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
+                Flag = t.Flag,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or { Set = function() end }
+        end
+        S.AddInput = S.AddTextbox
+        S.Input = S.AddTextbox
+        S.Textbox = S.AddTextbox
+
+        function S:AddKeybind(t)
+            t = t or {}
+            local key = t.Default or t.Value or Enum.KeyCode.RightControl
+            -- Velora 原生支持 EnumItem 与键名字符串，保留 EnumItem 可避免按键枚举丢失。
+            return callControl(rawSection, "AddKeybind", {
+                Title = tostring(t.Name or t.Title or "快捷键"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Default = key,
+                Mode = t.HoldToInteract and "Hold" or (t.Mode or "Press"),
+                Flag = t.Flag,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
+        end
+        S.Keybind = S.AddKeybind
+
+        function S:AddLabel(t)
+            local value = type(t) == "string" and t or tostring((t and (t.Text or t.Name or t.Title)) or "")
+            return callControl(rawSection, "AddLabel", { Text = value, Title = value }) or S
+        end
+        S.Label = S.AddLabel
+
+        function S:AddParagraph(t)
+            t = t or {}
+            return callControl(rawSection, "AddParagraph", {
+                Title = tostring(t.Title or t.Name or "说明"),
+                Content = tostring(t.Content or t.Text or t.Description or ""),
+            }) or S
+        end
+        function S:AddDivider(t)
+            return callControl(rawSection, "AddDivider", type(t) == "table" and t or {}) or S
+        end
+        function S:AddSpacer(t)
+            return callControl(rawSection, "AddSpacer", t or 8) or S
+        end
+        return S
+    end
+
+    local Window = {
+        _ui = UI,
+        _raw = rawWindow,
+        ScreenGui = UI.ScreenGui,
+    }
+
+    pcall(function()
+        if UI.ScreenGui and UI.ScreenGui:IsA("ScreenGui") then
+            UI.ScreenGui:SetAttribute("WuScriptUI", true)
+            getgenv().WuScript_GUI = UI.ScreenGui
+        end
+    end)
+
+    local function makePage(rawTab, name)
+        local Page = { Title = tostring(name or "页面"), _tab = rawTab, _lastSection = nil }
+        local function createSection(sectionOptions, side)
+            local opts
+            if type(sectionOptions) == "table" then
+                opts = {}
+                for k, v in pairs(sectionOptions) do opts[k] = v end
+            else
+                opts = { Title = tostring(sectionOptions or "分组"), Side = side }
+            end
+            opts.Title = opts.Title or opts.Name or "分组"
+            opts.Description = opts.Description or opts.Desc or ""
+            local ok, rawSectionOrError = pcall(function()
+                return rawTab:AddSection(opts)
+            end)
+            if not ok or not rawSectionOrError then
+                warn("[巫][VeloraUI] 创建分组失败:", opts.Title, rawSectionOrError)
+                return nil
+            end
+            local wrapped = wrapSection(rawSectionOrError)
+            Page._lastSection = wrapped
+            return wrapped
+        end
+
+        function Page:Section(title, side)
+            return createSection(title, side) or self
+        end
+        Page.AddSection = Page.Section
+
+        local function withLast(method)
+            return function(_, options)
+                if not Page._lastSection then createSection("主页") end
+                local section = Page._lastSection
+                if section and type(section[method]) == "function" then
+                    return section[method](section, options)
+                end
+                return section or Page
+            end
+        end
+        Page.AddButton = withLast("AddButton")
+        Page.Button = Page.AddButton
+        Page.AddToggle = withLast("AddToggle")
+        Page.Toggle = Page.AddToggle
+        Page.AddSlider = withLast("AddSlider")
+        Page.Slider = Page.AddSlider
+        Page.AddDropdown = withLast("AddDropdown")
+        Page.Dropdown = Page.AddDropdown
+        Page.AddTextbox = withLast("AddTextbox")
+        Page.AddInput = Page.AddTextbox
+        Page.Textbox = Page.AddTextbox
+        Page.Input = Page.AddTextbox
+        Page.AddKeybind = withLast("AddKeybind")
+        Page.Keybind = Page.AddKeybind
+        Page.AddLabel = withLast("AddLabel")
+        Page.Label = Page.AddLabel
+        Page.AddParagraph = withLast("AddParagraph")
+        Page.AddDivider = withLast("AddDivider")
+        Page.AddSpacer = withLast("AddSpacer")
+        return Page
+    end
+
+    local tabIcons = {
+        ["通用功能"] = "主", ["皮移植"] = "皮", ["服务器信息"] = "服",
+        ["通用1"] = "通", ["范围设置"] = "范", ["甩飞与传送"] = "传",
+        ["工具"] = "工", ["趣味"] = "趣", ["各类服务器脚本"] = "游",
+        ["ESP"] = "眼", ["额外功能"] = "加", ["自瞄"] = "瞄",
+        ["玩家管理"] = "人", ["更多脚本"] = "集", ["独立项目"] = "星",
+        ["设置"] = "设",
+    }
+
+    function Window:NewPage(pageOptions)
+        pageOptions = pageOptions or {}
+        local name = tostring(pageOptions.Title or pageOptions.Name or "页面")
+        local rawTab = rawWindow:AddTab({
+            Title = name,
+            Icon = pageOptions.Icon or tabIcons[name] or string.sub(name, 1, 1),
+            Description = pageOptions.Desc or pageOptions.Description or "",
+        })
+        return makePage(rawTab, name)
+    end
+
+    function Window:AddTab(name, icon)
+        name = tostring(name or "页面")
+        return self:NewPage({ Title = name, Icon = icon or tabIcons[name] or string.sub(name, 1, 1) })
+    end
+    Window.AddPage = Window.NewPage
+
+    function Window:Notify(opts)
+        return notifyVelora(opts)
+    end
+    Window.Notification = Window.Notify
+
+    function Window:SetScale(value)
+        local scale = math.clamp(tonumber(value) or 1, 0.5, 1.5)
+        getgenv().WuUIScale = scale
+        pcall(function()
+            if rawWindow then
+                rawWindow._manualScale = scale
+                if rawWindow._updateResponsive then rawWindow._updateResponsive() end
+                local root = rawWindow.Root
+                if root then
+                    local scaleObj = rawWindow.UIScale or root:FindFirstChildWhichIsA("UIScale")
+                    if scaleObj then scaleObj.Scale = scale end
+                end
+            end
+        end)
+        return scale
+    end
+
+    function Window:Toggle()
+        pcall(function() UI:Toggle() end)
+    end
+
+    function Window:Destroy()
+        pcall(function() if rawWindow and rawWindow.Destroy then rawWindow:Destroy() end end)
+        pcall(function() if UI and UI.Destroy then UI:Destroy() end end)
+        pcall(function()
+            if getgenv().WuScript_GUI == UI.ScreenGui then getgenv().WuScript_GUI = nil end
+        end)
+    end
+
+    Library._activeWindow = Window
+    Library.Window = function() return Window end
+    print("[巫 script] 使用 VeloraUI")
+    return Library
+end)
+
+if not okLib or type(Library) ~= "table" then
+    local errMsg = tostring(Library)
+    warn("[巫 script] VeloraUI 失败:", errMsg)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "巫 script",
+            Text = "VeloraUI 加载失败: " .. errMsg:sub(1, 100),
+            Duration = 10,
+        })
+    end)
+    return
+end
+
+local Window = Library:Window({
+    Title = "巫 script",
+    SubTitle = "by wu",
+    ToggleKey = Enum.KeyCode.RightControl,
+    Scale = tonumber(getgenv().WuUIScale) or 1,
+})
+
+local function notify(title, desc, dur)
+    local opts = {
+        Title = tostring(title or "提示"),
+        Content = tostring(desc or ""),
+        Desc = tostring(desc or ""),
+        Duration = tonumber(dur) or 2,
+    }
+    if type(Library.Notify) == "function" then
+        pcall(Library.Notify, Library, opts)
+    elseif type(Library.Notification) == "function" then
+        pcall(Library.Notification, Library, opts)
+    elseif Window and type(Window.Notify) == "function" then
+        pcall(Window.Notify, Window, opts)
+    else
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = opts.Title, Text = opts.Content, Duration = opts.Duration,
+            })
+        end)
+    end
+end
+Library.Notification = Library.Notify or function(_, opts)
+    if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
+    notify(opts.Title, opts.Content or opts.Desc or opts.Text, opts.Duration or opts.Delay)
+end
+
+getgenv().WuRealWindow = Window
+
+-- 统一的"加载远程脚本"按钮回调：防重复点击；失败时清除标记，允许重试
+local function WuLoader(url, doneMsg)
+    return function()
+        if _G.LoadedScripts[url] then
+            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[url] = true
+        local ok, err = pcall(function()
+            loadstring(game:HttpGet(url))()
+        end)
+        if ok then
+            Window:Notify({Title = "提示", Content = doneMsg or "已加载", Duration = 2})
+        else
+            _G.LoadedScripts[url] = nil
+            warn("[巫 script] 加载失败:", url, err)
+            Window:Notify({Title = "加载失败", Content = "网络或脚本出错，可再点一次重试", Duration = 3})
+        end
+    end
+end
+
+local okFeat, errFeat = pcall(function()
+local MainTab = Window:AddTab("通用功能")
+local SpeedSection = MainTab:AddSection("角色属性")
+
+SpeedSection:AddSlider({
+    Name = "行走速度 (WalkSpeed)",
+    Min = 16,
+    Max = 250,
+    Default = 16,
+    Increment = 1,
+    Notifications = false, 
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = value
+        end)
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "跳跃高度 (JumpPower)",
+    Min = 50,
+    Max = 300,
+    Default = 50,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.Character.Humanoid.JumpPower = value
+        end)
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "重力 (Gravity)",
+    Min = 0,
+    Max = 500,
+    Default = 196.2,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        workspace.Gravity = value
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "视野 (FOV)",
+    Min = 30,
+    Max = 120,
+    Default = 70,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        workspace.CurrentCamera.FieldOfView = value
+    end
+})
+
+SpeedSection:AddButton({
+    Name = "俄罗斯比例",
+    Callback = function()
+        pcall(function()
+            local Camera = workspace.CurrentCamera
+            if getgenv().StretchActive == nil then
+                game:GetService("RunService").RenderStepped:Connect(function()
+                    if getgenv().StretchActive then
+                        Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, 0, 1, 0, 0, 0, 0.67, 0, 0, 0, 1)
+                    end
+                end)
+            end
+            getgenv().StretchActive = true
+        end)
+        Window:Notify({Title = "通用", Content = "已开启俄罗斯比例", Duration = 2})
+    end
+})
+
+SpeedSection:AddButton({
+    Name = "关闭俄罗斯比例",
+    Callback = function()
+        getgenv().StretchActive = false
+        Window:Notify({Title = "通用", Content = "已关闭俄罗斯比例", Duration = 2})
+    end
+})
+
+-- ===== 物理加速（Velocity）- 修复版（只改水平，保留垂直） =====
+local VelocitySpeed = 16
+local VelocityEnabled = false
+local VelocityConnection = nil
+
+SpeedSection:AddSlider({
+    Name = "物理加速速度 (Velocity)",
+    Min = 16,
+    Max = 520,
+    Default = 16,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        VelocitySpeed = value
+    end
+})
+
+SpeedSection:AddToggle({
+    Name = "物理加速开关 (覆盖WalkSpeed)",
+    Default = false,
+    Callback = function(state)
+        VelocityEnabled = state
+        if state then
+            if not VelocityConnection then
+                VelocityConnection = game:GetService("RunService").RenderStepped:Connect(function()
+                    if not VelocityEnabled then return end
+                    local player = game.Players.LocalPlayer
+                    local char = player.Character
+                    if not char then return end
+                    local root = char:FindFirstChild("HumanoidRootPart")
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if not root or not hum or hum.Health <= 0 then return end
+                    local moveDir = hum.MoveDirection
+                    if moveDir.Magnitude > 0 then
+                        root.Velocity = Vector3.new(moveDir.X * VelocitySpeed, root.Velocity.Y, moveDir.Z * VelocitySpeed)
+                    else
+                        root.Velocity = Vector3.new(root.Velocity.X * 0.1, root.Velocity.Y, root.Velocity.Z * 0.1)
+                    end
+                end)
+            end
+            Window:Notify({Title = "物理加速", Content = "已开启 (不干扰高跳)", Duration = 2})
+        else
+            if VelocityConnection then
+                VelocityConnection:Disconnect()
+                VelocityConnection = nil
+            end
+            Window:Notify({Title = "物理加速", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+-- ===== 高跳（Velocity 驱动） =====
+local HighJumpPower = 100
+local HighJumpEnabled = false
+local highJumpListener = nil
+local charAddedConn = nil
+
+SpeedSection:AddSlider({
+    Name = "高跳力度 (Velocity)",
+    Min = 50,
+    Max = 500,
+    Default = 100,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        HighJumpPower = value
+    end
+})
+
+SpeedSection:AddToggle({
+    Name = "高跳开关 (Velocity驱动)",
+    Default = false,
+    Callback = function(state)
+        HighJumpEnabled = state
+        if state then
+            local player = game.Players.LocalPlayer
+            
+            if highJumpListener then
+                highJumpListener:Disconnect()
+                highJumpListener = nil
+            end
+            
+            local function bindJump(char)
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    highJumpListener = hum.Jumping:Connect(function()
+                        if not HighJumpEnabled then return end
+                        local root = char:FindFirstChild("HumanoidRootPart")
+                        if root then
+                            root.Velocity = Vector3.new(root.Velocity.X, HighJumpPower, root.Velocity.Z)
+                        end
+                    end)
+                end
+            end
+            
+            if player.Character then
+                bindJump(player.Character)
+            end
+            
+            if charAddedConn then
+                charAddedConn:Disconnect()
+                charAddedConn = nil
+            end
+            charAddedConn = player.CharacterAdded:Connect(function(char)
+                task.wait(0.1)
+                if highJumpListener then
+                    highJumpListener:Disconnect()
+                    highJumpListener = nil
+                end
+                bindJump(char)
+            end)
+            
+            Window:Notify({Title = "高跳", Content = "已开启（力度: " .. HighJumpPower .. "）", Duration = 2})
+        else
+            if highJumpListener then
+                highJumpListener:Disconnect()
+                highJumpListener = nil
+            end
+            if charAddedConn then
+                charAddedConn:Disconnect()
+                charAddedConn = nil
+            end
+            Window:Notify({Title = "高跳", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+SpeedSection:AddSlider({
+    Name = "相机焦距上限 (Zoom Out)",
+    Min = 0,
+    Max = 200000,
+    Default = 20,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.CameraMaxZoomDistance = value
+        end)
+    end
+})
+
+local ResetSection = MainTab:AddSection("快捷操作")
+
+ResetSection:AddButton({
+    Name = "恢复默认属性",
+    Callback = function()
+        pcall(function()
+            local char = game.Players.LocalPlayer.Character
+            char.Humanoid.WalkSpeed = 16
+            char.Humanoid.JumpPower = 50
+            workspace.Gravity = 196.2
+            workspace.CurrentCamera.FieldOfView = 70
+            game.Players.LocalPlayer.CameraMaxZoomDistance = 20
+            VelocitySpeed = 16
+            VelocityEnabled = false
+            if VelocityConnection then
+                VelocityConnection:Disconnect()
+                VelocityConnection = nil
+            end
+            HighJumpPower = 100
+            HighJumpEnabled = false
+            if highJumpListener then
+                highJumpListener:Disconnect()
+                highJumpListener = nil
+            end
+            if charAddedConn then
+                charAddedConn:Disconnect()
+                charAddedConn = nil
+            end
+        end)
+        Window:Notify({
+            Title = "已恢复",
+            Content = "所有属性已重置为默认值，物理加速/高跳已关闭",
+            Duration = 2
+        })
+    end
+})
+
+-------------------------------------------------
+-- 标签页 2：设置
+-------------------------------------------------
+
+-------------------------------------------------
+-- 皮脚本移植 · 通用增强（低风险、自包含）
+-------------------------------------------------
+do
+    local PiTab = Window:AddTab("皮移植")
+    local afkSec = PiTab:AddSection("反挂机 / 聊天")
+    afkSec:AddToggle({
+        Name = "反挂机 (Idled)",
+        Default = true,
+        Callback = function(state)
+            getgenv().WuAntiAFK = state and true or false
+            Window:Notify({ Title = "反挂机", Content = state and "已开启" or "已关闭", Duration = 2 })
+        end
+    })
+
+    getgenv().WuAutoSay = getgenv().WuAutoSay or { text = "你好", count = 1, running = false, auto = false }
+    afkSec:AddTextbox({
+        Name = "说话内容",
+        Default = getgenv().WuAutoSay.text,
+        Placeholder = "输入要说的话",
+        Callback = function(v)
+            getgenv().WuAutoSay.text = tostring(v or "")
+        end
+    })
+    afkSec:AddTextbox({
+        Name = "说话次数",
+        Default = tostring(getgenv().WuAutoSay.count or 1),
+        Placeholder = "1~20",
+        Callback = function(v)
+            getgenv().WuAutoSay.count = math.clamp(tonumber(v) or 1, 1, 20)
+        end
+    })
+    local function WuSayOnce(msg)
+        msg = tostring(msg or "")
+        if msg == "" then return false end
+        local ok = pcall(function()
+            local ev = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+            if ev and ev:FindFirstChild("SayMessageRequest") then
+                ev.SayMessageRequest:FireServer(msg, "All")
+            else
+                -- TextChat 兜底
+                local TextChat = game:GetService("TextChatService")
+                local channel = TextChat:FindFirstChild("TextChannels") and TextChat.TextChannels:FindFirstChild("RBXGeneral")
+                if channel then
+                    channel:SendAsync(msg)
+                end
+            end
+        end)
+        return ok
+    end
+    afkSec:AddButton({
+        Name = "发送一次/多次",
+        Callback = function()
+            local n = tonumber(getgenv().WuAutoSay.count) or 1
+            local msg = getgenv().WuAutoSay.text or ""
+            task.spawn(function()
+                for i = 1, n do
+                    if not WuSayOnce(msg) then break end
+                    task.wait(0.35)
+                end
+            end)
+        end
+    })
+    afkSec:AddToggle({
+        Name = "循环自动说话",
+        Default = false,
+        Callback = function(state)
+            getgenv().WuAutoSay.auto = state and true or false
+            if state then
+                task.spawn(function()
+                    while getgenv().WuAutoSay and getgenv().WuAutoSay.auto do
+                        WuSayOnce(getgenv().WuAutoSay.text)
+                        task.wait(3) -- 避免触发聊天冷却/封禁
+                    end
+                end)
+            end
+        end
+    })
+
+    local camSec = PiTab:AddSection("相机 / 画质")
+    camSec:AddSlider({
+        Name = "相机 FOV",
+        Min = 30,
+        Max = 120,
+        Default = 70,
+        Increment = 1,
+        Callback = function(v)
+            pcall(function()
+                workspace.CurrentCamera.FieldOfView = tonumber(v) or 70
+            end)
+        end
+    })
+    camSec:AddSlider({
+        Name = "最大缩放距离",
+        Min = 20,
+        Max = 5000,
+        Default = 128,
+        Increment = 10,
+        Callback = function(v)
+            pcall(function()
+                game.Players.LocalPlayer.CameraMaxZoomDistance = tonumber(v) or 128
+            end)
+        end
+    })
+    camSec:AddSlider({
+        Name = "FPS 上限 (需执行器支持)",
+        Min = 30,
+        Max = 240,
+        Default = 60,
+        Increment = 5,
+        Callback = function(v)
+            pcall(function()
+                if setfpscap then setfpscap(tonumber(v) or 60) end
+            end)
+        end
+    })
+    camSec:AddToggle({
+        Name = "全亮 (FullBright)",
+        Default = false,
+        Callback = function(state)
+            getgenv().WuFullBright = state and true or false
+            pcall(function()
+                local Lighting = game:GetService("Lighting")
+                if state then
+                    getgenv().WuFullBrightBackup = getgenv().WuFullBrightBackup or {
+                        Brightness = Lighting.Brightness,
+                        ClockTime = Lighting.ClockTime,
+                        FogEnd = Lighting.FogEnd,
+                        GlobalShadows = Lighting.GlobalShadows,
+                        OutdoorAmbient = Lighting.OutdoorAmbient,
+                    }
+                    Lighting.Brightness = 2
+                    Lighting.ClockTime = 14
+                    Lighting.FogEnd = 100000
+                    Lighting.GlobalShadows = false
+                    Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+                else
+                    local b = getgenv().WuFullBrightBackup
+                    if b then
+                        for k, val in pairs(b) do
+                            pcall(function() Lighting[k] = val end)
+                        end
+                    end
+                end
+            end)
+        end
+    })
+    camSec:AddToggle({
+        Name = "无雾",
+        Default = false,
+        Callback = function(state)
+            pcall(function()
+                local Lighting = game:GetService("Lighting")
+                if state then
+                    getgenv().WuFogBackup = Lighting.FogEnd
+                    Lighting.FogEnd = 1000000
+                else
+                    if getgenv().WuFogBackup then
+                        Lighting.FogEnd = getgenv().WuFogBackup
+                    end
+                end
+            end)
+        end
+    })
+    camSec:AddButton({
+        Name = "删除所有特效 (Blur/Bloom/ColorCorrection)",
+        Callback = function()
+            pcall(function()
+                for _, v in ipairs(game:GetService("Lighting"):GetChildren()) do
+                    if v:IsA("BlurEffect") or v:IsA("BloomEffect") or v:IsA("ColorCorrectionEffect")
+                        or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect") then
+                        v:Destroy()
+                    end
+                end
+            end)
+            Window:Notify({ Title = "画质", Content = "已清理 Lighting 特效", Duration = 2 })
+        end
+    })
+
+    local flySec = PiTab:AddSection("飞行 (自包含)")
+    getgenv().WuFly = getgenv().WuFly or { on = false, speed = 50, conn = nil, bv = nil, bg = nil }
+    flySec:AddSlider({
+        Name = "飞行速度",
+        Min = 10,
+        Max = 200,
+        Default = 50,
+        Increment = 5,
+        Callback = function(v)
+            getgenv().WuFly.speed = tonumber(v) or 50
+        end
+    })
+    local function WuStopFly()
+        local F = getgenv().WuFly
+        if not F then return end
+        F.on = false
+        if F.conn then pcall(function() F.conn:Disconnect() end) F.conn = nil end
+        if F.bv then pcall(function() F.bv:Destroy() end) F.bv = nil end
+        if F.bg then pcall(function() F.bg:Destroy() end) F.bg = nil end
+        pcall(function()
+            local hum = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.PlatformStand = false end
+        end)
+    end
+    local function WuStartFly()
+        WuStopFly()
+        local F = getgenv().WuFly
+        F.on = true
+        local lp = game.Players.LocalPlayer
+        local char = lp.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then return end
+        hum.PlatformStand = true
+        local bv = Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        bv.Velocity = Vector3.zero
+        bv.Parent = hrp
+        local bg = Instance.new("BodyGyro")
+        bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+        bg.P = 3e4
+        bg.Parent = hrp
+        F.bv, F.bg = bv, bg
+        local UIS = game:GetService("UserInputService")
+        F.conn = game:GetService("RunService").RenderStepped:Connect(function()
+            if not F.on or not hrp or not hrp.Parent then
+                WuStopFly()
+                return
+            end
+            local cam = workspace.CurrentCamera
+            bg.CFrame = cam.CFrame
+            local dir = Vector3.zero
+            if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.Space) or UIS:IsKeyDown(Enum.KeyCode.E) then dir = dir + Vector3.new(0, 1, 0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.Q) then dir = dir - Vector3.new(0, 1, 0) end
+            if dir.Magnitude > 0 then
+                bv.Velocity = dir.Unit * (F.speed or 50)
+            else
+                bv.Velocity = Vector3.zero
+            end
+        end)
+    end
+    flySec:AddToggle({
+        Name = "飞行开关 (WASD/空格/Ctrl)",
+        Default = false,
+        Callback = function(state)
+            if state then WuStartFly() else WuStopFly() end
+            Window:Notify({ Title = "飞行", Content = state and "已开启" or "已关闭", Duration = 2 })
+        end
+    })
+
+    local tpSec = PiTab:AddSection("加入游戏")
+    getgenv().WuJoinPlaceId = getgenv().WuJoinPlaceId or ""
+    tpSec:AddTextbox({
+        Name = "PlaceId",
+        Default = "",
+        Placeholder = "输入游戏 PlaceId",
+        Callback = function(v)
+            getgenv().WuJoinPlaceId = tostring(v or ""):gsub("%s+", "")
+        end
+    })
+    tpSec:AddButton({
+        Name = "传送到该 PlaceId",
+        Callback = function()
+            local id = tonumber(getgenv().WuJoinPlaceId)
+            if not id then
+                Window:Notify({ Title = "传送", Content = "PlaceId 无效", Duration = 2 })
+                return
+            end
+            pcall(function()
+                game:GetService("TeleportService"):Teleport(id, game.Players.LocalPlayer)
+            end)
+        end
+    })
+    tpSec:AddButton({
+        Name = "复制当前 JobId",
+        Callback = function()
+            pcall(function()
+                local j = game.JobId
+                if setclipboard then setclipboard(j) elseif toclipboard then toclipboard(j) end
+                Window:Notify({ Title = "JobId", Content = tostring(j), Duration = 3 })
+            end)
+        end
+    })
+    tpSec:AddButton({
+        Name = "复制当前 PlaceId",
+        Callback = function()
+            pcall(function()
+                local j = tostring(game.PlaceId)
+                if setclipboard then setclipboard(j) elseif toclipboard then toclipboard(j) end
+                Window:Notify({ Title = "PlaceId", Content = j, Duration = 3 })
+            end)
+        end
+    })
+end
+
+
+local SettingTab = Window:AddTab("服务器信息")
+
+local InfoSection = SettingTab:AddSection("玩家信息")
+
+InfoSection:AddButton({
+    Name = "查看用户名",
+    Callback = function()
+        Window:Notify({
+            Title = "用户名",
+            Content = game.Players.LocalPlayer.Name,
+            Duration = 3
+        })
+    end
+})
+
+InfoSection:AddButton({
+    Name = "查看注入器",
+    Callback = function()
+        local executor = "未知"
+        pcall(function()
+            executor = identifyexecutor() or "未知"
+        end)
+        Window:Notify({
+            Title = "注入器",
+            Content = executor,
+            Duration = 3
+        })
+    end
+})
+
+InfoSection:AddButton({
+    Name = "查看服务器ID",
+    Callback = function()
+        Window:Notify({
+            Title = "GameId",
+            Content = tostring(game.GameId),
+            Duration = 3
+        })
+    end
+})
+
+-------------------------------------------------
+-- 反作弊
+-------------------------------------------------
+local ACSection = SettingTab:AddSection("反作弊")
+ACSection:AddToggle({
+    Name = "防踢（默认开）",
+    Default = true,
+    Callback = function(state)
+        getgenv().WuAntiCheat = getgenv().WuAntiCheat or {}
+        getgenv().WuAntiCheat.Enabled = state
+        if state then
+            getgenv().WuAntiCheat._Applied = false
+            if getgenv().WuApplyAntiCheat then
+                getgenv().WuApplyAntiCheat()
+            end
+            Window:Notify({Title = "反作弊", Content = "防踢已开启（Anti-Kick）", Duration = 2})
+        else
+            Window:Notify({Title = "反作弊", Content = "Anti-Kick / Bypass 已关闭（不推荐）", Duration = 2})
+        end
+    end
+})
+
+-------------------------------------------------
+-- 卡密管理
+-------------------------------------------------
+local KeySection = SettingTab:AddSection("卡密管理")
+
+KeySection:AddButton({
+    Name = "重置卡密（下次需重新输入）",
+    Callback = function()
+        clearSavedKey()
+        Window:Notify({
+            Title = "已重置卡密",
+            Content = "请重新执行脚本，将重新弹出卡密输入",
+            Duration = 4
+        })
+    end
+})
+
+local UtilitySection = SettingTab:AddSection("服务器操作")
+
+UtilitySection:AddButton({
+    Name = "重新加入服务器",
+    Callback = function()
+        game:GetService("TeleportService"):TeleportToPlaceInstance(
+            game.PlaceId,
+            game.JobId,
+            game.Players.LocalPlayer
+        )
+    end
+})
+
+UtilitySection:AddButton({
+    Name = "离开服务器",
+    Callback = function()
+        game:Shutdown()
+    end
+})
+
+-------------------------------------------------
+-- 标签页 3：通用1
+-------------------------------------------------
+local Tab1 = Window:AddTab("通用1")
+local VisualSection = Tab1:AddSection("视觉与移动")
+
+local NightVision = false
+VisualSection:AddButton({
+    Name = "夜视 (点击开关)",
+    Callback = function()
+        NightVision = not NightVision
+        game.Lighting.Ambient = NightVision and Color3.new(1, 1, 1) or Color3.new(0, 0, 0)
+        Window:Notify({Title = "夜视", Content = NightVision and "已开启" or "已关闭", Duration = 2})
+    end
+})
+
+-- ===== 修改后的穿墙（纯点击开关，不再由跳跃关闭） =====
+local noclipEnabled = false
+
+VisualSection:AddButton({
+    Name = "穿墙 (点击开关)",
+    Callback = function()
+        noclipEnabled = not noclipEnabled
+        local char = game.Players.LocalPlayer.Character
+        if noclipEnabled then
+            if char then
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+            Window:Notify({Title = "穿墙", Content = "已开启", Duration = 2})
+        else
+            if char then
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = true
+                    end
+                end
+            end
+            Window:Notify({Title = "穿墙", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+local InfiniteJumpEnabled = false
+VisualSection:AddButton({
+    Name = "无限跳 (点击开关)",
+    Callback = function()
+        InfiniteJumpEnabled = not InfiniteJumpEnabled
+        Window:Notify({
+            Title = "无限跳",
+            Content = InfiniteJumpEnabled and "已开启" or "已关闭",
+            Duration = 2
+        })
+    end
+})
+
+-- 跳跃监听：只负责无限跳，不再干扰穿墙
+game:GetService("UserInputService").JumpRequest:Connect(function()
+    if InfiniteJumpEnabled then
+        pcall(function()
+            game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+    end
+    -- 穿墙关闭代码已移除
+end)
+
+local ToolSection = Tab1:AddSection("工具")
+
+ToolSection:AddButton({
+    Name = "点击传送工具",
+    Callback = function()
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        local tool = Instance.new("Tool")
+        tool.RequiresHandle = false
+        tool.Name = "[巫] 传送工具"
+        tool.Activated:Connect(function()
+            local pos = mouse.Hit + Vector3.new(0, 2.5, 0)
+            pcall(function()
+                game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(pos.X, pos.Y, pos.Z)
+            end)
+        end)
+        tool.Parent = game.Players.LocalPlayer.Backpack
+        Window:Notify({Title = "提示", Content = "传送工具已添加到背包", Duration = 2})
+    end
+})
+
+ToolSection:AddButton({
+    Name = "帧率优化",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/OruW5AwY/raw"))()
+        end)
+    end
+})
+
+ToolSection:AddButton({
+    Name = "帧率优化2",
+    Callback = WuLoader("https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps3", "已加载 帧率优化2")
+})
+
+-------------------------------------------------
+-- 标签页 4：范围设置
+-------------------------------------------------
+local Tab2 = Window:AddTab("范围设置")
+local HitboxSection = Tab2:AddSection("范围调整")
+
+local HitboxSize = 0
+local HitboxEnabled = false
+
+game:GetService("RunService").RenderStepped:Connect(function()
+    if HitboxEnabled then
+        for _, v in pairs(game:GetService("Players"):GetPlayers()) do
+            if v ~= game.Players.LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") then
+                pcall(function()
+                    local root = v.Character.HumanoidRootPart
+                    root.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+                    root.Transparency = 0.7
+                    root.BrickColor = BrickColor.new("Really red")
+                    root.Material = Enum.Material.Neon
+                    root.CanCollide = false
+                end)
+            end
+        end
+    end
+end)
+
+local function SetHitbox(size)
+    HitboxSize = size
+    HitboxEnabled = true
+    Window:Notify({Title = "范围", Content = "已设置为 " .. tostring(size), Duration = 2})
+end
+
+HitboxSection:AddButton({Name = "0范围", Callback = function() SetHitbox(0) end})
+HitboxSection:AddButton({Name = "普通范围", Callback = function() SetHitbox(30) end})
+HitboxSection:AddButton({Name = "中等范围", Callback = function() SetHitbox(100) end})
+HitboxSection:AddButton({Name = "全图范围", Callback = function() SetHitbox(500) end})
+HitboxSection:AddButton({Name = "终极范围", Callback = function() SetHitbox(2500) end})
+HitboxSection:AddButton({Name = "关闭范围", Callback = function() 
+    HitboxEnabled = false 
+    Window:Notify({Title = "范围", Content = "已关闭", Duration = 2})
+end})
+
+-- ===== 加载 hitbox 扩展器（带防重复） =====
+HitboxSection:AddButton({
+    Name = "点击加载hitbox扩展器",
+    Callback = WuLoader("https://pastefy.app/ItfO0tdg/raw", "hitbox扩展器已加载")
+})
+
+-------------------------------------------------
+-- 标签页 5：甩飞与传送
+-------------------------------------------------
+local Tab3 = Window:AddTab("甩飞与传送")
+local FlingSection = Tab3:AddSection("甩飞功能")
+
+local AllBool = false
+local OldPos = nil
+local FPDH = workspace.FallenPartsDestroyHeight
+
+local function GetPlayer(Name)
+    Name = Name:lower()
+    if Name == "all" or Name == "others" then
+        AllBool = true
+        return
+    elseif Name == "random" then
+        local GetPlayers = game:GetService("Players"):GetPlayers()
+        local player = game.Players.LocalPlayer
+        if table.find(GetPlayers, player) then table.remove(GetPlayers, table.find(GetPlayers, player)) end
+        return GetPlayers[math.random(#GetPlayers)]
+    elseif Name ~= "random" and Name ~= "all" and Name ~= "others" then
+        for _, x in next, game:GetService("Players"):GetPlayers() do
+            if x ~= game.Players.LocalPlayer then
+                if x.Name:lower():match("^" .. Name) then
+                    return x
+                elseif x.DisplayName:lower():match("^" .. Name) then
+                    return x
+                end
+            end
+        end
+    else
+        return
+    end
+end
+
+local function SkidFling(TargetPlayer)
+    local Player = game.Players.LocalPlayer
+    local Character = Player.Character
+    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+    local RootPart = Humanoid and Humanoid.RootPart
+
+    if not Character or not Humanoid or not RootPart then return end
+
+    local TCharacter = TargetPlayer.Character
+    if not TCharacter then return end
+    
+    local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
+    local TRootPart = THumanoid and THumanoid.RootPart
+    local THead = TCharacter:FindFirstChild("Head")
+    local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
+    local Handle = Accessory and Accessory:FindFirstChild("Handle")
+
+    if not TCharacter:FindFirstChildWhichIsA("BasePart") then return end
+
+    -- 始终记录原点，避免高速时 OldPos 为 nil
+    OldPos = RootPart.CFrame
+    if RootPart.Velocity.Magnitude < 50 then
+        OldPos = RootPart.CFrame
+    end
+    
+    if THumanoid and THumanoid.Sit and not AllBool then
+        return
+    end
+
+    if THead then
+        workspace.CurrentCamera.CameraSubject = THead
+    elseif not THead and Handle then
+        workspace.CurrentCamera.CameraSubject = Handle
+    elseif THumanoid and TRootPart then
+        workspace.CurrentCamera.CameraSubject = THumanoid
+    end
+
+    local FPos = function(BasePart, Pos, Ang)
+        RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
+        Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+        RootPart.Velocity = Vector3.new(9e7, 9e7 * 10, 9e7)
+        RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
+    end
+
+    local SFBasePart = function(BasePart)
+        local TimeToWait = 2
+        local Time = tick()
+        local Angle = 0
+
+        repeat
+            if RootPart and THumanoid then
+                if BasePart.Velocity.Magnitude < 50 then
+                    Angle = Angle + 100
+
+                    FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(2.25, 1.5, -2.25) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(-2.25, -1.5, 2.25) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+                    task.wait()
+                else
+                    FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, 1.5, TRootPart.Velocity.Magnitude / 1.25), CFrame.Angles(math.rad(90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, -TRootPart.Velocity.Magnitude / 1.25), CFrame.Angles(0, 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, 1.5, TRootPart.Velocity.Magnitude / 1.25), CFrame.Angles(math.rad(90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(-90), 0, 0))
+                    task.wait()
+
+                    FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+                    task.wait()
+                end
+            else
+                break
+            end
+        until BasePart.Velocity.Magnitude > 500 or BasePart.Parent ~= TargetPlayer.Character or TargetPlayer.Parent ~= game:GetService("Players") or TargetPlayer.Character ~= TCharacter or THumanoid.Sit or Humanoid.Health <= 0 or tick() > Time + TimeToWait
+    end
+
+    workspace.FallenPartsDestroyHeight = 0 / 0
+
+    local BV = Instance.new("BodyVelocity")
+    BV.Name = "EpixVel"
+    BV.Parent = RootPart
+    BV.Velocity = Vector3.new(9e8, 9e8, 9e8)
+    BV.MaxForce = Vector3.new(1 / 0, 1 / 0, 1 / 0)
+
+    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+
+    if TRootPart and THead then
+        if (TRootPart.CFrame.p - THead.CFrame.p).Magnitude > 5 then
+            SFBasePart(THead)
+        else
+            SFBasePart(TRootPart)
+        end
+    elseif TRootPart and not THead then
+        SFBasePart(TRootPart)
+    elseif not TRootPart and THead then
+        SFBasePart(THead)
+    elseif not TRootPart and not THead and Accessory and Handle then
+        SFBasePart(Handle)
+    else
+        return
+    end
+
+    BV:Destroy()
+    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+    workspace.CurrentCamera.CameraSubject = Humanoid
+
+    repeat
+        RootPart.CFrame = OldPos * CFrame.new(0, 0.5, 0)
+        Character:SetPrimaryPartCFrame(OldPos * CFrame.new(0, 0.5, 0))
+        Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        for _, x in next, Character:GetChildren() do
+            if x:IsA("BasePart") then
+                x.Velocity, x.RotVelocity = Vector3.new(), Vector3.new()
+            end
+        end
+        task.wait()
+    until (RootPart.Position - OldPos.p).Magnitude < 25
+    workspace.FallenPartsDestroyHeight = FPDH
+end
+
+FlingSection:AddButton({
+    Name = "甩飞全部人",
+    Callback = function()
+        pcall(function()
+            local Players = game:GetService("Players")
+            local Player = Players.LocalPlayer
+            local Targets = {"All"}
+            AllBool = false
+            
+            if Targets[1] then
+                for _, x in next, Targets do
+                    GetPlayer(x)
+                end
+            else
+                return
+            end
+
+            if AllBool then
+                for _, x in next, Players:GetPlayers() do
+                    if x ~= Player then
+                        SkidFling(x)
+                    end
+                end
+            end
+
+            for _, x in next, Targets do
+                if GetPlayer(x) and GetPlayer(x) ~= Player then
+                    local TPlayer = GetPlayer(x)
+                    if TPlayer then
+                        SkidFling(TPlayer)
+                    end
+                elseif not GetPlayer(x) and not AllBool then
+                    Window:Notify({Title = "甩飞", Content = "未找到玩家", Duration = 2})
+                end
+            end
+            
+            Window:Notify({Title = "甩飞", Content = "已甩飞全部玩家！", Duration = 2})
+        end)
+    end
+})
+
+local selectedPlayer = ""
+local playerList = {}
+
+local function refreshPlayerList()
+    playerList = {}
+    for _, player in pairs(game:GetService("Players"):GetPlayers()) do
+        if player ~= game.Players.LocalPlayer then
+            table.insert(playerList, player.Name)
+        end
+    end
+    return playerList
+end
+
+local dropdown = FlingSection:AddDropdown({
+    Name = "选择玩家",
+    Options = refreshPlayerList(),
+    Default = "",
+    Callback = function(option)
+        selectedPlayer = option
+    end
+})
+
+FlingSection:AddButton({
+    Name = "刷新玩家列表",
+    Callback = function()
+        local list = refreshPlayerList()
+        local ok = false
+        if type(dropdown) == "table" then
+            if type(dropdown.SetOptions) == "function" then
+                ok = pcall(function() dropdown:SetOptions(list) end)
+            elseif type(dropdown.Refresh) == "function" then
+                ok = pcall(function() dropdown:Refresh(list, true) end)
+            elseif type(dropdown.Set) == "function" then
+                ok = pcall(function() dropdown:Set(list) end)
+            end
+        end
+        if not ok then
+            -- 兼容层未返回控件对象时：至少更新默认选项源并提示重开下拉
+            pcall(function()
+                if type(dropdown) == "table" and dropdown.Options ~= nil then
+                    dropdown.Options = list
+                end
+            end)
+        end
+        Window:Notify({
+            Title = "刷新",
+            Content = ok and "玩家列表已刷新" or "列表已更新（若未变化请重新打开下拉）",
+            Duration = 2
+        })
+    end
+})
+
+FlingSection:AddButton({
+    Name = "甩飞选中玩家",
+    Callback = function()
+        pcall(function()
+            if selectedPlayer == "" then
+                Window:Notify({Title = "甩飞", Content = "请先选择玩家", Duration = 2})
+                return
+            end
+            local target = game:GetService("Players"):FindFirstChild(selectedPlayer)
+            if target and target.Character then
+                AllBool = false
+                SkidFling(target)
+                Window:Notify({Title = "甩飞", Content = "已甩飞 " .. selectedPlayer, Duration = 2})
+            else
+                Window:Notify({Title = "甩飞", Content = "玩家不存在或已离开", Duration = 2})
+            end
+        end)
+    end
+})
+
+-- ===== 防甩飞（禁用碰撞版 - 作用于所有其他玩家） =====
+local CollisionAntiFlingEnabled = false
+local CollisionAntiFlingConnections = {}
+
+local function SetupCharacterCollision(char)
+    if not char then return end
+    
+    local function DisableCollide(part)
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    for _, part in ipairs(char:GetChildren()) do
+        DisableCollide(part)
+    end
+    
+    local childAddedConn = char.ChildAdded:Connect(DisableCollide)
+    
+    local steppedConn = game:GetService("RunService").Stepped:Connect(function()
+        if CollisionAntiFlingEnabled and char:IsDescendantOf(workspace) then
+            for _, part in ipairs(char:GetChildren()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+    
+    if not CollisionAntiFlingConnections[char] then
+        CollisionAntiFlingConnections[char] = {}
+    end
+    table.insert(CollisionAntiFlingConnections[char], childAddedConn)
+    table.insert(CollisionAntiFlingConnections[char], steppedConn)
+    
+    char.Destroying:Connect(function()
+        for _, conn in ipairs(CollisionAntiFlingConnections[char] or {}) do
+            conn:Disconnect()
+        end
+        CollisionAntiFlingConnections[char] = nil
+    end)
+end
+
+local function ApplyCollisionAntiFling()
+    for _, connList in pairs(CollisionAntiFlingConnections) do
+        for _, conn in ipairs(connList) do
+            conn:Disconnect()
+        end
+    end
+    CollisionAntiFlingConnections = {}
+    
+    if not CollisionAntiFlingEnabled then return end
+    
+    for _, player in pairs(game:GetService("Players"):GetPlayers()) do
+        if player ~= game.Players.LocalPlayer then
+            if player.Character then
+                SetupCharacterCollision(player.Character)
+            end
+            player.CharacterAdded:Connect(function(char)
+                if CollisionAntiFlingEnabled then
+                    SetupCharacterCollision(char)
+                end
+            end)
+        end
+    end
+end
+
+game:GetService("Players").PlayerAdded:Connect(function(player)
+    if player == game.Players.LocalPlayer then return end
+    player.CharacterAdded:Connect(function(char)
+        if CollisionAntiFlingEnabled then
+            SetupCharacterCollision(char)
+        end
+    end)
+end)
+
+FlingSection:AddToggle({
+    Name = "防甩飞 (禁用碰撞)",
+    Default = false,
+    Callback = function(state)
+        CollisionAntiFlingEnabled = state
+        ApplyCollisionAntiFling()
+        Window:Notify({
+            Title = "防甩飞",
+            Content = state and "已开启 (作用于所有其他玩家)" or "已关闭",
+            Duration = 2
+        })
+    end
+})
+
+-------------------------------------------------
+-- 传送与查看（来自殺脚本思路）
+-------------------------------------------------
+local TpSection = Tab3:AddSection("传送与查看")
+
+local LoopTpToPlayer = false
+local LoopBringPlayer = false
+local Spectating = false
+
+local function getSelectedTarget()
+    if not selectedPlayer or selectedPlayer == "" then
+        return nil
+    end
+    local t = game:GetService("Players"):FindFirstChild(selectedPlayer)
+    if t and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
+        return t
+    end
+    return nil
+end
+
+TpSection:AddButton({
+    Name = "传送到玩家旁边",
+    Callback = function()
+        local target = getSelectedTarget()
+        local myRoot = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if target and myRoot then
+            myRoot.CFrame = target.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+            Window:Notify({Title = "传送", Content = "已传送到 " .. selectedPlayer, Duration = 2})
+        else
+            Window:Notify({Title = "传送", Content = "请先选择有效玩家", Duration = 2})
+        end
+    end
+})
+
+TpSection:AddToggle({
+    Name = "锁定传送（循环到玩家）",
+    Default = false,
+    Callback = function(state)
+        LoopTpToPlayer = state
+        if state then
+            Window:Notify({Title = "传送", Content = "已开启循环传送", Duration = 2})
+            task.spawn(function()
+                while LoopTpToPlayer do
+                    local target = getSelectedTarget()
+                    local myRoot = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if target and myRoot then
+                        myRoot.CFrame = target.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                    end
+                    task.wait()
+                end
+            end)
+        else
+            Window:Notify({Title = "传送", Content = "已关闭循环传送", Duration = 2})
+        end
+    end
+})
+
+TpSection:AddButton({
+    Name = "把玩家传送过来",
+    Callback = function()
+        local target = getSelectedTarget()
+        local myRoot = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if target and myRoot then
+            target.Character.HumanoidRootPart.CFrame = myRoot.CFrame + Vector3.new(0, 3, 0)
+            Window:Notify({Title = "传送", Content = "已将 " .. selectedPlayer .. " 传送过来", Duration = 2})
+        else
+            Window:Notify({Title = "传送", Content = "请先选择有效玩家", Duration = 2})
+        end
+    end
+})
+
+TpSection:AddToggle({
+    Name = "循环传送玩家过来",
+    Default = false,
+    Callback = function(state)
+        LoopBringPlayer = state
+        if state then
+            Window:Notify({Title = "传送", Content = "已开启循环拉人", Duration = 2})
+            task.spawn(function()
+                while LoopBringPlayer do
+                    local target = getSelectedTarget()
+                    local myRoot = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if target and myRoot then
+                        pcall(function()
+                            target.Character.HumanoidRootPart.CFrame = myRoot.CFrame + Vector3.new(0, 3, 0)
+                        end)
+                    end
+                    task.wait()
+                end
+            end)
+        else
+            Window:Notify({Title = "传送", Content = "已关闭循环拉人", Duration = 2})
+        end
+    end
+})
+
+TpSection:AddToggle({
+    Name = "查看玩家（观战）",
+    Default = false,
+    Callback = function(state)
+        Spectating = state
+        pcall(function()
+            if state then
+                local target = getSelectedTarget()
+                if target and target.Character then
+                    local hum = target.Character:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        workspace.CurrentCamera.CameraSubject = hum
+                        Window:Notify({Title = "查看", Content = "正在查看 " .. selectedPlayer, Duration = 2})
+                        return
+                    end
+                end
+                Window:Notify({Title = "查看", Content = "请先选择有效玩家", Duration = 2})
+            else
+                local lp = game.Players.LocalPlayer
+                if lp.Character and lp.Character:FindFirstChildOfClass("Humanoid") then
+                    workspace.CurrentCamera.CameraSubject = lp.Character:FindFirstChildOfClass("Humanoid")
+                end
+                Window:Notify({Title = "查看", Content = "已关闭查看", Duration = 2})
+            end
+        end)
+    end
+})
+
+-------------------------------------------------
+-- 标签页 6：工具
+-------------------------------------------------
+local Tab4 = Window:AddTab("工具")
+local VisSection = Tab4:AddSection("视觉")
+
+VisSection:AddButton({
+    Name = "帧率与Ping显示",
+    Callback = function()
+        if _G.WuFPSPingLoaded then
+            Window:Notify({Title = "提示", Content = "已开启，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.WuFPSPingLoaded = true
+        pcall(function()
+            local RunService = game:GetService("RunService")
+            local Stats = game:GetService("Stats")
+            local Players = game:GetService("Players")
+            local LocalPlayer = Players.LocalPlayer
+
+            local ScreenGui = Instance.new("ScreenGui")
+            ScreenGui.Name = "FPS_Ping_Display"
+            ScreenGui.ResetOnSpawn = false
+            pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
+            if not ScreenGui.Parent then
+                ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+            end
+
+            local Frame = Instance.new("Frame")
+            Frame.Size = UDim2.new(0, 200, 0, 80)
+            Frame.Position = UDim2.new(0.7, 0, 0.05, 0)
+            Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+            Frame.BackgroundTransparency = 0.3
+            Frame.BorderSizePixel = 2
+            Frame.Active = true
+            Frame.Draggable = true
+            Frame.Parent = ScreenGui
+
+            local TitleLabel = Instance.new("TextLabel")
+            TitleLabel.Size = UDim2.new(1, 0, 0.3, 0)
+            TitleLabel.Position = UDim2.new(0, 0, 0, 0)
+            TitleLabel.BackgroundTransparency = 1
+            TitleLabel.Text = "FPS & Ping"
+            TitleLabel.Font = Enum.Font.SourceSansBold
+            TitleLabel.TextSize = 16
+            TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+            TitleLabel.Parent = Frame
+
+            local FPSText = Instance.new("TextLabel")
+            FPSText.Size = UDim2.new(1, 0, 0.35, 0)
+            FPSText.Position = UDim2.new(0, 0, 0.3, 0)
+            FPSText.BackgroundTransparency = 1
+            FPSText.Font = Enum.Font.SourceSansBold
+            FPSText.TextSize = 16
+            FPSText.TextColor3 = Color3.new(1, 1, 1)
+            FPSText.Parent = Frame
+
+            local PingText = Instance.new("TextLabel")
+            PingText.Size = UDim2.new(1, 0, 0.35, 0)
+            PingText.Position = UDim2.new(0, 0, 0.65, 0)
+            PingText.BackgroundTransparency = 1
+            PingText.Font = Enum.Font.SourceSansBold
+            PingText.TextSize = 16
+            PingText.TextColor3 = Color3.new(1, 1, 1)
+            PingText.Parent = Frame
+
+            task.spawn(function()
+                while ScreenGui.Parent do
+                    local fps = math.floor(1 / RunService.RenderStepped:Wait())
+                    local ping = 0
+                    pcall(function()
+                        ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+                    end)
+                    local fpsRating = (fps > 60 and "Excellent") or (fps >= 30 and "Playable") or "Choppy"
+                    local pingRating = (ping <= 50 and "Good") or (ping <= 100 and "Decent") or "Bad"
+                    FPSText.Text = "FPS: " .. fps .. " (" .. fpsRating .. ")"
+                    PingText.Text = "Ping: " .. ping .. "ms (" .. pingRating .. ")"
+                    task.wait(1)
+                end
+            end)
+        end)
+        Window:Notify({Title = "帧率与Ping", Content = "已开启（可拖动）", Duration = 2})
+    end
+})
+
+VisSection:AddButton({
+    Name = "显示时间",
+    Callback = function()
+        pcall(function()
+            local LBLG = Instance.new("ScreenGui")
+            local LBL = Instance.new("TextLabel")
+            LBLG.Name = "LBLG"
+            LBLG.Parent = game.CoreGui
+            LBLG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+            LBLG.Enabled = true
+            LBL.Name = "LBL"
+            LBL.Parent = LBLG
+            LBL.BackgroundColor3 = Color3.new(1, 1, 1)
+            LBL.BackgroundTransparency = 1
+            LBL.BorderColor3 = Color3.new(0, 0, 0)
+            LBL.Position = UDim2.new(0.75, 0, 0.010, 0)
+            LBL.Size = UDim2.new(0, 133, 0, 30)
+            LBL.Font = Enum.Font.GothamSemibold
+            LBL.Text = "时间"
+            LBL.TextColor3 = Color3.new(1, 1, 1)
+            LBL.TextScaled = true
+            LBL.TextSize = 14
+            LBL.TextWrapped = true
+            LBL.Visible = true
+            game:GetService("RunService").Heartbeat:Connect(function()
+                LBL.Text = "时间:" .. os.date("%H") .. "时" .. os.date("%M") .. "分" .. os.date("%S") .. "秒"
+            end)
+        end)
+        Window:Notify({Title = "显示时间", Content = "已开启", Duration = 2})
+    end
+})
+
+VisSection:AddButton({
+    Name = "锁定视角",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Mobile-Shiftlock-217580"))()
+        end)
+    end
+})
+
+local UtilSection2 = Tab4:AddSection("实用工具")
+
+UtilSection2:AddButton({
+    Name = "聊天框中进行图画",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/ocfi/Draw-To-Chat-Obfuscated/refs/heads/main/Draw%20to%20Chat"))()
+        end)
+    end
+})
+
+UtilSection2:AddButton({
+    Name = "假卡顿 (走路跳跃变卡)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet('https://raw.githubusercontent.com/GhostPlayer352/Test4/main/Fe%20Fake%20Lag%20Obfuscator'))()
+        end)
+    end
+})
+
+UtilSection2:AddButton({
+    Name = "玩家进出服务器提示",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/boyscp/scriscriptsc/main/bbn.lua"))()
+        end)
+    end
+})
+
+UtilSection2:AddButton({
+    Name = "防挂机",
+    Callback = WuLoader("https://raw.githubusercontent.com/Proxylol/roblox-scripts/refs/heads/main/AntiAFK.lua", "已加载 防挂机")
+})
+
+local autoInteractEnabled = false
+local autoInteractLoop = nil
+
+UtilSection2:AddToggle({
+    Name = "自动互动",
+    Default = false,
+    Callback = function(state)
+        autoInteractEnabled = state
+        if state then
+            if autoInteractLoop then
+                autoInteractLoop:Disconnect()
+                autoInteractLoop = nil
+            end
+            autoInteractLoop = game:GetService("RunService").Heartbeat:Connect(function()
+                if not autoInteractEnabled then
+                    autoInteractLoop:Disconnect()
+                    autoInteractLoop = nil
+                    return
+                end
+                for _, descendant in pairs(workspace:GetDescendants()) do
+                    if descendant:IsA("ProximityPrompt") then
+                        fireproximityprompt(descendant)
+                    end
+                end
+            end)
+        else
+            if autoInteractLoop then
+                autoInteractLoop:Disconnect()
+                autoInteractLoop = nil
+            end
+        end
+    end
+})
+
+local quickInteractConnection = nil
+UtilSection2:AddButton({
+    Name = "快速互动 (无需长按)",
+    Callback = function()
+        if quickInteractConnection then
+            quickInteractConnection:Disconnect()
+            quickInteractConnection = nil
+        end
+        quickInteractConnection = game:GetService("ProximityPromptService").PromptButtonHoldBegan:Connect(function(prompt)
+            prompt.HoldDuration = 0
+        end)
+        Window:Notify({Title = "快速互动", Content = "已启用（点击Prompt即触发）", Duration = 2})
+    end
+})
+
+-------------------------------------------------
+-- 标签页 7：趣味
+-------------------------------------------------
+local Tab5 = Window:AddTab("趣味")
+local MoveSection = Tab5:AddSection("移动")
+
+MoveSection:AddButton({
+    Name = "飞行",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://obfuscatorhub.onrender.com/api/nycq09p0"))()
+        end)
+    end
+})
+
+MoveSection:AddButton({
+    Name = "隐身",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet('https://pastebin.com/raw/3Rnd9rHf'))()
+        end)
+    end
+})
+
+MoveSection:AddButton({
+    Name = "爬墙",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/zXk4Rq2r"))()
+        end)
+    end
+})
+
+local SpinSection = Tab5:AddSection("旋转与动作")
+
+SpinSection:AddButton({
+    Name = "快速旋转",
+    Callback = function()
+        pcall(function()
+            if game.Players.LocalPlayer.Character.Humanoid.RigType == Enum.HumanoidRigType.R6 then
+                spawn(function()
+                    local speaker = game.Players.LocalPlayer
+                    local Anim = Instance.new("Animation")
+                    Anim.AnimationId = "rbxassetid://27432686"
+                    local bruh = game.Players.LocalPlayer.Character.Humanoid:LoadAnimation(Anim)
+                    bruh:Play()
+                    bruh:AdjustSpeed(0)
+                    speaker.Character.Animate.Disabled = true
+                    local hi = Instance.new("Sound")
+                    hi.Name = "Sound"
+                    hi.SoundId = "http://www.roblox.com/asset/?id=8114290584"
+                    hi.Volume = 2
+                    hi.Looped = false
+                    hi.archivable = false
+                    hi.Parent = game.Workspace
+                    hi:Play()
+                    wait(1.5)
+                    local spinSpeed = 30
+                    local Spin = Instance.new("BodyAngularVelocity")
+                    Spin.Name = "Spinning"
+                    Spin.Parent = game.Players.LocalPlayer.Character.HumanoidRootPart
+                    Spin.MaxTorque = Vector3.new(0, math.huge, 0)
+                    Spin.AngularVelocity = Vector3.new(0, spinSpeed, 0)
+                end)
+            else
+                spawn(function()
+                    local speaker = game.Players.LocalPlayer
+                    local Anim = Instance.new("Animation")
+                    Anim.AnimationId = "rbxassetid://507776043"
+                    local bruh = game.Players.LocalPlayer.Character.Humanoid:LoadAnimation(Anim)
+                    bruh:Play()
+                    bruh:AdjustSpeed(0)
+                    speaker.Character.Animate.Disabled = true
+                    local hi = Instance.new("Sound")
+                    hi.Name = "Sound"
+                    hi.SoundId = "http://www.roblox.com/asset/?id=8114290584"
+                    hi.Volume = 0
+                    hi.Looped = false
+                    hi.archivable = false
+                    hi.Parent = game.Workspace
+                    hi:Play()
+                    wait()
+                    local spinSpeed = 30
+                    local Spin = Instance.new("BodyAngularVelocity")
+                    Spin.Name = "Spinning"
+                    Spin.Parent = game.Players.LocalPlayer.Character.HumanoidRootPart
+                    Spin.MaxTorque = Vector3.new(0, math.huge, 0)
+                    Spin.AngularVelocity = Vector3.new(0, spinSpeed, 0)
+                end)
+            end
+        end)
+        Window:Notify({Title = "快速旋转", Content = "已开启", Duration = 2})
+    end
+})
+
+SpinSection:AddButton({
+    Name = "极速旋转",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/ckiGL34v"))()
+        end)
+    end
+})
+
+SpinSection:AddButton({
+    Name = "滚动",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/BOOSBS/111/refs/heads/main/192"))()
+        end)
+    end
+})
+
+local MiscSection = Tab5:AddSection("杂项工具")
+
+MiscSection:AddSlider({
+    Name = "血量设置 (只能自己看)",
+    Min = 0,
+    Max = 10000,
+    Default = 100,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        pcall(function()
+            game.Players.LocalPlayer.Character.Humanoid.Health = value
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "重开 (删除头部)",
+    Callback = function()
+        pcall(function()
+            game.Players.LocalPlayer.Character.Head:Remove()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "上头定在原地",
+    Callback = function()
+        pcall(function()
+            local lp = game:GetService("Players").LocalPlayer
+            if lp.Character:FindFirstChild("Head") then
+                local char = lp.Character
+                char.Archivable = true
+                local new = char:Clone()
+                new.Parent = workspace
+                lp.Character = new
+                wait(0.1)
+                local oldhum = char:FindFirstChildWhichIsA("Humanoid")
+                local newhum = oldhum:Clone()
+                newhum.Parent = char
+                newhum.RequiresNeck = false
+                oldhum.Parent = nil
+                wait(0.1)
+                lp.Character = char
+                new:Destroy()
+                wait(0.1)
+                newhum:GetPropertyChangedSignal("Health"):Connect(function()
+                    if newhum.Health <= 0 then
+                        oldhum.Parent = lp.Character
+                        wait(0.1)
+                        oldhum:Destroy()
+                    end
+                end)
+                workspace.CurrentCamera.CameraSubject = char
+                if char:FindFirstChild("Animate") then
+                    char.Animate.Disabled = true
+                    wait(0.1)
+                    char.Animate.Disabled = false
+                end
+                lp.Character:FindFirstChild("Head"):Destroy()
+            end
+        end)
+        Window:Notify({Title = "上头定在原地", Content = "已开启", Duration = 2})
+    end
+})
+
+MiscSection:AddButton({
+    Name = "阿尔宙斯注入器",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/AZYsGithub/chillz-workshop/main/Arceus%20X%20V3"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "刷道具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/wT1aKD4B"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "位置查看",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/ZJeTvyzG"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "物体起飞 (Q键使用)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/BOOSBS/ajduoxc/refs/heads/main/ajduoxcz"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "虚拟键盘 (第1种)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://gist.githubusercontent.com/RedZenXYZ/4d80bfd70ee27000660e4bfa7509c667/raw/da903c570249ab3c0c1a74f3467260972c3d87e6/KeyBoard%2520From%2520Ohio%2520Fr%2520Fr"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "虚拟键盘 (第2种)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/Xxtan31/Ata/main/deltakeyboardcrack.txt", true))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "飞车",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/gNqZiexm"))()
+        end)
+    end
+})
+
+MiscSection:AddButton({
+    Name = "FE变身中心",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://you.whimper.xyz/UFE.lua"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 FE变身中心", Duration = 2})
+    end
+})
+
+MiscSection:AddButton({
+    Name = "动画中心",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/Bac0nHck/Scripts/refs/heads/main/BundleAnimations.lua"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 动画中心", Duration = 2})
+    end
+})
+
+MiscSection:AddButton({
+    Name = "巫墙跳",
+    Callback = function()
+        if _G.LoadedScripts["WuWallHop"] then
+            Window:Notify({Title = "提示", Content = "巫墙跳已打开，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts["WuWallHop"] = true
+        pcall(function()
+            -- 巫墙跳（中文版 WallHop）
+            local screenGui = Instance.new("ScreenGui")
+            screenGui.Name = "WuWallHop"
+            screenGui.ResetOnSpawn = false
+            pcall(function() screenGui.Parent = game:GetService("CoreGui") end)
+            if not screenGui.Parent then
+                screenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+            end
+
+            local UIS = game:GetService("UserInputService")
+            local Players = game:GetService("Players")
+            local RunService = game:GetService("RunService")
+            local player = Players.LocalPlayer
+
+            local frame = Instance.new("Frame")
+            frame.Parent = screenGui
+            frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+            frame.Size = UDim2.new(0, 200, 0, 415)
+            frame.Position = UDim2.new(0.5, -100, 0.5, -207)
+            frame.Active = true
+            local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
+
+            -- 拖动
+            local dragging, dragStart, startPos
+            frame.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    dragStart = input.Position
+                    startPos = frame.Position
+                    input.Changed:Connect(function()
+                        if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                    end)
+                end
+            end)
+            UIS.InputChanged:Connect(function(input)
+                if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    local d = input.Position - dragStart
+                    frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+                end
+            end)
+
+            local statusLabel = Instance.new("TextLabel")
+            statusLabel.Parent = frame
+            statusLabel.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+            statusLabel.Size = UDim2.new(1, 0, 0, 28)
+            statusLabel.Position = UDim2.new(0, 0, 0, 0)
+            statusLabel.Text = "巫墙跳：关闭"
+            statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+            statusLabel.Font = Enum.Font.GothamBold
+            statusLabel.TextSize = 14
+            local sc = Instance.new("UICorner"); sc.CornerRadius = UDim.new(0, 8); sc.Parent = statusLabel
+
+            local function makeBtn(text, y, color)
+                local b = Instance.new("TextButton")
+                b.Parent = frame
+                b.BackgroundColor3 = color or Color3.fromRGB(50, 50, 55)
+                b.Size = UDim2.new(0, 160, 0, 28)
+                b.Position = UDim2.new(0, 20, 0, y)
+                b.Text = text
+                b.TextColor3 = Color3.fromRGB(255, 255, 255)
+                b.Font = Enum.Font.Gotham
+                b.TextSize = 13
+                local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = b
+                return b
+            end
+
+            local onBtn = makeBtn("开启", 40, Color3.fromRGB(0, 180, 80))
+            local offBtn = makeBtn("关闭", 72, Color3.fromRGB(200, 60, 60))
+            local autoBtn = makeBtn("自动：关", 104, Color3.fromRGB(200, 60, 60))
+            local autoJumpBtn = makeBtn("自动跳：关", 136, Color3.fromRGB(200, 60, 60))
+            local dfBtn = makeBtn("下压力：关", 168, Color3.fromRGB(200, 60, 60))
+            local destroyBtn = makeBtn("销毁界面", 380, Color3.fromRGB(80, 80, 90))
+
+            local function makeSlider(labelText, y, default, minV, maxV, fmt)
+                local lab = Instance.new("TextLabel")
+                lab.Parent = frame
+                lab.BackgroundTransparency = 1
+                lab.Size = UDim2.new(0, 160, 0, 16)
+                lab.Position = UDim2.new(0, 20, 0, y)
+                lab.Text = string.format(fmt, default)
+                lab.TextColor3 = Color3.fromRGB(220, 220, 220)
+                lab.Font = Enum.Font.Gotham
+                lab.TextSize = 12
+                lab.TextXAlignment = Enum.TextXAlignment.Left
+
+                local bg = Instance.new("Frame")
+                bg.Parent = frame
+                bg.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+                bg.Size = UDim2.new(0, 160, 0, 8)
+                bg.Position = UDim2.new(0, 20, 0, y + 18)
+                local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 4); bc.Parent = bg
+
+                local knob = Instance.new("TextButton")
+                knob.Parent = bg
+                knob.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+                knob.Size = UDim2.new(0, 12, 0, 16)
+                local scale0 = (default - minV) / (maxV - minV)
+                knob.Position = UDim2.new(scale0, -6, 0.5, -8)
+                knob.Text = ""
+                local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(0, 4); kc.Parent = knob
+
+                local value = default
+                local active = false
+                knob.InputBegan:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then active = true end
+                end)
+                UIS.InputEnded:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then active = false end
+                end)
+                UIS.InputChanged:Connect(function(i)
+                    if active and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+                        local ax, aw = bg.AbsolutePosition.X, bg.AbsoluteSize.X
+                        local s = math.clamp((i.Position.X - ax) / aw, 0, 1)
+                        value = minV + s * (maxV - minV)
+                        knob.Position = UDim2.new(s, -6, 0.5, -8)
+                        lab.Text = string.format(fmt, value)
+                    end
+                end)
+                return function() return value end
+            end
+
+            local getFlickSpeed = makeSlider("Flick", 205, 0.45, 0.1, 0.8, "弹跳速度: %.2f")
+            local getDfMult = makeSlider("DF", 250, 0.45, 0, 1, "下压力倍数: %.2f")
+            local getAngle = makeSlider("Angle", 295, 50, 0, 180, "弹跳角度: %d°")
+
+            local state = { enabled = false, auto = false, autoJump = false, downforce = false, canJump = true }
+            local jumpConn, autoConn
+
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+
+            local function getWall()
+                local char = player.Character
+                if not char then return nil end
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if not hrp then return nil end
+                rayParams.FilterDescendantsInstances = {char}
+                local closest, minD = nil, 3.5
+                local function isHum(inst)
+                    local m = inst and inst:FindFirstAncestorOfClass("Model")
+                    return m and m:FindFirstChildOfClass("Humanoid")
+                end
+                for i = 0, 7 do
+                    local dir = (hrp.CFrame * CFrame.Angles(0, math.rad(i * 45), 0)).LookVector
+                    local r = workspace:Raycast(hrp.Position, dir * 2.5, rayParams)
+                    if r and r.Instance and not isHum(r.Instance) and r.Distance < minD then
+                        minD, closest = r.Distance, r
+                    end
+                end
+                return closest
+            end
+
+            local function doJump(hit)
+                if not state.enabled or not state.canJump or not hit then return end
+                local char = player.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                local cam = workspace.CurrentCamera
+                if not (hum and root and cam) or hum:GetState() == Enum.HumanoidStateType.Dead then return end
+                state.canJump = false
+
+                local n = hit.Normal
+                local away = Vector3.new(n.X, 0, n.Z)
+                if away.Magnitude < 0.1 then away = -root.CFrame.LookVector * Vector3.new(1,0,1) end
+                away = away.Magnitude > 0.1 and away.Unit or Vector3.new(0,0,1)
+
+                local look = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+                look = look.Magnitude > 0.1 and look.Unit or away
+                local maxA = math.rad(getAngle())
+                local dot = math.clamp(away:Dot(look), -1, 1)
+                local ang = math.acos(dot)
+                local cross = away:Cross(look)
+                local sign = -math.sign(cross.Y)
+                local infl = (sign ~= 0) and math.min(ang, maxA) or 0
+                local target = CFrame.Angles(0, infl * sign, 0) * away
+                root.CFrame = CFrame.lookAt(root.Position, root.Position + target)
+                task.wait(getFlickSpeed() * 0.05)
+                if hum and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                    if state.downforce then
+                        task.spawn(function()
+                            task.wait()
+                            if root and root.Velocity.Y > 0 then
+                                root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, root.AssemblyLinearVelocity.Y * getDfMult(), root.AssemblyLinearVelocity.Z)
+                            end
+                        end)
+                    end
+                end
+                task.delay(0.15, function() state.canJump = true end)
+            end
+
+            local function start()
+                if jumpConn then jumpConn:Disconnect() end
+                jumpConn = UIS.JumpRequest:Connect(function()
+                    if state.enabled then doJump(getWall()) end
+                end)
+                if autoConn then autoConn:Disconnect() end
+                autoConn = RunService.Heartbeat:Connect(function()
+                    if state.enabled and (state.auto or state.autoJump) then
+                        doJump(getWall())
+                    end
+                end)
+            end
+
+            local function stop()
+                if jumpConn then jumpConn:Disconnect() jumpConn = nil end
+                if autoConn then autoConn:Disconnect() autoConn = nil end
+            end
+
+            onBtn.MouseButton1Click:Connect(function()
+                state.enabled = true
+                statusLabel.Text = "巫墙跳：开启"
+                statusLabel.TextColor3 = Color3.fromRGB(80, 255, 120)
+                start()
+            end)
+            offBtn.MouseButton1Click:Connect(function()
+                state.enabled = false
+                statusLabel.Text = "巫墙跳：关闭"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+                stop()
+            end)
+            autoBtn.MouseButton1Click:Connect(function()
+                state.auto = not state.auto
+                autoBtn.Text = state.auto and "自动：开" or "自动：关"
+                autoBtn.BackgroundColor3 = state.auto and Color3.fromRGB(0, 180, 80) or Color3.fromRGB(200, 60, 60)
+            end)
+            autoJumpBtn.MouseButton1Click:Connect(function()
+                state.autoJump = not state.autoJump
+                autoJumpBtn.Text = state.autoJump and "自动跳：开" or "自动跳：关"
+                autoJumpBtn.BackgroundColor3 = state.autoJump and Color3.fromRGB(0, 180, 80) or Color3.fromRGB(200, 60, 60)
+            end)
+            dfBtn.MouseButton1Click:Connect(function()
+                state.downforce = not state.downforce
+                dfBtn.Text = state.downforce and "下压力：开" or "下压力：关"
+                dfBtn.BackgroundColor3 = state.downforce and Color3.fromRGB(0, 180, 80) or Color3.fromRGB(200, 60, 60)
+            end)
+            destroyBtn.MouseButton1Click:Connect(function()
+                stop()
+                screenGui:Destroy()
+                _G.LoadedScripts["WuWallHop"] = nil
+            end)
+        end)
+        Window:Notify({Title = "提示", Content = "已打开 巫墙跳", Duration = 2})
+    end
+})
+
+-- ===== 新增：从「伊散全源」移植的独立工具（防重复加载） =====
+local function addToolButton(name, url, notifyContent)
+    MiscSection:AddButton({
+        Name = name,
+        Callback = WuLoader(url, notifyContent or (name .. " 已加载")),
+    })
+end
+
+addToolButton("防止摔落伤害", "https://raw.githubusercontent.com/cytj777i/Fall-injury/main/%E9%98%B2%E6%AD%A2%E6%91%94%E8%90%BD%E4%BC%A4%E5%AE%B3", "防摔已加载")
+addToolButton("物理磁铁", "https://raw.githubusercontent.com/cytj777i/6669178/main/%E5%8D%95%E4%B8%80%E7%89%A9%E4%BD%93%E9%A3%9E%E8%A1%8C%E8%BD%BD%E8%87%AA%E5%B7%B1%E6%9C%80%E7%BB%88%E4%BC%98%E5%8C%96%E7%89%88", "磁铁已加载")
+addToolButton("无敌少侠飞行", "https://rawscripts.net/raw/Universal-Script-Invinicible-Flight-R15-45414", "飞行模式已加载")
+addToolButton("黑洞特效", "https://rawscripts.net/raw/Universal-Script-Super-ring-Parts-V6-28581", "黑洞已加载")
+
+-------------------------------------------------
+-- 标签页 8：服务器脚本
+-------------------------------------------------
+local Tab6 = Window:AddTab("各类服务器脚本")
+
+-- 快速搜索：输入关键字回车 → 下方下拉只列出匹配项 → 选中即加载（脚本太多时不用一直滑）
+local WuTsbIndex = {}
+local WuTsbDrop
+local function WuTsbSetOptions(list)
+    if WuTsbDrop and type(WuTsbDrop.SetOptions) == "function" then
+        pcall(function() WuTsbDrop:SetOptions(list) end)
+    end
+end
+local SearchSection = Tab6:AddSection("快速搜索")
+SearchSection:AddTextbox({
+    Name = "搜索脚本（输入关键字回车）",
+    Placeholder = "例如 doors / 战争 / blox",
+    Callback = function(text)
+        text = tostring(text or ""):lower()
+        local hits = {}
+        for _, e in ipairs(WuTsbIndex) do
+            if text == "" or e.name:lower():find(text, 1, true) then
+                table.insert(hits, e.name)
+            end
+        end
+        WuTsbSetOptions(hits)
+        Window:Notify({Title = "搜索", Content = "找到 " .. #hits .. " 个", Duration = 2})
+    end
+})
+WuTsbDrop = SearchSection:AddDropdown({
+    Name = "搜索结果（选中即加载）",
+    Options = {},
+    Callback = function(sel)
+        if type(sel) == "table" then sel = sel[1] end
+        for _, e in ipairs(WuTsbIndex) do
+            if e.name == sel then
+                pcall(e.cb)
+                return
+            end
+        end
+    end
+})
+
+local TsbSection = Tab6:AddSection("服务器脚本")
+do
+    -- 记录每个按钮，供上面的搜索使用
+    local rawAdd = TsbSection.AddButton
+    TsbSection.AddButton = function(self, opts)
+        if type(opts) == "table" and opts.Name and opts.Callback then
+            table.insert(WuTsbIndex, { name = tostring(opts.Name), cb = opts.Callback })
+        end
+        return rawAdd(self, opts)
+    end
+end
+
+-- 翻译脚本放最上面（不带编号）
+TsbSection:AddButton({
+    Name = "翻译脚本",
+    Callback = function()
+        pcall(function()
+            TX = "TX Script"
+            Script = "全自动翻译"
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/JsYb666/Item/refs/heads/main/Auto-language"))()
+        end)
+    end
+})
+
+TsbSection:AddButton({
+    Name = "1. tsb脚本",
+    Callback = WuLoader("https://raw.githubusercontent.com/ATrainz/Phantasm/refs/heads/main/Games/TSB.lua", "已加载 tsb脚本")
+})
+
+TsbSection:AddButton({
+    Name = "2. 内脏与黑火药4.1",
+    Callback = WuLoader("https://raw.githubusercontent.com/wzhxll/Invincible-Willow-Leaf/refs/heads/main/Skin%20HUB%204.1.lua", "已加载 内脏与黑火药4.1")
+})
+
+TsbSection:AddButton({
+    Name = "3. doors最佳剧本",
+    Callback = WuLoader("https://raw.githubusercontent.com/bocaj111004/Abysall/refs/heads/main/Loader.luau", "已加载 doors最佳剧本")
+})
+
+TsbSection:AddButton({
+    Name = "4. 被遗弃",
+    Callback = WuLoader("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/lua", "已加载 被遗弃")
+})
+
+TsbSection:AddButton({
+    Name = "5. 动物医院",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 动物医院")
+})
+
+TsbSection:AddButton({
+    Name = "6. 储存猎人:开发世界",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 储存猎人:开发世界")
+})
+
+TsbSection:AddButton({
+    Name = "7. 彩虹朋友",
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 彩虹朋友")
+})
+
+TsbSection:AddButton({
+    Name = "8. 暴力区",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 暴力区")
+})
+
+TsbSection:AddButton({
+    Name = "9. 竞争对手",
+    Callback = WuLoader("https://raw.githubusercontent.com/imshrak/rivals/refs/heads/main/main", "已加载 竞争对手")
+})
+
+TsbSection:AddButton({
+    Name = "10. 狙击竞技场",
+    Callback = WuLoader("https://raw.githubusercontent.com/imshrak/sniperarena/main/menu", "已加载 狙击竞技场")
+})
+
+TsbSection:AddButton({
+    Name = "11. 出售柠檬",
+    Callback = WuLoader("https://raw.githubusercontent.com/tempvoxels-web/Sell-Lemons/refs/heads/main/unobfus-sell-lemons-v1.lua", "已加载 出售柠檬")
+})
+
+TsbSection:AddButton({
+    Name = "12. 养鸡场",
+    Callback = WuLoader("https://pastefy.app/qBmAubwR/raw", "已加载 养鸡场")
+})
+
+TsbSection:AddButton({
+    Name = "13. the mimic",
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 the mimic")
+})
+
+TsbSection:AddButton({
+    Name = "14. 已追捕",
+    Callback = WuLoader("https://raw.githubusercontent.com/ATGFAIL/ATGHub/main/Dark-Deception-Hunted.lua", "已加载 已追捕")
+})
+
+TsbSection:AddButton({
+    Name = "15. 一键点击",
+    Callback = WuLoader("https://raw.githubusercontent.com/ishakkakosik/FluxX/refs/heads/main/FluxX.lua", "已加载 一键点击")
+})
+
+TsbSection:AddButton({
+    Name = "16. 驾驶帝国",
+    Callback = WuLoader("https://raw.githubusercontent.com/Kenniel123/Axonic-Driving-Empire/refs/heads/main/Axonic%20Driving%20Empire", "已加载 驾驶帝国")
+})
+
+TsbSection:AddButton({
+    Name = "17. 刀战竞技场",
+    Callback = WuLoader("https://pastefy.app/iizD2kA3/raw", "已加载 刀战竞技场")
+})
+
+TsbSection:AddButton({
+    Name = "18. 军火库",
+    Callback = WuLoader("https://trace-host.vercel.app/trace.lua", "已加载 军火库")
+})
+
+TsbSection:AddButton({
+    Name = "19. 进击泰坦革命",
+    Callback = WuLoader("https://raw.githubusercontent.com/TITANIC-HUB/THUB/main/Loader.lua", "已加载 进击泰坦革命")
+})
+
+TsbSection:AddButton({
+    Name = "20. 吃播游戏",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 吃播游戏")
+})
+
+TsbSection:AddButton({
+    Name = "21. 方块旋转（无限钱）",
+    Callback = function()
+        local key = "方块旋转"
+        if _G.LoadedScripts[key] then
+            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[key] = true
+        pcall(function()
+            loadstring(game:HttpGet("https://api.sasware.dev/script/Blockspin.luau"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 方块旋转", Duration = 2})
+    end
+})
+
+TsbSection:AddButton({
+    Name = "22. +1速度逃离键盘",
+    Callback = WuLoader("https://pastebin.com/raw/JML4K8L8", "已加载 +1速度逃离键盘")
+})
+
+TsbSection:AddButton({
+    Name = "23. 学乱",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/41ab9a9e551bf53a0d4f1b9a9ee06c3f3a63270cf961c9d25e9ec6de1e941809/download", "已加载 学乱")
+})
+
+TsbSection:AddButton({
+    Name = "24. nico的下一个机器人",
+    Callback = WuLoader("https://gist.githubusercontent.com/olivernodex/e77feda9ee5cafac0a0a26d63ecbad5e/raw/NicosMenu.lua", "已加载 nico的下一个机器人")
+})
+
+TsbSection:AddButton({
+    Name = "25. 方块侏罗纪自动刷",
+    Callback = WuLoader("https://obfuscatorhub.onrender.com/api/8ea6z3xd", "已加载 方块侏罗纪自动刷")
+})
+
+TsbSection:AddButton({
+    Name = "26. 破坏者谜团",
+    Callback = WuLoader("https://cdn.cdnpastebin.com/api/paste/XejZw89q/raw", "已加载 破坏者谜团")
+})
+
+TsbSection:AddButton({
+    Name = "27. 墨水游戏",
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 墨水游戏")
+})
+
+TsbSection:AddButton({
+    Name = "28. blox fruit",
+    Callback = WuLoader("https://raw.githubusercontent.com/Kenniel123/BloxFruits/refs/heads/main/BloxFruits", "已加载 blox fruit")
+})
+
+TsbSection:AddButton({
+    Name = "29. 监狱人生强力剧本",
+    Callback = WuLoader("https://raw.githubusercontent.com/idkazul/b/main/script.lua", "已加载 监狱人生强力剧本")
+})
+
+TsbSection:AddButton({
+    Name = "30. 柔术战场",
+    Callback = WuLoader("https://raw.githubusercontent.com/elopz-dev/Elopez/refs/heads/main/leakd_obfuscated.lua%20(2).txt", "已加载 柔术战场")
+})
+
+TsbSection:AddButton({
+    Name = "31. 成长斗兽鸡",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 成长斗兽鸡")
+})
+
+TsbSection:AddButton({
+    Name = "32. 挖掘和清洗",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 挖掘和清洗")
+})
+
+TsbSection:AddButton({
+    Name = "33. 刀波球",
+    Callback = WuLoader("https://raw.githubusercontent.com/joshhhie/rise/refs/heads/main/loader.lua", "已加载 刀波球")
+})
+
+TsbSection:AddButton({
+    Name = "34. 圣地亚哥角色扮演",
+    Callback = WuLoader("https://raw.githubusercontent.com/Floysy/Roblox-scripts/refs/heads/main/SanDiegoBorderRP.lua", "已加载 圣地亚哥角色扮演")
+})
+
+TsbSection:AddButton({
+    Name = "35. 贪婪的种植者",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 贪婪的种植者")
+})
+
+TsbSection:AddButton({
+    Name = "36. 在山上采矿",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 在山上采矿")
+})
+
+TsbSection:AddButton({
+    Name = "37. 蓝锁：竞争对手",
+    Callback = WuLoader("https://wilonity.xyz/script-hub.lua", "已加载 蓝锁：竞争对手")
+})
+
+TsbSection:AddButton({
+    Name = "38. 实用篮球",
+    Callback = WuLoader("https://gist.githubusercontent.com/Lua-Hemisphere/fce3025e29f51cae9285dbffa436199c/raw/gistfile1.txt", "已加载 实用篮球")
+})
+
+TsbSection:AddButton({
+    Name = "39. the rake",
+    Callback = WuLoader("https://raw.githubusercontent.com/unrexl/Scripts/refs/heads/main/TheRakev2", "已加载 the rake")
+})
+
+TsbSection:AddButton({
+    Name = "40. 森林中的 99 夜",
+    Callback = WuLoader("https://raw.githubusercontent.com/caomod2077/Script/refs/heads/main/FoxnameHub.lua", "已加载 森林中的 99 夜")
+})
+
+TsbSection:AddButton({
+    Name = "41. Blox Strike",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/604034a335c161140a71b2aba35d61e3df97b9f3721c2a7e01e99d015222f069/download", "已加载 Blox Strike")
+})
+
+TsbSection:AddButton({
+    Name = "42. 战斗砖块",
+    Callback = function()
+        local key = "战斗砖块"
+        if _G.LoadedScripts[key] then
+            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[key] = true
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/GqJWbktX"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 战斗砖块", Duration = 2})
+    end
+})
+
+TsbSection:AddButton({
+    Name = "43. 一次尘土飞扬的旅行",
+    Callback = WuLoader("https://raw.githubusercontent.com/xelorascripts/aDustyTrip/main/script.lua", "已加载 一次尘土飞扬的旅行")
+})
+
+TsbSection:AddButton({
+    Name = "44. 独自在家",
+    Callback = WuLoader("https://rawscripts.net/raw/Home-Alone-HORROR-WIP-gui-v1-27061", "已加载 独自在家")
+})
+
+TsbSection:AddButton({
+    Name = "45. 刀战",
+    Callback = WuLoader("https://raw.githubusercontent.com/AAPVdev/scripts/refs/heads/main/UI_LimbExtender.lua", "已加载 刀战")
+})
+
+TsbSection:AddButton({
+    Name = "46. 偷走一颗蛋",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 偷走一颗蛋")
+})
+
+TsbSection:AddButton({
+    Name = "47. 魔法战利品",
+    Callback = function()
+        local key = "魔法战利品"
+        if _G.LoadedScripts[key] then
+            Window:Notify({Title = "提示", Content = "已在运行，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[key] = true
+        task.spawn(function()
+            while _G.LoadedScripts[key] do
+                pcall(function()
+                    local args = {
+                        "\232\174\173\231\187\131\231\130\185\229\177\143",
+                        {}
+                    }
+                    game:GetService("ReplicatedStorage"):WaitForChild("Msg"):WaitForChild("RemoteFunction"):WaitForChild("NetWorkRemoteFunction"):InvokeServer(unpack(args))
+                end)
+                task.wait(0.1)
+            end
+        end)
+        Window:Notify({Title = "提示", Content = "已启动 魔法战利品", Duration = 2})
+    end
+})
+
+TsbSection:AddButton({
+    Name = "48. 怪物跑者",
+    Callback = WuLoader("https://raw.githubusercontent.com/Bac0nHck/Scripts/refs/heads/main/MonsterRunners.lua", "已加载 怪物跑者")
+})
+
+TsbSection:AddButton({
+    Name = "49. 兵工厂",
+    Callback = WuLoader("https://raw.githubusercontent.com/MyxRojav/MYXHUB/refs/heads/main/myxarsenal.lua", "已加载 兵工厂")
+})
+
+TsbSection:AddButton({
+    Name = "50. 合并核弹",
+    Callback = WuLoader("https://raw.githubusercontent.com/genduuu/Merge-A-Nuke/refs/heads/main/obfuscated_firebutton_mergenuke.lua", "已加载 合并核弹")
+})
+
+TsbSection:AddButton({
+    Name = "51. +1龙卷风逃脱",
+    Callback = WuLoader("https://raw.githubusercontent.com/joustingmatch/Ouroboros/main/loader.lua", "已加载 +1龙卷风逃脱")
+})
+
+TsbSection:AddButton({
+    Name = "52. 钓鱼",
+    Callback = WuLoader("https://api.jnkie.com/api/v1/luascripts/public/4fa5547b587b1f3110ad121fd9650a8256ed00c0c73ae49ecf07d2130a206125/download", "已加载 钓鱼")
+})
+
+TsbSection:AddButton({
+    Name = "53. 离家同盟",
+    Callback = function()
+        local key = "离家同盟"
+        if _G.LoadedScripts[key] then
+            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[key] = true
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/SrzStarOG/Script/main/RUNAWAYS"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 离家同盟", Duration = 2})
+    end
+})
+
+-- 新增：巫的离家同盟自动刷金币
+TsbSection:AddButton({
+    Name = "54. 巫的离开同盟自动刷",
+    Callback = WuLoader("https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/runaways%E8%87%AA%E5%8A%A8%E9%80%9A%E5%85%B3", "已加载 巫的离开同盟自动刷")
+})
+
+-- 新增：别回头
+TsbSection:AddButton({
+    Name = "55. 别回头",
+    Callback = function()
+        local url = "https://raw.githubusercontent.com/captainmanjiro/Don-t-Look-Back/refs/heads/main/Script"
+        if _G.LoadedScripts[url] then
+            Window:Notify({Title = "提示", Content = "别回头 已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[url] = true
+        pcall(function()
+            -- [[ Rscripts Risk Notice ]]
+            -- This script is not verified by rscripts.net. Deal with caution.
+            --
+            -- Stay safe:
+            --   • Never log in on unofficial Roblox sites or lookalike domains.
+            --   • Real Roblox links use roblox.com (check the .com ending).
+            --   • Treat fake Roblox login / "claim reward" pages as phishing.
+            -- [[ End Rscripts Risk Notice ]]
+            loadstring(game:HttpGet(url))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 别回头", Duration = 2})
+    end
+})
+
+TsbSection:AddButton({
+    Name = "56. Killstreak",
+    Callback = function()
+        local url = "https://api.x8stuff.lol/scripts/killstreak.lua"
+        if _G.LoadedScripts[url] then
+            Window:Notify({Title = "提示", Content = "Killstreak 已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[url] = true
+        pcall(function()
+            -- [[ Rscripts Risk Notice ]]
+            loadstring(game:HttpGet(url))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 Killstreak", Duration = 2})
+    end
+})
+
+TsbSection:AddButton({
+    Name = "57. 狂野西部",
+    Callback = WuLoader("https://gitlab.com/soluna-development/api/-/raw/main/src/scripts/The-Wild-West.lua", "已加载 狂野西部")
+})
+
+TsbSection:AddButton({
+    Name = "58. 刀战暴力子追（已去除密钥系统）",
+    Callback = function()
+        local url = "https://raw.githubusercontent.com/imshrak/knifeduels/refs/heads/main/menu"
+        if _G.LoadedScripts[url] then
+            Window:Notify({Title = "提示", Content = "刀战暴力子追 已加载，请勿重复点击", Duration = 2})
+            return
+        end
+        _G.LoadedScripts[url] = true
+        pcall(function()
+            local function httpGet(u)
+                if syn and syn.request then
+                    return syn.request({Url = u, Method = "GET"}).Body
+                elseif http and http.request then
+                    return http.request({Url = u, Method = "GET"}).Body
+                elseif request then
+                    return request({Url = u, Method = "GET"}).Body
+                end
+                return game:HttpGet(u)
+            end
+            local body = httpGet(url)
+            if body and body ~= "" then
+                local fn, err = loadstring(body)
+                if fn then
+                    fn()
+                else
+                    warn("[刀战] 编译失败:", err)
+                end
+            else
+                -- 回退
+                loadstring(game:HttpGet(url))()
+            end
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 刀战暴力子追（免卡）", Duration = 2})
+    end
+})
+
+-- 按钮都登记完毕：搜索下拉先列出全部
+do
+    local all = {}
+    for _, e in ipairs(WuTsbIndex) do table.insert(all, e.name) end
+    WuTsbSetOptions(all)
+end
+
+
+-------------------------------------------------
+-- 标签页 9：ESP
+-------------------------------------------------
+local EspTab = Window:AddTab("ESP")
+local MasterSection = EspTab:AddSection("主控开关")
+
+local ESPEnabled = false
+
+-- 无需手动「初始化/加载模块」：开关即用（模块在脚本后段已内嵌）
+local function WuEnsureNeuroESP()
+    getgenv().Neuro = getgenv().Neuro or {}
+    local E = getgenv().Neuro
+    E.ESP = E.ESP or {
+        Enabled = false,
+        BoxESP = true,
+        BoxStyle = "Corner",
+        BoxThickness = 1,
+        BoxFilled = false,
+        BoxFillTransparency = 0.7,
+        TracerESP = false,
+        HealthESP = true,
+        NameESP = true,
+    }
+    return E.ESP
+end
+
+MasterSection:AddToggle({
+    Name = "启用透视 (ESP)",
+    Default = false,
+    Callback = function(state)
+        ESPEnabled = state
+        local esp = WuEnsureNeuroESP()
+        esp.Enabled = state
+        -- 若完整模块尚未跑完，短轮询一次把 Enabled 同步过去
+        if state then
+            task.spawn(function()
+                for _ = 1, 30 do
+                    if getgenv().Neuro and getgenv().Neuro.ESP then
+                        getgenv().Neuro.ESP.Enabled = true
+                        break
+                    end
+                    task.wait(0.1)
+                end
+            end)
+        end
+        Window:Notify({Title = "透视", Content = state and "已开启" or "已关闭", Duration = 2})
+    end
+})
+
+local BoxSection = EspTab:AddSection("方框设置")
+
+BoxSection:AddToggle({
+    Name = "方框 ESP",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.BoxESP = state
+        end
+    end
+})
+
+BoxSection:AddDropdown({
+    Name = "方框样式",
+    Options = {"Full", "Corner"},
+    Default = "Corner",
+    Callback = function(option)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.BoxStyle = option
+        end
+    end
+})
+
+BoxSection:AddSlider({
+    Name = "边框厚度",
+    Min = 1,
+    Max = 5,
+    Default = 1,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.BoxThickness = value
+        end
+    end
+})
+
+BoxSection:AddToggle({
+    Name = "填充方框",
+    Default = false,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.BoxFilled = state
+        end
+    end
+})
+
+BoxSection:AddSlider({
+    Name = "填充透明度",
+    Min = 0,
+    Max = 100,
+    Default = 15,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.BoxFillTransparency = value / 100
+        end
+    end
+})
+
+BoxSection:AddSlider({
+    Name = "边角长度",
+    Min = 0,
+    Max = 50,
+    Default = 25,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.CornerLength = value / 100
+        end
+    end
+})
+
+local TracerSection = EspTab:AddSection("轨迹线")
+
+TracerSection:AddToggle({
+    Name = "轨迹线 ESP",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.TracerESP = state
+        end
+    end
+})
+
+TracerSection:AddDropdown({
+    Name = "轨迹起点",
+    Options = {"Bottom", "Top", "Mouse"},
+    Default = "Bottom",
+    Callback = function(option)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.TracerOrigin = option
+        end
+    end
+})
+
+local HealthSection = EspTab:AddSection("血条")
+
+HealthSection:AddToggle({
+    Name = "血条 ESP",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.HealthESP = state
+        end
+    end
+})
+
+HealthSection:AddDropdown({
+    Name = "血条样式",
+    Options = {"Bar", "Text", "Both"},
+    Default = "Bar",
+    Callback = function(option)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.HealthStyle = option
+        end
+    end
+})
+
+local InfoSection2 = EspTab:AddSection("信息显示")
+
+InfoSection2:AddToggle({
+    Name = "显示名称",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.NameESP = state
+        end
+    end
+})
+
+InfoSection2:AddToggle({
+    Name = "显示距离",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.ShowDistance = state
+        end
+    end
+})
+
+InfoSection2:AddSlider({
+    Name = "文字大小",
+    Min = 10,
+    Max = 30,
+    Default = 14,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.TextSize = value
+        end
+    end
+})
+
+local ChamsSection = EspTab:AddSection("透体 (Chams)")
+
+ChamsSection:AddToggle({
+    Name = "启用透体",
+    Default = false,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.ChamsEnabled = state
+        end
+    end
+})
+
+ChamsSection:AddSlider({
+    Name = "透体透明度",
+    Min = 0,
+    Max = 100,
+    Default = 50,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.ChamsTransparency = value / 100
+        end
+    end
+})
+
+local TeamSection = EspTab:AddSection("队伍与距离")
+
+TeamSection:AddToggle({
+    Name = "队伍检测",
+    Default = true,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.TeamCheck = state
+        end
+    end
+})
+
+TeamSection:AddToggle({
+    Name = "显示队友",
+    Default = false,
+    Callback = function(state)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.ShowTeam = state
+        end
+    end
+})
+
+TeamSection:AddSlider({
+    Name = "最大显示距离",
+    Min = 100,
+    Max = 9999,
+    Default = 1000,
+    Increment = 50,
+    Notifications = false,
+    Callback = function(value)
+        if getgenv().Neuro and getgenv().Neuro.ESP then
+            getgenv().Neuro.ESP.MaxDistance = value
+        end
+    end
+})
+
+-------------------------------------------------
+-- NPC ESP 板块（优化版）
+-------------------------------------------------
+local NpcSection = EspTab:AddSection("NPC ESP")
+
+local NPCESPEnabled = false
+local NPCESPThread = nil
+local NPCHighlightName = "ESPHighlight_NPC"
+
+local function ApplyNPCESP(target)
+    if not target or not target:IsA("Model") then return end
+    if target:FindFirstChild(NPCHighlightName) then return end
+    if not target:FindFirstChildOfClass("Humanoid") then return end
+    if game.Players:GetPlayerFromCharacter(target) then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = NPCHighlightName
+    highlight.FillColor = Color3.fromRGB(0, 255, 0)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = target
+end
+
+local function ClearAllNPCESP()
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("Highlight") and v.Name == NPCHighlightName then
+            pcall(function() v:Destroy() end)
+        end
+    end
+end
+
+local function ScanAndApplyNPCESP()
+    if not NPCESPEnabled then return end
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("Model") and v:FindFirstChildOfClass("Humanoid") and not game.Players:GetPlayerFromCharacter(v) then
+            ApplyNPCESP(v)
+        end
+    end
+end
+
+NpcSection:AddToggle({
+    Name = "启用 NPC ESP (绿色高亮)",
+    Default = false,
+    Callback = function(state)
+        NPCESPEnabled = state
+        if state then
+            ScanAndApplyNPCESP()
+            if NPCESPThread then
+                pcall(function() task.cancel(NPCESPThread) end)
+                NPCESPThread = nil
+            end
+            NPCESPThread = task.spawn(function()
+                while NPCESPEnabled do
+                    task.wait(2)
+                    if NPCESPEnabled then
+                        ScanAndApplyNPCESP()
+                    end
+                end
+            end)
+            Window:Notify({Title = "NPC ESP", Content = "已开启（绿色高亮，每2秒刷新）", Duration = 2})
+        else
+            if NPCESPThread then
+                pcall(function() task.cancel(NPCESPThread) end)
+                NPCESPThread = nil
+            end
+            ClearAllNPCESP()
+            Window:Notify({Title = "NPC ESP", Content = "已关闭并清除高亮", Duration = 2})
+        end
+    end
+})
+
+NpcSection:AddButton({
+    Name = "立即刷新 NPC ESP",
+    Callback = function()
+        if NPCESPEnabled then
+            ScanAndApplyNPCESP()
+            Window:Notify({Title = "NPC ESP", Content = "已刷新", Duration = 1.5})
+        else
+            Window:Notify({Title = "NPC ESP", Content = "请先开启 NPC ESP", Duration = 2})
+        end
+    end
+})
+
+NpcSection:AddButton({
+    Name = "清除所有 NPC 高亮",
+    Callback = function()
+        ClearAllNPCESP()
+        Window:Notify({Title = "NPC ESP", Content = "已清除所有 NPC 高亮", Duration = 2})
+    end
+})
+
+-------------------------------------------------
+-- 标签页：额外功能
+-------------------------------------------------
+local ExtraTab = Window:AddTab("额外功能")
+
+-- ===== 战斗相关 =====
+local CombatSection = ExtraTab:AddSection("战斗相关")
+
+local AutoAttackEnabled = false
+local AutoAttackConnection = nil
+
+CombatSection:AddToggle({
+    Name = "靠近自动攻击 (需拿起武器)",
+    Default = false,
+    Callback = function(state)
+        AutoAttackEnabled = state
+        if state then
+            if AutoAttackConnection then
+                AutoAttackConnection:Disconnect()
+                AutoAttackConnection = nil
+            end
+            AutoAttackConnection = game:GetService("RunService").Heartbeat:Connect(function()
+                if not AutoAttackEnabled then return end
+                local lp = game.Players.LocalPlayer
+                local char = lp.Character
+                if not char then return end
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health <= 0 then return end
+
+                local tool = char:FindFirstChildOfClass("Tool")
+                if not tool then return end
+                local handle = tool:FindFirstChild("Handle") or tool:FindFirstChildWhichIsA("BasePart")
+                if not handle then return end
+
+                local touch = tool:FindFirstChildWhichIsA("TouchTransmitter", true)
+                if not touch then return end
+
+                local otherChars = {}
+                for _, p in pairs(game.Players:GetPlayers()) do
+                    if p ~= lp and p.Character then
+                        table.insert(otherChars, p.Character)
+                    end
+                end
+                if #otherChars == 0 then return end
+
+                local params = OverlapParams.new()
+                params.FilterType = Enum.RaycastFilterType.Include
+                params.FilterDescendantsInstances = otherChars
+
+                local parts = workspace:GetPartBoundsInBox(handle.CFrame, handle.Size + Vector3.new(12, 12, 12), params)
+                for _, part in pairs(parts) do
+                    local model = part:FindFirstAncestorWhichIsA("Model")
+                    if model and table.find(otherChars, model) then
+                        local thum = model:FindFirstChildOfClass("Humanoid")
+                        if thum and thum.Health > 0 then
+                            pcall(function()
+                                tool:Activate()
+                                firetouchinterest(handle, part, 1)
+                                firetouchinterest(handle, part, 0)
+                            end)
+                        end
+                    end
+                end
+            end)
+            Window:Notify({Title = "自动攻击", Content = "已开启（靠近敌人自动打）", Duration = 2})
+        else
+            if AutoAttackConnection then
+                AutoAttackConnection:Disconnect()
+                AutoAttackConnection = nil
+            end
+            Window:Notify({Title = "自动攻击", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+CombatSection:AddButton({
+    Name = "无后坐快速射击",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/Vbnh3Ycg/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载无后坐快速射击", Duration = 2})
+    end
+})
+
+CombatSection:AddButton({
+    Name = "无限子弹",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/bYg3smqm/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载无限子弹", Duration = 2})
+    end
+})
+
+CombatSection:AddButton({
+    Name = "弹人 (实体)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/4r9e4F3p/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载弹人(实体)", Duration = 2})
+    end
+})
+
+CombatSection:AddButton({
+    Name = "弹人 (半实体)",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastebin.com/raw/UTWcDtzj"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载弹人(半实体)", Duration = 2})
+    end
+})
+
+-- ===== 角色相关 =====
+local CharSection = ExtraTab:AddSection("角色相关")
+
+CharSection:AddButton({
+    Name = "替身",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/SkrillexMe/SkrillexLoader/main/SkrillexLoadMain"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载替身", Duration = 2})
+    end
+})
+
+-- ===== 道具管理 =====
+local ToolSection2 = ExtraTab:AddSection("道具管理")
+
+ToolSection2:AddButton({
+    Name = "获取当前道具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/3FU05Dyt/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载获取当前道具", Duration = 2})
+    end
+})
+
+ToolSection2:AddButton({
+    Name = "装备全部道具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/uBqVR9JC/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载装备全部道具", Duration = 2})
+    end
+})
+
+ToolSection2:AddButton({
+    Name = "删除道具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/r4LHK4p0/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载删除道具", Duration = 2})
+    end
+})
+
+ToolSection2:AddButton({
+    Name = "删除所有道具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/8HB71Lbj/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载删除所有道具", Duration = 2})
+    end
+})
+
+local StealBackpackEnabled = false
+local StealBackpackThread = nil
+
+ToolSection2:AddToggle({
+    Name = "获取所有玩家背包",
+    Default = false,
+    Callback = function(state)
+        StealBackpackEnabled = state
+        if state then
+            if StealBackpackThread then
+                pcall(function() task.cancel(StealBackpackThread) end)
+                StealBackpackThread = nil
+            end
+            StealBackpackThread = task.spawn(function()
+                while StealBackpackEnabled do
+                    for _, player in pairs(game.Players:GetPlayers()) do
+                        if player ~= game.Players.LocalPlayer and player:FindFirstChild("Backpack") then
+                            for _, tool in pairs(player.Backpack:GetChildren()) do
+                                if tool:IsA("Tool") then
+                                    pcall(function()
+                                        tool.Parent = game.Players.LocalPlayer.Backpack
+                                    end)
+                                end
+                            end
+                        end
+                    end
+                    task.wait(1)
+                end
+            end)
+            Window:Notify({Title = "背包", Content = "已开启（每秒尝试获取）", Duration = 2})
+        else
+            if StealBackpackThread then
+                pcall(function() task.cancel(StealBackpackThread) end)
+                StealBackpackThread = nil
+            end
+            Window:Notify({Title = "背包", Content = "已关闭", Duration = 2})
+        end
+    end
+})
+
+-- ===== 实用工具 =====
+local UtilSection3 = ExtraTab:AddSection("实用工具")
+
+UtilSection3:AddButton({
+    Name = "F3X 建造工具",
+    Callback = function()
+        pcall(function()
+            loadstring(game:GetObjects("rbxassetid://6695644299")[1].Source)()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载 F3X", Duration = 2})
+    end
+})
+
+UtilSection3:AddButton({
+    Name = "保存游戏 (saveinstance)",
+    Callback = function()
+        pcall(function()
+            saveinstance()
+        end)
+        Window:Notify({Title = "提示", Content = "已尝试保存游戏", Duration = 2})
+    end
+})
+
+UtilSection3:AddButton({
+    Name = "死亡笔记",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/dingding123hhh/tt/main/%E6%AD%BB%E4%BA%A1%E7%AC%94%E8%AE%B0%20(1).txt"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载死亡笔记", Duration = 2})
+    end
+})
+
+UtilSection3:AddButton({
+    Name = "聊天气泡美化",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://pastefy.app/lCEPuiQO/raw"))()
+        end)
+        Window:Notify({Title = "提示", Content = "已加载聊天气泡美化", Duration = 2})
+    end
+})
+
+-------------------------------------------------
+-- 让侧边栏可滚动
+-------------------------------------------------
+task.defer(function()
+    local ScreenGui = (Window._raw and (Window._raw.ScreenGui or Window._raw.GUI or Window._raw.Gui)) or Window.ScreenGui
+    if not ScreenGui then return end
+    local Main = ScreenGui:FindFirstChild("Main")
+    if not Main then return end
+    local TabList = Main:FindFirstChild("TabList")
+    if not TabList then return end
+
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Name = "TabScroll"
+    Scroll.Size = UDim2.new(1, 0, 1, 0)
+    Scroll.Position = UDim2.new(0, 0, 0, 0)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    Scroll.Parent = TabList
+
+    for _, child in ipairs(TabList:GetChildren()) do
+        if child ~= Scroll then
+            child.Parent = Scroll
+        end
+    end
+end)
+
+-------------------------------------------------
+-- ===== 穿墙持续循环 =====
+-------------------------------------------------
+game:GetService("RunService").RenderStepped:Connect(function()
+    if noclipEnabled then
+        local char = game.Players.LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+-------------------------------------------------
+-- ===== Neuro ESP 完整模块 =====
+-------------------------------------------------
+getgenv().Neuro = getgenv().Neuro or {}
+local Environment = getgenv().Neuro
+Environment.ServiceConnections = Environment.ServiceConnections or {}
+
+local prevESP = Environment.ESP
+Environment.ESP = {
+    Enabled = false,
+    BoxESP = true,
+    BoxStyle = "Corner",
+    BoxThickness = 1,
+    BoxFilled = false,
+    BoxFillTransparency = 0.15,
+    CornerLength = 0.25,
+    TracerESP = true,
+    TracerOrigin = "Bottom",
+    HealthESP = true,
+    HealthStyle = "Bar",
+    NameESP = true,
+    ShowDistance = true,
+    TextSize = 14,
+    ChamsEnabled = false,
+    ChamsFillColor = Color3.fromRGB(255, 50, 50),
+    ChamsTransparency = 0.5,
+    ChamsOutlineColor = Color3.fromRGB(255, 255, 255),
+    ChamsOutlineTransparency = 0,
+    TeamCheck = true,
+    ShowTeam = false,
+    MaxDistance = 9999,
+    AllyColor = Color3.fromRGB(0, 255, 130),
+    EnemyColor = Color3.fromRGB(255, 50, 50),
+    RefreshRate = 0,
+    RawRenderAPI = false,
+}
+
+-- 保留用户已在 UI 里开过的开关（避免模块后加载把 Enabled 打回 false）
+if type(prevESP) == "table" then
+    for k, v in pairs(prevESP) do
+        Environment.ESP[k] = v
+    end
+end
+
+
+local ESP = Environment.ESP
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local Drawings = { ESP = {}, Highlights = {} }
+local sizeCache = {}
+local weaponCache = {}
+local hpAnim = {}
+local retryAt = {}
+local lastProps = setmetatable({}, { __mode = "k" })
+
+local function SafeSet(obj, prop, val)
+    if obj == nil then return end
+    local d = lastProps[obj]
+    if d then
+        if d[prop] == val then return end
+        d[prop] = val
+    else
+        lastProps[obj] = { [prop] = val }
+    end
+    pcall(function()
+        if prop == "Color" and typeof(val) == "Color3" then
+            obj.Color = val
+        else
+            obj[prop] = val
+        end
+    end)
+end
+
+local function LerpColor(c1, c2, t)
+    local r = c1.R + (c2.R - c1.R) * t
+    local g = c1.G + (c2.G - c1.G) * t
+    local b = c1.B + (c2.B - c1.B) * t
+    return Color3.fromRGB(math.floor(r * 255), math.floor(g * 255), math.floor(b * 255))
+end
+
+local function HealthColor(pct)
+    if pct > 0.5 then
+        return LerpColor(Color3.fromRGB(255, 220, 0), Color3.fromRGB(0, 255, 80), (pct - 0.5) * 2)
+    else
+        return LerpColor(Color3.fromRGB(255, 85, 85), Color3.fromRGB(255, 220, 0), pct * 2)
+    end
+end
+
+local function GetPlayerColor(player)
+    if ESP.TeamCheck and player.Team == LocalPlayer.Team then
+        return ESP.AllyColor
+    end
+    return ESP.EnemyColor
+end
+
+function Environment:IsSameTeam(player)
+    if not ESP.TeamCheck then return false end
+    if LocalPlayer.Team and player.Team then
+        return LocalPlayer.Team == player.Team
+    end
+    if LocalPlayer.TeamColor and player.TeamColor then
+        return LocalPlayer.TeamColor == player.TeamColor
+    end
+    return false
+end
+
+local function MakeLine(color, thickness, transparency)
+    local line = Drawing.new("Line")
+    SafeSet(line, "Visible", false)
+    SafeSet(line, "Color", color or Color3.fromRGB(255, 255, 255))
+    SafeSet(line, "Thickness", thickness or 1)
+    SafeSet(line, "Transparency", transparency or 1)
+    return line
+end
+
+local function MakeSquare(color, filled, thickness, transparency)
+    local sq = Drawing.new("Square")
+    SafeSet(sq, "Visible", false)
+    SafeSet(sq, "Color", color or Color3.fromRGB(255, 255, 255))
+    SafeSet(sq, "Filled", filled or false)
+    SafeSet(sq, "Thickness", thickness or 0)
+    SafeSet(sq, "Transparency", transparency or 1)
+    return sq
+end
+
+local function MakeText(font, size, color)
+    local txt = Drawing.new("Text")
+    SafeSet(txt, "Visible", false)
+    SafeSet(txt, "Font", font or 2)
+    SafeSet(txt, "Size", size or 14)
+    SafeSet(txt, "Color", color or Color3.fromRGB(255, 255, 255))
+    SafeSet(txt, "Outline", true)
+    SafeSet(txt, "Center", true)
+    SafeSet(txt, "OutlineColor", Color3.fromRGB(0, 0, 0))
+    return txt
+end
+
+local function CreateESP(player)
+    if player == LocalPlayer or Drawings.ESP[player] then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.FillColor = ESP.ChamsFillColor
+    highlight.OutlineColor = ESP.ChamsOutlineColor
+    highlight.FillTransparency = ESP.ChamsTransparency
+    highlight.OutlineTransparency = ESP.ChamsOutlineTransparency
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Enabled = false
+    Drawings.Highlights[player] = highlight
+
+    local boxKeys = {"TL","TR","BL","BR","L","R","T","B"}
+    local box, boxOutline = {}, {}
+    for _, key in ipairs(boxKeys) do
+        box[key] = MakeLine(Color3.fromRGB(255,255,255), 1, 1)
+        boxOutline[key] = MakeLine(Color3.fromRGB(0,0,0), 3, 0.45)
+    end
+    box.Fill = MakeSquare(Color3.fromRGB(255,255,255), true, 0, 0.7)
+
+    local tracer = MakeLine(Color3.fromRGB(255,255,255), 1, 0.85)
+    local tracerOutline = MakeLine(Color3.fromRGB(0,0,0), 3, 0.35)
+
+    local healthBar = {
+        Background = MakeSquare(Color3.fromRGB(20,20,20), true, 0, 0.65),
+        Delay = MakeSquare(Color3.fromRGB(150,150,150), true, 0, 0.85),
+        Outline = MakeSquare(Color3.fromRGB(70,70,70), false, 1, 1),
+        Fill = MakeSquare(Color3.fromRGB(0,255,80), true, 0, 1),
+        Glow = MakeSquare(Color3.fromRGB(255,255,255), true, 0, 0.35),
+        Text = MakeText(2, 11, Color3.fromRGB(255,255,255)),
+    }
+
+    local info = {
+        Name = MakeText(2, 14, Color3.fromRGB(255,255,255)),
+        Distance = MakeText(2, 12, Color3.fromRGB(150,150,150)),
+        Weapon = MakeText(2, 12, Color3.fromRGB(200,200,200)),
+    }
+
+    Drawings.ESP[player] = {
+        Box = box, BoxOutline = boxOutline, Tracer = tracer,
+        TracerOutline = tracerOutline, HealthBar = healthBar, Info = info
+    }
+end
+
+local function RemoveESP(player)
+    local esp = Drawings.ESP[player]
+    if esp then
+        for _, obj in pairs(esp.Box) do pcall(function() obj:Remove() end) end
+        for _, obj in pairs(esp.BoxOutline) do pcall(function() obj:Remove() end) end
+        pcall(function() esp.Tracer:Remove() end)
+        pcall(function() esp.TracerOutline:Remove() end)
+        for _, obj in pairs(esp.HealthBar) do pcall(function() obj:Remove() end) end
+        for _, obj in pairs(esp.Info) do pcall(function() obj:Remove() end) end
+        Drawings.ESP[player] = nil
+    end
+    if Drawings.Highlights[player] then
+        pcall(function() Drawings.Highlights[player]:Destroy() end)
+        Drawings.Highlights[player] = nil
+    end
+end
+
+local function HideAll(esp, player)
+    if esp then
+        for _, obj in pairs(esp.Box) do SafeSet(obj, "Visible", false) end
+        for _, obj in pairs(esp.BoxOutline) do SafeSet(obj, "Visible", false) end
+        SafeSet(esp.Tracer, "Visible", false)
+        SafeSet(esp.TracerOutline, "Visible", false)
+        for _, obj in pairs(esp.HealthBar) do SafeSet(obj, "Visible", false) end
+        for _, obj in pairs(esp.Info) do SafeSet(obj, "Visible", false) end
+    end
+    if Drawings.Highlights[player] then
+        pcall(function() Drawings.Highlights[player].Enabled = false end)
+    end
+end
+
+local function UpdateESP(player)
+    if not ESP.Enabled then return end
+    local esp = Drawings.ESP[player]
+    if not esp then return end
+
+    local char = player.Character
+    if not char then HideAll(esp, player) return end
+
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then HideAll(esp, player) return end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then HideAll(esp, player) return end
+
+    local dist = (root.Position - Camera.CFrame.Position).Magnitude
+    if dist > ESP.MaxDistance then HideAll(esp, player) return end
+
+    local posVec, onScreen = Camera:WorldToViewportPoint(root.Position)
+    if not onScreen then HideAll(esp, player) return end
+
+    if ESP.TeamCheck and not ESP.ShowTeam and Environment:IsSameTeam(player) then
+        HideAll(esp, player)
+        return
+    end
+
+    local color = GetPlayerColor(player)
+    local hpPct = hum.Health / hum.MaxHealth
+    local hpColor = HealthColor(hpPct)
+
+    local size = sizeCache[player]
+    if not size or size.Char ~= char then
+        size = { Char = char, Size = char:GetExtentsSize() }
+        sizeCache[player] = size
+    end
+
+    local cf = root.CFrame
+    local top = Camera:WorldToViewportPoint((cf * CFrame.new(0, size.Size.Y / 2, 0)).Position)
+    local bottom = Camera:WorldToViewportPoint((cf * CFrame.new(0, -size.Size.Y / 2, 0)).Position)
+
+    if top.Z <= 0 or bottom.Z <= 0 then HideAll(esp, player) return end
+
+    local h = bottom.Y - top.Y
+    if h <= 2 then HideAll(esp, player) return end
+
+    local w = h * 0.6
+    local bx = top.X - w / 2
+    local by = top.Y
+    local bw = w
+    local bh = h
+
+    for _, obj in pairs(esp.Box) do SafeSet(obj, "Visible", false) end
+    for _, obj in pairs(esp.BoxOutline) do SafeSet(obj, "Visible", false) end
+
+    if ESP.BoxESP then
+        local thick = ESP.BoxThickness or 1
+        local TL = Vector2.new(bx, by)
+        local TR = Vector2.new(bx + bw, by)
+        local BL = Vector2.new(bx, by + bh)
+        local BR = Vector2.new(bx + bw, by + bh)
+
+        if ESP.BoxStyle == "Corner" then
+            local cLen = math.min(math.max(bw * 0.25, 4), bw * 0.35)
+            local cH = math.min(math.max(bh * 0.25, 4), bh * 0.35)
+            local oThick = math.max(thick, math.min(thick + 2, h * 0.12))
+
+            local function dL(line, f, t, col, th, al)
+                SafeSet(line, "From", f)
+                SafeSet(line, "To", t)
+                SafeSet(line, "Color", col)
+                SafeSet(line, "Thickness", th)
+                SafeSet(line, "Transparency", al or 1)
+                SafeSet(line, "Visible", true)
+            end
+
+            dL(esp.BoxOutline.TL, TL, Vector2.new(bx + cLen, by), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.TR, TR, Vector2.new(bx + bw - cLen, by), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.BL, BL, Vector2.new(bx + cLen, by + bh), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.BR, BR, Vector2.new(bx + bw - cLen, by + bh), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.L, TL, Vector2.new(bx, by + cH), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.R, TR, Vector2.new(bx + bw, by + cH), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.T, BL, Vector2.new(bx, by + bh - cH), Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.B, BR, Vector2.new(bx + bw, by + bh - cH), Color3.fromRGB(0,0,0), oThick, 0.35)
+
+            dL(esp.Box.TL, TL, Vector2.new(bx + cLen, by), color, thick)
+            dL(esp.Box.TR, TR, Vector2.new(bx + bw - cLen, by), color, thick)
+            dL(esp.Box.BL, BL, Vector2.new(bx + cLen, by + bh), color, thick)
+            dL(esp.Box.BR, BR, Vector2.new(bx + bw - cLen, by + bh), color, thick)
+            dL(esp.Box.L, TL, Vector2.new(bx, by + cH), color, thick)
+            dL(esp.Box.R, TR, Vector2.new(bx + bw, by + cH), color, thick)
+            dL(esp.Box.T, BL, Vector2.new(bx, by + bh - cH), color, thick)
+            dL(esp.Box.B, BR, Vector2.new(bx + bw, by + bh - cH), color, thick)
+        else
+            local oThick = math.max(thick, math.min(thick + 2, h * 0.12))
+            local function dL(line, f, t, col, th, al)
+                SafeSet(line, "From", f)
+                SafeSet(line, "To", t)
+                SafeSet(line, "Color", col)
+                SafeSet(line, "Thickness", th)
+                SafeSet(line, "Transparency", al or 1)
+                SafeSet(line, "Visible", true)
+            end
+            dL(esp.BoxOutline.L, TL, BL, Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.R, TR, BR, Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.T, TL, TR, Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.BoxOutline.B, BL, BR, Color3.fromRGB(0,0,0), oThick, 0.35)
+            dL(esp.Box.L, TL, BL, color, thick)
+            dL(esp.Box.R, TR, BR, color, thick)
+            dL(esp.Box.T, TL, TR, color, thick)
+            dL(esp.Box.B, BL, BR, color, thick)
+        end
+
+        if ESP.BoxFilled then
+            SafeSet(esp.Box.Fill, "Position", Vector2.new(bx, by))
+            SafeSet(esp.Box.Fill, "Size", Vector2.new(bw, bh))
+            SafeSet(esp.Box.Fill, "Color", color)
+            SafeSet(esp.Box.Fill, "Transparency", ESP.BoxFillTransparency or 0.15)
+            SafeSet(esp.Box.Fill, "Visible", true)
+        else
+            SafeSet(esp.Box.Fill, "Visible", false)
+        end
+    end
+
+    if ESP.TracerESP then
+        local from = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+        local to = Vector2.new(posVec.X, posVec.Y)
+        SafeSet(esp.TracerOutline, "From", from)
+        SafeSet(esp.TracerOutline, "To", to)
+        SafeSet(esp.TracerOutline, "Color", Color3.fromRGB(0,0,0))
+        SafeSet(esp.TracerOutline, "Thickness", 2)
+        SafeSet(esp.TracerOutline, "Transparency", 0.3)
+        SafeSet(esp.TracerOutline, "Visible", true)
+        SafeSet(esp.Tracer, "From", from)
+        SafeSet(esp.Tracer, "To", to)
+        SafeSet(esp.Tracer, "Color", color)
+        SafeSet(esp.Tracer, "Thickness", 1)
+        SafeSet(esp.Tracer, "Transparency", 0.85)
+        SafeSet(esp.Tracer, "Visible", true)
+    else
+        SafeSet(esp.Tracer, "Visible", false)
+        SafeSet(esp.TracerOutline, "Visible", false)
+    end
+
+    if ESP.HealthESP then
+        local barW = 2
+        local barX = bx - barW - 5
+        local barY = by
+        local barH = bh
+        local fillH = math.max(barH * hpPct, 1)
+        local fillTopY = barY + barH - fillH
+
+        SafeSet(esp.HealthBar.Background, "Position", Vector2.new(barX - 1, barY - 1))
+        SafeSet(esp.HealthBar.Background, "Size", Vector2.new(barW + 2, barH + 2))
+        SafeSet(esp.HealthBar.Background, "Visible", true)
+
+        SafeSet(esp.HealthBar.Outline, "Position", Vector2.new(barX - 1, barY - 1))
+        SafeSet(esp.HealthBar.Outline, "Size", Vector2.new(barW + 2, barH + 2))
+        SafeSet(esp.HealthBar.Outline, "Color", Color3.fromRGB(70,70,70))
+        SafeSet(esp.HealthBar.Outline, "Visible", true)
+
+        SafeSet(esp.HealthBar.Fill, "Position", Vector2.new(barX, fillTopY))
+        SafeSet(esp.HealthBar.Fill, "Size", Vector2.new(barW, fillH))
+        SafeSet(esp.HealthBar.Fill, "Color", hpColor)
+        SafeSet(esp.HealthBar.Fill, "Visible", true)
+
+        SafeSet(esp.HealthBar.Glow, "Position", Vector2.new(barX, fillTopY))
+        SafeSet(esp.HealthBar.Glow, "Size", Vector2.new(barW, math.min(fillH, 2)))
+        SafeSet(esp.HealthBar.Glow, "Color", hpColor)
+        SafeSet(esp.HealthBar.Glow, "Transparency", 0.5)
+        SafeSet(esp.HealthBar.Glow, "Visible", true)
+
+        if hpPct < 1 then
+            SafeSet(esp.HealthBar.Text, "Text", math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth))
+            SafeSet(esp.HealthBar.Text, "Position", Vector2.new(barX - 5, fillTopY - 4))
+            SafeSet(esp.HealthBar.Text, "Size", 11)
+            SafeSet(esp.HealthBar.Text, "Color", hpColor)
+            SafeSet(esp.HealthBar.Text, "Center", false)
+            SafeSet(esp.HealthBar.Text, "Visible", true)
+        else
+            SafeSet(esp.HealthBar.Text, "Visible", false)
+        end
+    else
+        for _, obj in pairs(esp.HealthBar) do SafeSet(obj, "Visible", false) end
+    end
+
+    if ESP.NameESP then
+        local centerX = bx + bw / 2
+        local fs = ESP.TextSize or 14
+        SafeSet(esp.Info.Name, "Text", player.DisplayName)
+        SafeSet(esp.Info.Name, "Position", Vector2.new(centerX, by - fs - 6))
+        SafeSet(esp.Info.Name, "Size", fs)
+        SafeSet(esp.Info.Name, "Color", color)
+        SafeSet(esp.Info.Name, "Visible", true)
+
+        if ESP.ShowDistance then
+            SafeSet(esp.Info.Distance, "Text", "[" .. math.floor(dist * 0.28) .. "m]")
+            SafeSet(esp.Info.Distance, "Position", Vector2.new(centerX, by - 6))
+            SafeSet(esp.Info.Distance, "Size", math.max(fs - 2, 10))
+            SafeSet(esp.Info.Distance, "Color", Color3.fromRGB(150,150,150))
+            SafeSet(esp.Info.Distance, "Visible", true)
+        else
+            SafeSet(esp.Info.Distance, "Visible", false)
+        end
+
+        local wep = ""
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") then
+                wep = child.Name
+                break
+            end
+        end
+        if wep ~= "" then
+            SafeSet(esp.Info.Weapon, "Text", wep)
+            SafeSet(esp.Info.Weapon, "Position", Vector2.new(centerX, by + bh + 6))
+            SafeSet(esp.Info.Weapon, "Size", math.max(fs - 2, 10))
+            SafeSet(esp.Info.Weapon, "Color", Color3.fromRGB(200,200,200))
+            SafeSet(esp.Info.Weapon, "Visible", true)
+        else
+            SafeSet(esp.Info.Weapon, "Visible", false)
+        end
+    else
+        SafeSet(esp.Info.Name, "Visible", false)
+        SafeSet(esp.Info.Distance, "Visible", false)
+        SafeSet(esp.Info.Weapon, "Visible", false)
+    end
+
+    if Drawings.Highlights[player] then
+        local hl = Drawings.Highlights[player]
+        if ESP.ChamsEnabled then
+            hl.Parent = char
+            hl.FillColor = ESP.ChamsFillColor or color
+            hl.OutlineColor = ESP.ChamsOutlineColor or Color3.fromRGB(255,255,255)
+            hl.FillTransparency = ESP.ChamsTransparency or 0.5
+            hl.OutlineTransparency = ESP.ChamsOutlineTransparency or 0
+            hl.Enabled = true
+        else
+            hl.Enabled = false
+        end
+    end
+end
+
+local lastUpdate = 0
+local wasEnabled = false
+
+function Environment:ESPConnect()
+    for _, key in ipairs({"ESPRenderStepped", "ESPPlayerAdded", "ESPPlayerRemoving"}) do
+        pcall(function()
+            if Environment.ServiceConnections[key] then
+                Environment.ServiceConnections[key]:Disconnect()
+            end
+        end)
+    end
+
+    Environment.ServiceConnections.ESPRenderStepped = RunService.RenderStepped:Connect(function()
+        Camera = workspace.CurrentCamera
+        local enabled = ESP.Enabled
+        if not enabled then
+            if wasEnabled then
+                for _, player in ipairs(Players:GetPlayers()) do
+                    local esp = Drawings.ESP[player]
+                    if esp then HideAll(esp, player) end
+                end
+                wasEnabled = false
+            end
+            return
+        end
+        wasEnabled = true
+
+        local now = tick()
+        if now - lastUpdate < (ESP.RefreshRate or 0) then return end
+        lastUpdate = now
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                if not Drawings.ESP[player] then
+                    if (retryAt[player] or 0) < now then
+                        CreateESP(player)
+                        retryAt[player] = now + 2
+                    end
+                end
+                UpdateESP(player)
+            end
+        end
+    end)
+
+    Environment.ServiceConnections.ESPPlayerAdded = Players.PlayerAdded:Connect(function(player)
+        if player ~= LocalPlayer and ESP.Enabled then
+            CreateESP(player)
+        end
+    end)
+
+    Environment.ServiceConnections.ESPPlayerRemoving = Players.PlayerRemoving:Connect(function(player)
+        RemoveESP(player)
+    end)
+end
+
+Environment:ESPConnect()
+print("[Neuro.lua] ESP module loaded successfully!")
+
+-------------------------------------------------
+-- 静默自瞄 Pro：Universal Pro v4.3 引擎原样（不改逻辑），仅由下方 UI 控制 _G
+-------------------------------------------------
+getgenv().WuSilentAimEngineLoaded = false
+do
+    local ok, err = pcall(function()
+--[[
+    🎯 UNIVERSAL PRO SCRIPT v4.3 (DISTANCE LIMIT + FRIEND CHECK + ADONIS BYPASS)
+    Versão: 4.3
+    Base: v3.5 (Silent Aim + ESP Pro + Bullet Teleport)
+    Features: Silent Aim, ESP Pro, Bullet Teleport, Friend Check, Adonis Bypass, Distance Limit
+    Compatibilidade: PC & Mobile
+]]
+
+--// ==================================================
+--// 1. CONFIGURAÇÕES GLOBAIS (SILENT AIM & ESP)
+--// ==================================================
+
+-- [SILENT AIM CONFIGS]
+_G.SilentAim = false
+_G.FOV = 150
+_G.VisibleCheck = true
+_G.TeamCheck = true
+_G.TeamCheckForNPCs = false
+_G.DeadCheck = true            -- ✅ NOVO: Verificação de mortos
+_G.Prediction = 0.165
+_G.UpdateRate = 0.01
+_G.TargetMode = "NPCs"
+_G.AimPart = "Head"
+_G.ShowTarget = true
+_G.HitChance = 100
+_G.BulletTP = false
+_G.ShowTargetName = true
+_G.ShowTargetType = true
+_G.ShowTargetHP = true
+_G.ShowTargetDistance = true
+_G.ShowHitChance = true
+_G.HighlightTarget = false
+_G.HighlightNPCColor = Color3.fromRGB(255, 50, 50)
+_G.HighlightPlayerColor = Color3.fromRGB(50, 150, 255)
+_G.DebugNPCs = false
+_G.AggressiveNPCDetection = false
+_G.TargetPriority = "Distance"
+_G.StickyAim = true
+_G.FOVColor = Color3.fromRGB(0, 255, 0)
+
+-- ═══════════════════════════════════════════════════════════════
+-- 🔥 NOVAS CONFIGURAÇÕES v4.3: FRIEND CHECK, ADONIS E DISTÂNCIA
+-- ═══════════════════════════════════════════════════════════════
+_G.FriendCheck = true           -- ✅ Ignorar amigos no Silent Aim
+_G.AdonisBypass = true          -- ✅ Bypass para Adonis Anti-Cheat
+_G.EnableDistanceLimit = true   -- ✅ Ativar limite de distância
+_G.MaxAimDistance = 500         -- ✅ Distância máxima para mirar (em studs)
+
+-- [ESP CONFIGS]
+getgenv().ESP_Config = {
+    Enabled = false,
+    ShowPlayers = true,
+    ShowNPCs = true,
+    TeamCheck = true,
+    DeadCheck = true,           -- ✅ NOVO: Dead Check no ESP
+    MaxDistance = 2500,
+    NameTextSize = 16,
+    DistanceTextSize = 14,
+    InventoryTextSize = 13,
+    HPBarWidth = 60,
+    HPBarHeight = 6,
+    ShowBox = true,
+    ShowLine = true,
+    ShowStick = true,
+    ShowName = true,
+    ShowDistance = true,
+    ShowHPBar = true,
+    ShowEquippedItem = true,
+    ShowInventory = false,
+    UseTeamColor = true,
+    EnemyColor = Color3.fromRGB(255, 80, 80),
+    AllyColor  = Color3.fromRGB(80, 255, 80),
+    LineColor  = Color3.fromRGB(255, 255, 0),
+    StickColor = Color3.fromRGB(255, 255, 255)
+}
+
+--// ==================================================
+--// 1.5 ANTI-KICK OTIMIZADO (SEM TRAVAMENTO) - MELHORADO
+--// ==================================================
+
+local AntiKickEnabled = true
+
+task.spawn(function()
+    if not AntiKickEnabled then return end
+    
+    local function softAntiKick()
+        pcall(function()
+            local players = game:GetService("Players")
+            local lp = players.LocalPlayer
+            
+            if lp then
+                pcall(function()
+                    local oldKick = lp.Kick
+                    if oldKick then
+                        lp.Kick = function() return nil end
+                    end
+                end)
+            end
+        end)
+    end
+    
+    softAntiKick()
+    
+    while AntiKickEnabled and task.wait(30) do
+        softAntiKick()
+    end
+end)
+
+--// ==================================================
+--// 1.6 BYPASS PARA ADONIS ANTI-CHEAT (NOVO)
+--// ==================================================
+
+local function BypassAdonis()
+    if not _G.AdonisBypass then return end
+    
+    -- Detectar Adonis
+    local AdonisDetected = false
+    for _, obj in pairs(game:GetDescendants()) do
+        if obj.Name == "Adonis" or obj.Name == "AntiCheat" then
+            AdonisDetected = true
+            break
+        end
+    end
+    
+    if not AdonisDetected then
+        -- Verificar por RemoteEvents comuns do Adonis
+        local remotes = {
+            "Adonis_Remote",
+            "Adonis_AntiCheat",
+            "Adonis_Check",
+            "Adonis_Validate",
+            "Adonis_Log",
+            "Adonis_Event"
+        }
+        
+        for _, remoteName in pairs(remotes) do
+            local remote = game:GetService("ReplicatedStorage"):FindFirstChild(remoteName)
+            if remote then
+                AdonisDetected = true
+                break
+            end
+        end
+    end
+    
+    if AdonisDetected then
+        print("[Universal Pro] Adonis Anti-Cheat detectado! Aplicando bypass...")
+        
+        -- 1. Remover/ignorar detecção de ferramentas
+        local function HijackToolCheck(original)
+            return function(self, ...)
+                if string.find(tostring(self), "Tool") or string.find(tostring(self), "Weapon") then
+                    return true
+                end
+                return original(self, ...)
+            end
+        end
+        
+        -- 2. Bypass para check de velocidade
+        local function HijackVelocityCheck(original)
+            return function(self, ...)
+                local args = {...}
+                if args[1] and typeof(args[1]) == "Vector3" then
+                    if args[1].Magnitude > 50 then
+                        args[1] = args[1].Unit * 50
+                    end
+                end
+                return original(self, unpack(args))
+            end
+        end
+        
+        -- 3. Hook nos RemoteEvents do Adonis
+        for _, remoteName in pairs(remotes) do
+            local remote = game:GetService("ReplicatedStorage"):FindFirstChild(remoteName)
+            if remote and remote:IsA("RemoteEvent") then
+                remote.OnServerEvent:Connect(function(player, ...)
+                    return
+                end)
+            end
+        end
+        
+        -- 4. Bypass para verificações de movimento
+        local mt = getrawmetatable(game)
+        local oldNamecall = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer" or method == "InvokeServer" then
+                local selfName = string.lower(tostring(self))
+                if string.find(selfName, "adonis") or string.find(selfName, "anticheat") then
+                    return nil
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+        setreadonly(mt, true)
+        
+        -- 5. Limpar detecções automáticas
+        task.spawn(function()
+            while task.wait(0.5) do
+                pcall(function()
+                    if getgenv and getgenv().Adonis then
+                        getgenv().Adonis.Detected = false
+                    end
+                    
+                    local logService = game:GetService("LogService")
+                    local logs = logService:GetLogHistory()
+                    for _, log in pairs(logs) do
+                        if string.find(log.message, "Universal Pro") or string.find(log.message, "Silent Aim") then
+                            log.message = ""
+                        end
+                    end
+                end)
+            end
+        end)
+        
+        print("[Universal Pro] ✅ Bypass do Adonis aplicado com sucesso!")
+    end
+end
+
+-- Executar bypass
+task.spawn(function()
+    task.wait(2)
+    BypassAdonis()
+end)
+
+--// ==================================================
+--// 2. SERVIÇOS E VARIÁVEIS UNIFICADOS
+--// ==================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+--// VARIÁVEIS DO SILENT AIM
+local Circle = Drawing.new("Circle")
+Circle.Color = _G.FOVColor
+Circle.Thickness = 2
+Circle.Visible = false
+Circle.Radius = _G.FOV
+Circle.Transparency = 0.7
+Circle.Filled = false
+
+local TargetInfo = Drawing.new("Text")
+TargetInfo.Visible = false
+TargetInfo.Color = Color3.fromRGB(255, 255, 255)
+TargetInfo.Size = 18
+TargetInfo.Font = 2
+TargetInfo.Outline = true
+TargetInfo.OutlineColor = Color3.fromRGB(0, 0, 0)
+TargetInfo.Text = ""
+
+local TargetHighlight = nil
+local HighlightConnection = nil
+
+local CurrentTarget = nil
+local TargetPart = nil
+local TargetInRange = false
+local NPCCache = {}
+local PlayerCache = {}
+local LastCacheUpdate = 0
+local CacheUpdateInterval = 2
+
+local oldNamecall = nil
+local oldIndex = nil
+
+--// VARIÁVEIS DO ESP
+local ESP_Objects = {}
+
+--// ==================================================
+--// 3. FUNÇÕES DO SILENT AIM
+--// ==================================================
+
+-- ✅ NOVA FUNÇÃO: Verificação de mortos (Dead Check)
+local function IsDead(character)
+    if not character then return true end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return true end
+    
+    if humanoid.Health <= 0 then return true end
+    if humanoid:GetState() == Enum.HumanoidStateType.Dead then return true end
+    
+    local bodyEffects = character:FindFirstChild("BodyEffects")
+    if bodyEffects and bodyEffects:FindFirstChild("K.O") and bodyEffects["K.O"].Value == true then return true end
+    
+    local ko = character:FindFirstChild("K.O") or character:FindFirstChild("KO")
+    if ko and (ko:IsA("BoolValue") or ko:IsA("IntValue")) and (ko.Value == true or ko.Value > 0) then return true end
+    
+    return false
+end
+
+-- ✅ NOVA FUNÇÃO: Verificar amigos (Friend Check)
+local function IsFriend(player)
+    if not player then return false end
+    if not LocalPlayer or not LocalPlayer:IsA("Player") then return false end
+    
+    -- Verifica usando a API de amigos do Roblox
+    local success, isFriend = pcall(function()
+        return LocalPlayer:IsFriendsWith(player.UserId)
+    end)
+    
+    if success and isFriend then
+        return true
+    end
+    
+    -- Verifica usando o sistema de amigos alternativo
+    local success2, isFriend2 = pcall(function()
+        return LocalPlayer.FriendSystem:IsFriend(player)
+    end)
+    
+    if success2 and isFriend2 then
+        return true
+    end
+    
+    return false
+end
+
+local function CreateHighlight(target)
+    if not target or not target:IsA("Model") then return nil end
+    if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+    if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "SilentAimHighlight"
+    highlight.Adornee = target
+    highlight.FillColor = Color3.fromRGB(255, 50, 50)
+    highlight.FillTransparency = 0.7
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = game:GetService("CoreGui")
+    
+    HighlightConnection = target.Destroying:Connect(function()
+        if highlight then highlight:Destroy(); TargetHighlight = nil end
+    end)
+    return highlight
+end
+
+local function UpdateHighlight()
+    if not _G.HighlightTarget then
+        if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+        if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
+        return
+    end
+    
+    if CurrentTarget then
+        if not TargetHighlight or TargetHighlight.Adornee ~= CurrentTarget then TargetHighlight = CreateHighlight(CurrentTarget) end
+        if TargetHighlight then
+            local isPlayer = false
+            for _, data in pairs(PlayerCache) do
+                if data.Model == CurrentTarget then isPlayer = true; break end
+            end
+            
+            if isPlayer then TargetHighlight.FillColor = _G.HighlightPlayerColor
+            else TargetHighlight.FillColor = _G.HighlightNPCColor end
+            
+            if _G.HitChance >= 80 then
+                local pulse = math.sin(tick() * 3) * 0.2 + 0.8
+                TargetHighlight.FillTransparency = 0.7 + (0.2 * (1 - pulse))
+            else
+                TargetHighlight.FillTransparency = 0.7
+            end
+        end
+    else
+        if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+        if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
+    end
+end
+
+local function CleanupUIOnly()
+    if Circle then Circle.Visible = false end
+    if TargetInfo then TargetInfo.Visible = false; TargetInfo.Text = "" end
+    if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+    if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
+    CurrentTarget = nil; TargetPart = nil; TargetInRange = false; NPCCache = {}; PlayerCache = {}
+end
+
+local NPCTags = {
+    "NPC", "Npc", "npc", "Enemy", "enemy", "Enemies", "enemies",
+    "Hostile", "hostile", "Bad", "bad", "BadGuy", "badguy", "Foe", "foe", "Opponent", "opponent",
+    "Bot", "bot", "Bots", "bots", "Mob", "mob", "Mobs", "mobs", "Monster", "monster", "Monsters", "monsters",
+    "Zombie", "zombie", "Zombies", "zombies", "Creature", "creature", "Animal", "animal", "Beast", "beast",
+    "Villain", "villain", "Villian", "villian", "Boss", "boss", "MiniBoss", "miniboss",
+    "Guard", "guard", "Guardian", "guardian", "Soldier", "soldier", "Warrior", "warrior", "Fighter", "fighter",
+    "Target", "target", "Dummy", "dummy", "Dummies", "dummies", "Practice", "practice", "Training", "training",
+    "Skeleton", "skeleton", "Orc", "orc", "Goblin", "goblin", "Troll", "troll", "Ogre", "ogre",
+    "Demon", "demon", "Devil", "devil", "Ghost", "ghost", "Spirit", "spirit", "Vampire", "vampire", "Werewolf", "werewolf",
+    "Dragon", "dragon", "Wyvern", "wyvern", "Gang", "gang", "Thug", "thug", "Bandit", "bandit", "Raider", "raider",
+    "Pirate", "pirate", "Corsair", "corsair", "Agent", "agent", "Assassin", "assassin",
+    "Mercenary", "mercenary", "Hunter", "hunter", "Robot", "robot", "Drone", "drone",
+    "Android", "android", "Cyborg", "cyborg", "Automaton", "automaton", "Servant", "servant", "Minion", "minion",
+    "Slave", "slave", "Pawn", "pawn", "AI", "ai", "A.I.", "Char", "char", "Character", "character",
+    "Model", "model", "Event", "event", "Special", "special", "Holiday", "holiday", "Seasonal", "seasonal"
+}
+
+local function DebugNPCDetection(character, reason)
+    if not _G.DebugNPCs then return end
+    print("[NPC DEBUG] Detectado:", character.Name, "| Razão:", reason)
+end
+
+local function IsPlayer(character)
+    if not character or not character:IsA("Model") then return false end
+    if character == LocalPlayer.Character then return true end
+    local player = Players:GetPlayerFromCharacter(character)
+    return player ~= nil
+end
+
+local function IsNPC(character)
+    if not character or not character:IsA("Model") then return false end
+    if IsPlayer(character) then return false end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local head = character:FindFirstChild("Head")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    
+    if not humanoid or not head or not hrp then return false end
+    
+    if _G.AggressiveNPCDetection then
+        DebugNPCDetection(character, "Modo Agressivo - Estrutura de Humanoid")
+        return true
+    end
+    
+    local charName = character.Name:lower()
+    
+    for _, tag in pairs(NPCTags) do
+        if charName:find(tag:lower(), 1, true) then DebugNPCDetection(character, "Tag no nome: " .. tag); return true end
+    end
+    
+    local npcFolders = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Enemy", "Hostile", "Monsters", "Zombies", "Creatures", "Characters", "Spawns", "EnemySpawns", "NPCSpawns", "Bosses", "Minions"}
+    for _, folderName in pairs(npcFolders) do
+        local folder = workspace:FindFirstChild(folderName)
+        if folder and character:IsDescendantOf(folder) then DebugNPCDetection(character, "Na pasta: " .. folderName); return true end
+    end
+    
+    local possibleNPCIndicators = {"NPC", "IsNPC", "IsEnemy", "Hostile", "Enemy", "IsBot", "IsMob", "IsMonster", "Team", "Faction"}
+    for _, indicator in pairs(possibleNPCIndicators) do
+        local value = character:FindFirstChild(indicator)
+        if value then
+            if value:IsA("BoolValue") and (indicator == "NPC" or indicator == "IsNPC" or indicator == "IsEnemy" or indicator == "Hostile") and value.Value == true then
+                DebugNPCDetection(character, "BoolValue: " .. indicator .. " = true"); return true
+            elseif value:IsA("StringValue") then
+                local valLower = value.Value:lower()
+                if valLower == "enemy" or valLower == "hostile" or valLower == "npc" or valLower == "bot" or valLower == "monster" or valLower == "mob" then
+                    DebugNPCDetection(character, "StringValue: " .. indicator .. " = " .. value.Value); return true
+                end
+            elseif value:IsA("IntValue") and indicator == "Team" then
+                DebugNPCDetection(character, "Team Value: " .. value.Value); return true
+            end
+        end
+    end
+    
+    local hasAIBehavior = false
+    for _, child in pairs(character:GetChildren()) do
+        local childName = child.Name:lower()
+        if child:IsA("Script") or child:IsA("LocalScript") then
+            if childName:find("ai") or childName:find("behavior") or childName:find("path") or childName:find("attack") or childName:find("patrol") or childName:find("combat") then
+                hasAIBehavior = true; break
+            end
+        end
+    end
+    
+    local tags = CollectionService:GetTags(character)
+    for _, tag in pairs(tags) do
+        local tagLower = tag:lower()
+        for _, npcTag in pairs(NPCTags) do
+            if tagLower:find(npcTag:lower(), 1, true) then DebugNPCDetection(character, "CollectionService Tag: " .. tag); return true end
+        end
+    end
+    
+    local npcAbilities = {"Attack", "Damage", "Aggro", "Patrol", "Spawn", "Respawn", "AI", "BehaviorTree"}
+    for _, ability in pairs(npcAbilities) do
+        if character:FindFirstChild(ability) or character:FindFirstChild(ability .. "Script") then hasAIBehavior = true; break end
+    end
+    
+    if hasAIBehavior then DebugNPCDetection(character, "Comportamento de IA detectado"); return true end
+    
+    local namePatterns = {"^npc_", "^enemy_", "^bot_", "^mob_", "_npc$", "_enemy$", "_bot$"}
+    for _, pattern in pairs(namePatterns) do
+        if string.match(charName, pattern) then DebugNPCDetection(character, "Padrão no nome: " .. pattern); return true end
+    end
+    
+    DebugNPCDetection(character, "Estrutura de humanoid não-player (Genérico)")
+    return true
+end
+
+local function FindNPCsInWorkspaceRecursive(parent)
+    local foundNPCs = {}
+    for _, child in pairs(parent:GetChildren()) do
+        if child:IsA("Model") and IsNPC(child) then table.insert(foundNPCs, child) end
+        if not child:IsA("BasePart") and not child:IsA("Decal") and not child:IsA("Texture") then
+            local subNPCs = FindNPCsInWorkspaceRecursive(child)
+            for _, npc in pairs(subNPCs) do table.insert(foundNPCs, npc) end
+        end
+    end
+    return foundNPCs
+end
+
+-- ✅ MODIFICADO: Verificação de inimigo com Friend Check
+local function IsEnemyPlayer(player)
+    if not _G.TeamCheck then return true end
+    if not player or not LocalPlayer.Team or not player.Team then return true end
+    
+    -- ✅ Friend Check: Amigos não são considerados inimigos
+    if _G.FriendCheck and IsFriend(player) then
+        return false
+    end
+    
+    return LocalPlayer.Team ~= player.Team
+end
+
+local function IsEnemyNPC(npcModel)
+    if not _G.TeamCheckForNPCs then return true end
+    local npcTeamValue = npcModel:FindFirstChild("Team")
+    if npcTeamValue and npcTeamValue:IsA("StringValue") then
+        local npcTeam = npcTeamValue.Value
+        local localTeam = LocalPlayer.Team and LocalPlayer.Team.Name or ""
+        if npcTeam and localTeam and npcTeam ~= localTeam then return true end
+    end
+    local isEnemy = npcModel:FindFirstChild("IsEnemy")
+    if isEnemy and isEnemy:IsA("BoolValue") and isEnemy.Value == true then return true end
+    return true
+end
+
+local function GetTargetPart(character)
+    if _G.AimPart == "Head" then return character:FindFirstChild("Head")
+    elseif _G.AimPart == "Torso" then return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChild("HumanoidRootPart")
+    elseif _G.AimPart == "Random" then
+        local parts = {character:FindFirstChild("Head"), character:FindFirstChild("UpperTorso"), character:FindFirstChild("Torso"), character:FindFirstChild("HumanoidRootPart")}
+        for _, part in pairs(parts) do if part then return part end end
+    elseif _G.AimPart == "Both" then
+        local head = character:FindFirstChild("Head")
+        local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChild("HumanoidRootPart")
+        if head and torso then return tick() % 1 > 0.5 and head or torso elseif head then return head elseif torso then return torso end
+    end
+    return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Head")
+end
+
+local function UpdateCaches()
+    local currentTime = tick()
+    if currentTime - LastCacheUpdate < CacheUpdateInterval then return end
+    LastCacheUpdate = currentTime
+    
+    local tempNPCCache = {}
+    local tempPlayerCache = {}
+    local allModels = {}
+    
+    local wsChildren = workspace:GetChildren()
+    for _, model in pairs(wsChildren) do
+        if model:IsA("Model") and model ~= LocalPlayer.Character then table.insert(allModels, model) end
+    end
+    
+    local npcFolders = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Characters", "Spawns", "Monsters", "Zombies", "Enemy", "Hostile", "Bosses", "Minions", "Creatures"}
+    for _, folderName in pairs(npcFolders) do
+        local folder = workspace:FindFirstChild(folderName)
+        if folder then
+            local npcsInFolder = FindNPCsInWorkspaceRecursive(folder)
+            for _, npc in pairs(npcsInFolder) do table.insert(allModels, npc) end
+        end
+    end
+    
+    if _G.AggressiveNPCDetection then
+        local counter = 0
+        local descendants = workspace:GetDescendants()
+        for _, descendant in pairs(descendants) do
+            if descendant:IsA("Model") and descendant ~= LocalPlayer.Character then
+                table.insert(allModels, descendant)
+                counter = counter + 1
+                if counter % 150 == 0 then task.wait() end
+            end
+        end
+    end
+    
+    local processCounter = 0
+    for _, model in pairs(allModels) do
+        processCounter = processCounter + 1
+        if processCounter % 200 == 0 then task.wait() end
+        
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        
+        if hrp and humanoid then
+            -- ✅ Dead Check: Verifica se está morto
+            if not (_G.DeadCheck and IsDead(model)) then
+                if IsPlayer(model) then
+                    tempPlayerCache[model] = {Model = model, HRP = hrp, Humanoid = humanoid, Player = Players:GetPlayerFromCharacter(model), IsNPC = false}
+                elseif IsNPC(model) then
+                    tempNPCCache[model] = {Model = model, HRP = hrp, Humanoid = humanoid, IsNPC = true}
+                end
+            end
+        end
+    end
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            
+            if hrp and humanoid then
+                if not (_G.DeadCheck and IsDead(char)) then
+                    tempPlayerCache[char] = {Model = char, HRP = hrp, Humanoid = humanoid, Player = player, IsNPC = false}
+                end
+            end
+        end
+    end
+    
+    NPCCache = tempNPCCache
+    PlayerCache = tempPlayerCache
+end
+
+-- ✅ MODIFICADO: Validação com Distance Limit
+local function ValidateCurrentTarget()
+    if not CurrentTarget or not TargetPart then return false end
+    local humanoid = CurrentTarget:FindFirstChildOfClass("Humanoid")
+    local hrp = CurrentTarget:FindFirstChild("HumanoidRootPart")
+    
+    if not humanoid or not hrp then return false end
+    if _G.DeadCheck and IsDead(CurrentTarget) then return false end
+    
+    -- ✅ Distance Limit: Verifica distância máxima
+    if _G.EnableDistanceLimit and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local localPos = LocalPlayer.Character.HumanoidRootPart.Position
+        local targetPos = TargetPart.Position
+        local distance = (targetPos - localPos).Magnitude
+        if distance > _G.MaxAimDistance then
+            return false
+        end
+    end
+    
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local targetPos = TargetPart.Position
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
+    if not onScreen then return false end
+    
+    local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
+    local dist = (screenPoint - screenCenter).Magnitude
+    if dist > _G.FOV then return false end
+    
+    if _G.VisibleCheck then
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
+        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+        raycastParams.IgnoreWater = true
+        local origin = Camera.CFrame.Position
+        local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
+        local ray = workspace:Raycast(origin, direction, raycastParams)
+        if ray then
+            local hitPart = ray.Instance
+            if not hitPart:IsDescendantOf(CurrentTarget) then return false end
+        end
+    end
+    return true
+end
+
+-- ✅ MODIFICADO: Get Target com Distance Limit
+local function GetTarget()
+    if not LocalPlayer.Character then 
+        TargetInRange = false; TargetPart = nil; return nil 
+    end
+    UpdateCaches()
+    if _G.StickyAim and CurrentTarget then
+        if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget else CurrentTarget = nil; TargetPart = nil end
+    end
+    
+    local bestScore = math.huge
+    local closestPart = nil
+    local closestTarget = nil
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local localChar = LocalPlayer.Character
+    local localRoot = localChar:FindFirstChild("HumanoidRootPart")
+    
+    TargetInRange = false; TargetPart = nil
+    if not localRoot then return nil end
+    
+    local function ProcessTarget(data, isPlayer)
+        local hrp = data.HRP
+        local humanoid = data.Humanoid
+        
+        if hrp and humanoid then
+            if _G.DeadCheck and IsDead(data.Model) then return end
+            
+            if isPlayer then if not IsEnemyPlayer(data.Player) then return end else if not IsEnemyNPC(data.Model) then return end end
+            
+            -- ✅ Distance Limit: Verifica distância máxima
+            if _G.EnableDistanceLimit then
+                local distance = (hrp.Position - localRoot.Position).Magnitude
+                if distance > _G.MaxAimDistance then
+                    return -- Ignorar alvos muito distantes
+                end
+            end
+            
+            local targetPart = GetTargetPart(data.Model)
+            if not targetPart then targetPart = hrp end
+            
+            local targetPos = targetPart.Position
+            if hrp.Velocity.Magnitude > 1 and _G.Prediction > 0 then targetPos = targetPos + (hrp.Velocity * _G.Prediction) end
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
+            if onScreen then
+                local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
+                local distFromCenter = (screenPoint - screenCenter).Magnitude
+                
+                if distFromCenter <= _G.FOV then
+                    local isVisible = true
+                    if _G.VisibleCheck then
+                        local raycastParams = RaycastParams.new()
+                        raycastParams.FilterDescendantsInstances = {localChar, Camera}
+                        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+                        raycastParams.IgnoreWater = true
+                        local origin = Camera.CFrame.Position
+                        local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
+                        local ray = workspace:Raycast(origin, direction, raycastParams)
+                        if ray then
+                            local hitPart = ray.Instance
+                            if not hitPart:IsDescendantOf(data.Model) then isVisible = false end
+                        end
+                    end
+                    
+                    TargetInRange = true
+                    if isVisible or not _G.VisibleCheck then
+                        local currentScore = 0
+                        if _G.TargetPriority == "Crosshair" then currentScore = distFromCenter
+                        elseif _G.TargetPriority == "Distance" then currentScore = (targetPos - localRoot.Position).Magnitude
+                        elseif _G.TargetPriority == "LowestHP" then currentScore = humanoid.Health
+                        else currentScore = distFromCenter end
+                        
+                        if currentScore < bestScore then
+                            bestScore = currentScore
+                            closestPart = targetPart
+                            closestTarget = data.Model
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    if _G.TargetMode == "NPCs" or _G.TargetMode == "Both" then for _, data in pairs(NPCCache) do ProcessTarget(data, false) end end
+    if _G.TargetMode == "Players" or _G.TargetMode == "Both" then for _, data in pairs(PlayerCache) do ProcessTarget(data, true) end end
+    
+    TargetPart = closestPart
+    return closestTarget
+end
+
+local function ShouldHit()
+    if _G.HitChance >= 100 then return true end
+    if _G.HitChance <= 0 then return false end
+    local randomNumber = math.random(1, 100)
+    return randomNumber <= _G.HitChance
+end
+
+local function CalculateHitChanceDisplay()
+    if not CurrentTarget or not TargetPart then return 0 end
+    local baseChance = _G.HitChance
+    local distanceFactor = 1.0
+    local fovFactor = 1.0
+    
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local localPos = LocalPlayer.Character.HumanoidRootPart.Position
+        local targetPos = TargetPart.Position
+        local distance = (targetPos - localPos).Magnitude
+        if distance < 50 then distanceFactor = 1.1 elseif distance > 200 then distanceFactor = 0.8 end
+    end
+    
+    if _G.FOV < 100 then fovFactor = 1.15 elseif _G.FOV > 250 then fovFactor = 0.9 end
+    local finalChance = baseChance * distanceFactor * fovFactor
+    local randomVariation = math.random(-5, 5)
+    return math.floor(math.clamp(finalChance + randomVariation, 1, 100))
+end
+
+local function UpdateTargetInfo()
+    if not _G.ShowTarget or not TargetInfo or not _G.SilentAim then
+        TargetInfo.Visible = false; TargetInfo.Text = ""; return
+    end
+    
+    local shouldShowHitChance = _G.ShowHitChance and _G.HitChance > 0
+    if CurrentTarget and TargetPart then
+        local screenPos, onScreen = Camera:WorldToViewportPoint(TargetPart.Position)
+        if onScreen then
+            TargetInfo.Visible = true
+            TargetInfo.Position = Vector2.new(screenPos.X, screenPos.Y + 20)
+            local infoLines = {}
+            
+            if _G.ShowTargetName then
+                local targetName = CurrentTarget.Name
+                local targetType = "NPC"
+                for _, data in pairs(PlayerCache) do
+                    if data.Model == CurrentTarget then targetType = "Player"; targetName = data.Player.Name; break end
+                end
+                if _G.ShowTargetType then table.insert(infoLines, string.format("[%s] %s", targetType, targetName))
+                else table.insert(infoLines, targetName) end
+            end
+            
+            if _G.ShowTargetHP then
+                local humanoid = CurrentTarget:FindFirstChildOfClass("Humanoid")
+                if humanoid then table.insert(infoLines, string.format("HP: %.0f/%.0f", humanoid.Health, humanoid.MaxHealth)) end
+            end
+            
+            if _G.ShowTargetDistance and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                local localPos = LocalPlayer.Character.HumanoidRootPart.Position
+                local distance = string.format("%.1f", (TargetPart.Position - localPos).Magnitude)
+                table.insert(infoLines, string.format("Dist: %s studs", distance))
+            end
+            
+            if shouldShowHitChance then table.insert(infoLines, string.format("Chance: %d%%", CalculateHitChanceDisplay())) end
+            
+            if #infoLines > 0 then TargetInfo.Text = table.concat(infoLines, "\n") else TargetInfo.Text = "Alvo travado" end
+        else
+            TargetInfo.Visible = false; TargetInfo.Text = ""
+        end
+    else
+        TargetInfo.Visible = false; TargetInfo.Text = "" 
+    end
+end
+
+--// ==================================================
+--// 4. FUNÇÕES DO ESP PRO (COM DEAD CHECK)
+--// ==================================================
+
+local function newDrawing(t)
+    local obj = Drawing.new(t)
+    obj.Visible = false
+    obj.ZIndex = 2
+    return obj
+end
+
+local function setDrawingVisibility(parts, isVisible)
+    for _, obj in pairs(parts) do
+        if obj.Visible ~= isVisible then
+            obj.Visible = isVisible
+        end
+    end
+end
+
+local function getCharacterHumanoid(model)
+    if not model or not model:IsA("Model") then return nil, nil end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum then return nil, nil end
+    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso")
+    if not root then return nil, nil end
+    return hum, root
+end
+
+local function getPlayerFromCharacterESP(model)
+    return Players:GetPlayerFromCharacter(model)
+end
+
+local function getEquippedToolName(model)
+    for _, v in ipairs(model:GetChildren()) do
+        if v:IsA("Tool") or v:IsA("Accessory") then return v.Name end
+    end
+    return nil
+end
+
+local function getInventoryItems(model)
+    local items = {}
+    local plr = getPlayerFromCharacterESP(model)
+    
+    for _, v in ipairs(model:GetChildren()) do
+        if v:IsA("Tool") then
+            table.insert(items, v.Name .. " (Eq)")
+        end
+    end
+    
+    if plr and plr:FindFirstChild("Backpack") then
+        for _, v in ipairs(plr.Backpack:GetChildren()) do
+            if v:IsA("Tool") then
+                table.insert(items, v.Name)
+            end
+        end
+    end
+    
+    if #items > 0 then
+        return table.concat(items, "\n")
+    end
+    return nil
+end
+
+local function getTeamColor(model)
+    local plr = getPlayerFromCharacterESP(model)
+    if plr and plr.Team then return plr.TeamColor and plr.TeamColor.Color or plr.Team.Color end
+    return nil
+end
+
+local function isAlly(model)
+    local plr = getPlayerFromCharacterESP(model)
+    if plr and LocalPlayer then
+        if LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then return true end
+        if LocalPlayer.TeamColor and plr.TeamColor and LocalPlayer.TeamColor == plr.TeamColor then return true end
+    end
+    local teamValue = model:FindFirstChild("Team") or model:FindFirstChild("TeamColor")
+    if teamValue and LocalPlayer.Team then
+        if tostring(teamValue.Value) == tostring(LocalPlayer.Team.Name) then return true end
+    end
+    return false
+end
+
+local function createESP(model)
+    if ESP_Objects[model] then return end
+    local parts = {}
+    parts.Box = newDrawing("Square"); parts.Box.Thickness = 1; parts.Box.Filled = false
+    parts.Line = newDrawing("Line"); parts.Line.Thickness = 1
+    parts.Stick = newDrawing("Line"); parts.Stick.Thickness = 1
+    parts.NameText = newDrawing("Text"); parts.NameText.Center = true; parts.NameText.Outline = true; parts.NameText.Font = 2
+    parts.DistanceText = newDrawing("Text"); parts.DistanceText.Center = true; parts.DistanceText.Outline = true; parts.DistanceText.Font = 2
+    parts.HPBarBack = newDrawing("Square"); parts.HPBarBack.Filled = true; parts.HPBarBack.Color = Color3.fromRGB(0, 0, 0)
+    parts.HPBar = newDrawing("Square"); parts.HPBar.Filled = true
+    parts.HPText = newDrawing("Text"); parts.HPText.Center = true; parts.HPText.Outline = true; parts.HPText.Font = 2; parts.HPText.Size = 13
+    parts.ItemText = newDrawing("Text"); parts.ItemText.Center = true; parts.ItemText.Outline = true; parts.ItemText.Font = 2; parts.ItemText.Size = 13
+    parts.InventoryText = newDrawing("Text"); parts.InventoryText.Center = true; parts.InventoryText.Outline = true; parts.InventoryText.Font = 2; parts.InventoryText.Size = ESP_Config.InventoryTextSize
+    
+    ESP_Objects[model] = parts
+
+    model.AncestryChanged:Connect(function(_, parent)
+        if not parent and ESP_Objects[model] then
+            for _, obj in pairs(ESP_Objects[model]) do if obj and obj.Remove then obj:Remove() end end
+            ESP_Objects[model] = nil
+        end
+    end)
+end
+
+local function worldToViewport(pos)
+    local v, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(v.X, v.Y), onScreen, v.Z
+end
+
+-- ✅ MODIFICADO: updateESP com Dead Check
+local function updateESP()
+    if not ESP_Config.Enabled then
+        for _, parts in pairs(ESP_Objects) do setDrawingVisibility(parts, false) end
+        return
+    end
+
+    local cameraPos = Camera.CFrame.Position
+
+    for model, parts in pairs(ESP_Objects) do
+        local hum, root = getCharacterHumanoid(model)
+        
+        if not hum or not root then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+        
+        -- ✅ Dead Check no ESP
+        if ESP_Config.DeadCheck and IsDead(model) then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+
+        local isPlayer = (getPlayerFromCharacterESP(model) ~= nil)
+        
+        if isPlayer and not ESP_Config.ShowPlayers then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+        
+        if not isPlayer and not ESP_Config.ShowNPCs then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+
+        local distance = (root.Position - cameraPos).Magnitude
+        if distance > ESP_Config.MaxDistance then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+
+        local isModelAlly = isAlly(model)
+        if ESP_Config.TeamCheck and isModelAlly then
+            setDrawingVisibility(parts, false)
+            continue
+        end
+
+        local rootPos, onScreen, depth = worldToViewport(root.Position)
+        if onScreen and depth > 0 then
+            
+            local color = ESP_Config.EnemyColor
+            if isModelAlly then color = ESP_Config.AllyColor 
+            elseif ESP_Config.UseTeamColor then
+                local tc = getTeamColor(model)
+                if tc then color = tc end
+            end
+
+            local size = model:GetExtentsSize()
+            
+            -- Box ESP
+            if ESP_Config.ShowBox then
+                local top = root.Position + Vector3.new(0, size.Y / 2, 0)
+                local bottom = root.Position - Vector3.new(0, size.Y / 2, 0)
+                local topV2, on1 = worldToViewport(top)
+                local bottomV2, on2 = worldToViewport(bottom)
+                if on1 and on2 then
+                    local height = math.abs(topV2.Y - bottomV2.Y)
+                    local width = height / 2
+                    parts.Box.Size = Vector2.new(width, height)
+                    parts.Box.Position = Vector2.new(rootPos.X - width / 2, topV2.Y)
+                    parts.Box.Color = color
+                    parts.Box.Visible = true
+                else parts.Box.Visible = false end
+            else parts.Box.Visible = false end
+
+            -- Line ESP
+            if ESP_Config.ShowLine then
+                parts.Line.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                parts.Line.To = rootPos
+                parts.Line.Color = ESP_Config.LineColor
+                parts.Line.Visible = true
+            else parts.Line.Visible = false end
+
+            -- Stick ESP
+            if ESP_Config.ShowStick then
+                local head = model:FindFirstChild("Head") or root
+                local headV2, hOn = worldToViewport(head.Position)
+                local footV2, fOn = worldToViewport(root.Position - Vector3.new(0, size.Y / 2, 0))
+                
+                if hOn and fOn then
+                    parts.Stick.From = headV2; parts.Stick.To = footV2
+                    parts.Stick.Color = ESP_Config.StickColor; parts.Stick.Visible = true
+                else parts.Stick.Visible = false end
+            else parts.Stick.Visible = false end
+
+            -- Nome ESP
+            if ESP_Config.ShowName then
+                parts.NameText.Position = rootPos - Vector2.new(0, 30)
+                parts.NameText.Size = ESP_Config.NameTextSize
+                parts.NameText.Color = color
+                parts.NameText.Text = model.Name
+                parts.NameText.Visible = true
+            else parts.NameText.Visible = false end
+
+            -- Distância ESP
+            if ESP_Config.ShowDistance then
+                parts.DistanceText.Position = rootPos - Vector2.new(0, 15)
+                parts.DistanceText.Size = ESP_Config.DistanceTextSize
+                parts.DistanceText.Color = Color3.fromRGB(255, 255, 255)
+                parts.DistanceText.Text = string.format("[%.0f m]", distance)
+                parts.DistanceText.Visible = true
+            else parts.DistanceText.Visible = false end
+
+            -- HP Bar
+            local barYFinal = rootPos.Y + 25
+            local barHFinal = ESP_Config.HPBarHeight
+            
+            if ESP_Config.ShowHPBar then
+                local hpPercent = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                local barW, barH = ESP_Config.HPBarWidth, ESP_Config.HPBarHeight
+                local barX, barY = rootPos.X - barW / 2, rootPos.Y + 25
+                barYFinal = barY
+                parts.HPBarBack.Size = Vector2.new(barW, barH)
+                parts.HPBarBack.Position = Vector2.new(barX, barY); parts.HPBarBack.Visible = true
+                parts.HPBar.Size = Vector2.new(barW * hpPercent, barH)
+                parts.HPBar.Position = Vector2.new(barX, barY)
+                parts.HPBar.Color = Color3.fromRGB(255 * (1 - hpPercent), 255 * hpPercent, 0)
+                parts.HPBar.Visible = true
+                parts.HPText.Position = Vector2.new(rootPos.X, barY + barH + 8)
+                parts.HPText.Color = Color3.fromRGB(255, 255, 255)
+                parts.HPText.Text = string.format("%.0f / %.0f", hum.Health, hum.MaxHealth)
+                parts.HPText.Visible = true
+            else
+                parts.HPBarBack.Visible = false; parts.HPBar.Visible = false; parts.HPText.Visible = false
+            end
+
+            -- Item equipado
+            if ESP_Config.ShowEquippedItem then
+                local itemName = getEquippedToolName(model)
+                if itemName then
+                    parts.ItemText.Position = rootPos - Vector2.new(0, 45)
+                    parts.ItemText.Color = Color3.fromRGB(120, 255, 120)
+                    parts.ItemText.Text = "[" .. itemName .. "]"
+                    parts.ItemText.Visible = true
+                else parts.ItemText.Visible = false end
+            else parts.ItemText.Visible = false end
+
+            -- Inventário Completo ESP
+            if ESP_Config.ShowInventory then
+                local invText = getInventoryItems(model)
+                if invText then
+                    parts.InventoryText.Position = Vector2.new(rootPos.X, barYFinal + barHFinal + 25)
+                    parts.InventoryText.Size = ESP_Config.InventoryTextSize
+                    parts.InventoryText.Color = Color3.fromRGB(200, 200, 255)
+                    parts.InventoryText.Text = invText
+                    parts.InventoryText.Visible = true
+                else 
+                    parts.InventoryText.Visible = false 
+                end
+            else 
+                parts.InventoryText.Visible = false 
+            end
+            
+        else
+            setDrawingVisibility(parts, false)
+        end
+    end
+end
+
+local function scanWorkspace()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local hum, root = getCharacterHumanoid(plr.Character)
+            if hum and root then createESP(plr.Character) end
+        end
+    end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") then
+            local hum, root = getCharacterHumanoid(obj)
+            if hum and root then
+                local owner = getPlayerFromCharacterESP(obj)
+                if not owner or owner == nil then createESP(obj) end
+            end
+        end
+    end
+end
+
+--// ==================================================
+--// 5. HOOKS E LOOPS (COM BULLET TELEPORT)
+--// ==================================================
+
+local function applyBulletTeleport(origin, targetPart)
+    if not _G.BulletTP or not targetPart then
+        return origin
+    end
+    return (targetPart.CFrame * CFrame.new(0, 0, 1)).p
+end
+
+-- SILENT AIM HOOKS COM BULLET TELEPORT
+if not oldNamecall then
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if not _G.SilentAim or not TargetPart or not CurrentTarget then return oldNamecall(self, ...) end
+        
+        local method = getnamecallmethod()
+        local args = {...}
+        
+        if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+            local selfName = self.Name:lower()
+            if string.find(selfName, "fire") or string.find(selfName, "hit") or string.find(selfName, "attack") or string.find(selfName, "damage") then
+                if not ShouldHit() then return oldNamecall(self, ...) end
+                
+                local newArgs = {}
+                local modified = false
+                
+                for i, arg in pairs(args) do
+                    if typeof(arg) == "Vector3" then
+                        if _G.BulletTP then
+                            newArgs[i] = applyBulletTeleport(arg, TargetPart)
+                        else
+                            newArgs[i] = TargetPart.Position
+                        end
+                        modified = true
+                    elseif typeof(arg) == "CFrame" then
+                        if _G.BulletTP then
+                            local origin = arg.Position
+                            newArgs[i] = CFrame.new(applyBulletTeleport(origin, TargetPart))
+                        else
+                            newArgs[i] = CFrame.new(TargetPart.Position)
+                        end
+                        modified = true
+                    elseif typeof(arg) == "Ray" then
+                        local origin = arg.Origin
+                        if _G.BulletTP then
+                            local newOrigin = applyBulletTeleport(origin, TargetPart)
+                            newArgs[i] = Ray.new(newOrigin, (TargetPart.Position - newOrigin).Unit * 1000)
+                        else
+                            newArgs[i] = Ray.new(origin, (TargetPart.Position - origin).Unit * 1000)
+                        end
+                        modified = true
+                    else
+                        newArgs[i] = arg
+                    end
+                end
+                
+                if modified then return oldNamecall(self, unpack(newArgs)) end
+            end
+        end
+        
+        if method == "Raycast" and self == workspace then
+            local origin = args[1]
+            local direction = args[2]
+            if origin and TargetPart then
+                if not ShouldHit() then return oldNamecall(self, ...) end
+                
+                local newOrigin = origin
+                if _G.BulletTP then
+                    newOrigin = applyBulletTeleport(origin, TargetPart)
+                end
+                
+                local newDir = (TargetPart.Position - newOrigin).Unit * direction.Magnitude
+                return oldNamecall(self, newOrigin, newDir, args[3], args[4])
+            end
+        end
+        
+        return oldNamecall(self, ...)
+    end)
+end
+
+if not oldIndex then
+    oldIndex = hookmetamethod(game, "__index", function(self, key)
+        if self == Mouse and _G.SilentAim and TargetPart then
+            local keyLower = string.lower(key)
+            if keyLower == "hit" then
+                if not ShouldHit() then return oldIndex(self, key) end
+                if _G.BulletTP then
+                    return CFrame.new(applyBulletTeleport(self.Origin, TargetPart))
+                end
+                return CFrame.new(TargetPart.Position)
+            elseif keyLower == "target" then return TargetPart end
+        end
+        return oldIndex(self, key)
+    end)
+end
+
+-- SILENT AIM UPDATE LOOP
+task.spawn(function()
+    while true do
+        task.wait(_G.UpdateRate)
+        if _G.SilentAim then CurrentTarget = GetTarget() else CurrentTarget = nil; TargetInRange = false; TargetPart = nil end
+    end
+end)
+
+-- SILENT AIM VISUALS LOOP
+RunService.RenderStepped:Connect(function()
+    Circle.Visible = _G.SilentAim
+    if _G.SilentAim then
+        local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        Circle.Position = screenCenter
+        Circle.Radius = _G.FOV
+        Circle.Color = _G.FOVColor
+        
+        if CurrentTarget then
+            local isPlayerTarget = false
+            for _, data in pairs(PlayerCache) do
+                if data.Model == CurrentTarget then isPlayerTarget = true; break end
+            end
+            if isPlayerTarget then Circle.Color = Color3.fromRGB(0, 150, 255) else Circle.Color = Color3.fromRGB(0, 255, 0) end
+        else
+            if TargetInRange then Circle.Color = Color3.fromRGB(255, 255, 0) else Circle.Color = Color3.fromRGB(255, 50, 0) end
+        end
+    else
+        Circle.Visible = false
+    end
+    
+    UpdateTargetInfo()
+    UpdateHighlight()
+end)
+
+-- ESP LOOPS & EVENTOS INICIAIS
+scanWorkspace()
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        local hum, root = getCharacterHumanoid(char)
+        if hum and root then createESP(char) end
+    end)
+end)
+
+for _, plr in pairs(Players:GetPlayers()) do
+    plr.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        local hum, root = getCharacterHumanoid(char)
+        if hum and root then createESP(char) end
+    end)
+end
+
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("Model") then
+        task.wait(0.2)
+        local hum, root = getCharacterHumanoid(obj)
+        if hum and root then
+            local owner = getPlayerFromCharacterESP(obj)
+            if not owner or owner == nil then createESP(obj) end
+        end
+    end
+end)
+RunService.RenderStepped:Connect(updateESP)
+
+game:GetService("Players").PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then CleanupUIOnly() end
+end)
+
+--// ==================================================
+    end)
+    getgenv().WuSilentAimEngineLoaded = ok
+    if ok then
+        print("[巫 script] 静默自瞄引擎 v4.3 已加载（原版逻辑）")
+    else
+        warn("[巫 script] 静默自瞄引擎加载失败:", err)
+    end
+end
+
+local AimTab = Window:AddTab("自瞄")
+local SASection = AimTab:AddSection("内部静默自瞄 (Universal Pro v4.3)")
+
+-- 仅适配 UI → 全部写 _G，引擎逻辑不改
+SASection:AddToggle({
+    Name = "启用静默自瞄",
+    Default = false,
+    Callback = function(v)
+        _G.SilentAim = v and true or false
+        if v then
+            pcall(function()
+                if type(UpdateCaches) == "function" then
+                    -- 原版在开启时刷新缓存；若引擎局部函数不可见则跳过
+                end
+            end)
+        end
+        Window:Notify({Title = "静默自瞄", Content = v and "已开启" or "已关闭", Duration = 2})
+    end
+})
+
+SASection:AddSlider({
+    Name = "FOV",
+    Min = 50, Max = 300, Default = 150, Increment = 1,
+    Callback = function(v)
+        _G.FOV = v
+        pcall(function()
+            local c = rawget(_G, "Circle") or getgenv().WuSA_Circle
+            -- 原版 Circle 是引擎 local，外层访问不到；FOV 仍由引擎 RenderStepped 读 _G.FOV
+        end)
+    end
+})
+
+SASection:AddSlider({
+    Name = "预判",
+    Min = 0, Max = 0.5, Default = 0.165, Increment = 0.01,
+    Callback = function(v) _G.Prediction = v end
+})
+
+SASection:AddSlider({
+    Name = "命中率",
+    Min = 0, Max = 100, Default = 100, Increment = 1,
+    Callback = function(v) _G.HitChance = v end
+})
+
+SASection:AddSlider({
+    Name = "更新间隔",
+    Min = 0, Max = 0.5, Default = 0.01, Increment = 0.01,
+    Callback = function(v) _G.UpdateRate = v end
+})
+
+SASection:AddDropdown({
+    Name = "优先模式",
+    Options = {"Crosshair", "Distance", "LowestHP"},
+    Default = "Distance",
+    Callback = function(v) _G.TargetPriority = v end
+})
+
+SASection:AddToggle({
+    Name = "粘性瞄准",
+    Default = true,
+    Callback = function(v) _G.StickyAim = v end
+})
+
+SASection:AddDropdown({
+    Name = "目标类型",
+    Options = {"NPCs", "Players", "Both"},
+    Default = "NPCs",
+    Callback = function(v) _G.TargetMode = v end
+})
+
+SASection:AddDropdown({
+    Name = "瞄准部位",
+    Options = {"Head", "Torso", "Both", "Random"},
+    Default = "Head",
+    Callback = function(v) _G.AimPart = v end
+})
+
+SASection:AddToggle({
+    Name = "墙壁检测",
+    Default = true,
+    Callback = function(v) _G.VisibleCheck = v end
+})
+
+SASection:AddToggle({
+    Name = "忽略死亡",
+    Default = true,
+    Callback = function(v) _G.DeadCheck = v end
+})
+
+SASection:AddToggle({
+    Name = "距离限制",
+    Default = true,
+    Callback = function(v) _G.EnableDistanceLimit = v end
+})
+
+SASection:AddSlider({
+    Name = "最大瞄准距离",
+    Min = 50, Max = 2000, Default = 500, Increment = 10,
+    Callback = function(v) _G.MaxAimDistance = v end
+})
+
+SASection:AddToggle({
+    Name = "忽略好友",
+    Default = true,
+    Callback = function(v) _G.FriendCheck = v end
+})
+
+SASection:AddToggle({
+    Name = "NPC激进检测",
+    Default = false,
+    Callback = function(v) _G.AggressiveNPCDetection = v end
+})
+
+SASection:AddToggle({
+    Name = "子弹传送",
+    Default = false,
+    Callback = function(v) _G.BulletTP = v end
+})
+
+SASection:AddToggle({
+    Name = "目标高亮",
+    Default = false,
+    Callback = function(v) _G.HighlightTarget = v end
+})
+
+SASection:AddToggle({
+    Name = "显示目标信息",
+    Default = true,
+    Callback = function(v) _G.ShowTarget = v end
+})
+
+SASection:AddToggle({
+    Name = "队友检测(玩家)",
+    Default = true,
+    Callback = function(v) _G.TeamCheck = v end
+})
+
+SASection:AddToggle({
+    Name = "队友检测(NPC)",
+    Default = false,
+    Callback = function(v) _G.TeamCheckForNPCs = v end
+})
+
+
+-------------------------------------------------
+-- 镜头自瞄 (Nexus Aim Assist 移植，非静默)
+-------------------------------------------------
+do
+    local AA = {
+        Enabled = false,
+        FOV = 180,
+        AimSpeed = 25,
+        AimPart = "Head",
+        TeamCheck = true,
+        Sticky = true,
+        ShowFOV = true,
+        CurrentTarget = nil,
+    }
+    getgenv().WuNexusAim = AA
+
+    local Players = game:GetService("Players")
+    local UIS = game:GetService("UserInputService")
+    local RunService = game:GetService("RunService")
+    local LocalPlayer = Players.LocalPlayer
+
+    -- FOV 圈（ScreenGui，不依赖 Drawing）
+    local fovGui, fovCircle
+    pcall(function()
+        local parent = (gethui and gethui()) or game:GetService("CoreGui")
+        local old = parent:FindFirstChild("WuNexusFOV")
+        if old then old:Destroy() end
+        fovGui = Instance.new("ScreenGui")
+        fovGui.Name = "WuNexusFOV"
+        fovGui.ResetOnSpawn = false
+        fovGui.IgnoreGuiInset = true
+        fovGui.DisplayOrder = 50
+        fovGui.Parent = parent
+        fovCircle = Instance.new("Frame")
+        fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+        fovCircle.BackgroundTransparency = 1
+        fovCircle.Visible = false
+        fovCircle.ZIndex = 10
+        fovCircle.Parent = fovGui
+        Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(180, 65, 255)
+        st.Thickness = 2
+        st.Parent = fovCircle
+    end)
+
+    local Parts = { "Head", "UpperTorso", "Torso", "HumanoidRootPart" }
+
+    local function IsEnemy(player)
+        if player == LocalPlayer then return false end
+        if AA.TeamCheck and LocalPlayer.Team ~= nil and player.Team ~= nil and LocalPlayer.Team == player.Team then
+            return false
+        end
+        return true
+    end
+
+    local function GetAimPart(character)
+        if not character then return nil end
+        return character:FindFirstChild(AA.AimPart)
+            or character:FindFirstChild("Head")
+            or character:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function FindTarget()
+        local cam = workspace.CurrentCamera
+        if not cam then return nil end
+        local mouse = UIS:GetMouseLocation()
+        local closest, closestDist = nil, AA.FOV
+        for _, player in ipairs(Players:GetPlayers()) do
+            if IsEnemy(player) then
+                local char = player.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                local part = GetAimPart(char)
+                if hum and hum.Health > 0 and part then
+                    local screen, onScreen = cam:WorldToViewportPoint(part.Position)
+                    if onScreen and screen.Z > 0 then
+                        local dist = (Vector2.new(screen.X, screen.Y) - Vector2.new(mouse.X, mouse.Y)).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            closest = part
+                        end
+                    end
+                end
+            end
+        end
+        return closest
+    end
+
+    if getgenv().WuNexusAimConn then
+        pcall(function() getgenv().WuNexusAimConn:Disconnect() end)
+    end
+    getgenv().WuNexusAimConn = RunService.RenderStepped:Connect(function(dt)
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local mouse = UIS:GetMouseLocation()
+        if fovCircle then
+            fovCircle.Position = UDim2.fromOffset(mouse.X, mouse.Y)
+            local d = AA.FOV * 2
+            fovCircle.Size = UDim2.fromOffset(d, d)
+            fovCircle.Visible = AA.Enabled and AA.ShowFOV
+        end
+        if not AA.Enabled then
+            AA.CurrentTarget = nil
+            return
+        end
+        if not AA.Sticky or not AA.CurrentTarget or not AA.CurrentTarget.Parent then
+            AA.CurrentTarget = FindTarget()
+        end
+        local target = AA.CurrentTarget
+        if not target then return end
+        local character = target.Parent
+        local player = Players:GetPlayerFromCharacter(character)
+        if not player or not IsEnemy(player) then
+            AA.CurrentTarget = nil
+            return
+        end
+        local hum = character:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then
+            AA.CurrentTarget = nil
+            return
+        end
+        local screen, visible = cam:WorldToViewportPoint(target.Position)
+        if not visible then
+            AA.CurrentTarget = nil
+            return
+        end
+        local mousePos = UIS:GetMouseLocation()
+        local distance = (Vector2.new(screen.X, screen.Y) - Vector2.new(mousePos.X, mousePos.Y)).Magnitude
+        if distance > AA.FOV then
+            AA.CurrentTarget = FindTarget()
+            return
+        end
+        local desired = CFrame.lookAt(cam.CFrame.Position, target.Position)
+        local alpha = 1 - math.exp(-(AA.AimSpeed or 25) * dt)
+        cam.CFrame = cam.CFrame:Lerp(desired, alpha)
+    end)
+
+    local CamSection = AimTab:AddSection("镜头自瞄 (非静默 · Nexus)")
+    CamSection:AddToggle({
+        Name = "启用镜头自瞄",
+        Default = false,
+        Callback = function(v)
+            AA.Enabled = v and true or false
+            if not v then AA.CurrentTarget = nil end
+            Window:Notify({ Title = "镜头自瞄", Content = v and "已开启" or "已关闭", Duration = 2 })
+        end
+    })
+    CamSection:AddToggle({
+        Name = "显示 FOV 圈",
+        Default = true,
+        Callback = function(v) AA.ShowFOV = v and true or false end
+    })
+    CamSection:AddToggle({
+        Name = "粘性锁定",
+        Default = true,
+        Callback = function(v) AA.Sticky = v and true or false end
+    })
+    CamSection:AddToggle({
+        Name = "队友检测",
+        Default = true,
+        Callback = function(v) AA.TeamCheck = v and true or false end
+    })
+    CamSection:AddSlider({
+        Name = "镜头 FOV 半径",
+        Min = 30, Max = 600, Default = 180, Increment = 5,
+        Callback = function(v) AA.FOV = tonumber(v) or 180 end
+    })
+    CamSection:AddSlider({
+        Name = "瞄准速度",
+        Min = 1, Max = 100, Default = 25, Increment = 1,
+        Callback = function(v) AA.AimSpeed = tonumber(v) or 25 end
+    })
+    CamSection:AddDropdown({
+        Name = "瞄准部位",
+        Options = Parts,
+        Default = "Head",
+        Callback = function(v)
+            if type(v) == "table" then v = v[1] or "Head" end
+            AA.AimPart = tostring(v or "Head")
+        end
+    })
+end
+
+-- 外部脚本按钮保留
+local ExtAim = AimTab:AddSection("外部自瞄脚本")
+
+ExtAim:AddButton({
+    Name = "通用静默自瞄",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/hm5650/HBSS/refs/heads/main/HBSS.lua"))()
+        end)
+        Window:Notify({Title = "自瞄", Content = "已加载通用静默自瞄", Duration = 2})
+    end
+})
+ExtAim:AddButton({
+    Name = "npc瞄准",
+    Callback = function()
+        pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/freedom-gun/V3/main/Script.lua"))()
+        end)
+        Window:Notify({Title = "自瞄", Content = "已加载 npc瞄准", Duration = 2})
+    end
+})
+
+-- 标签页：玩家管理
+-------------------------------------------------
+local PlayerManageTab = Window:AddTab("玩家管理")
+local WatchSection = PlayerManageTab:AddSection("自动离开")
+
+local WATCH_FILE = "WuScript_WatchPlayers.txt"
+local WatchPlayerList = {} -- 多个玩家名（小写）
+local WatchPlayerEnabled = false
+local WatchCountLimit = 10
+local WatchCountEnabled = false
+local clearNameBox = nil -- 清空输入框用
+
+local function doLeaveServer()
+    pcall(function()
+        game:Shutdown()
+    end)
+end
+
+local function saveWatchList()
+    pcall(function()
+        if writefile then
+            writefile(WATCH_FILE, table.concat(WatchPlayerList, "\n"))
+        end
+    end)
+end
+
+local function loadWatchList()
+    local ok, content = pcall(function()
+        if isfile and isfile(WATCH_FILE) then
+            return readfile(WATCH_FILE)
+        end
+    end)
+    WatchPlayerList = {}
+    if ok and content and content ~= "" then
+        for line in string.gmatch(content, "[^\r\n]+") do
+            line = line:gsub("^%s+", ""):gsub("%s+$", "")
+            if line ~= "" then
+                local lower = string.lower(line)
+                local exists = false
+                for _, n in ipairs(WatchPlayerList) do
+                    if n == lower then exists = true break end
+                end
+                if not exists then
+                    table.insert(WatchPlayerList, lower)
+                end
+            end
+        end
+    end
+end
+
+loadWatchList()
+
+local function isWatchedPlayer(playerName)
+    local lower = string.lower(tostring(playerName or ""))
+    for _, n in ipairs(WatchPlayerList) do
+        if n == lower then
+            return true
+        end
+    end
+    return false
+end
+
+local function addWatchName(raw)
+    raw = tostring(raw or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if raw == "" then return false, "空" end
+    local lower = string.lower(raw)
+    for _, n in ipairs(WatchPlayerList) do
+        if n == lower then
+            return false, "已在名单中"
+        end
+    end
+    table.insert(WatchPlayerList, lower)
+    saveWatchList()
+    return true, lower
+end
+
+-- 1. 指定玩家进入时离开（逐个输入储存，像卡密一样）
+local nameBoxAPI = WatchSection:AddTextbox({
+    Name = "添加监控玩家",
+    PlaceholderText = "输入一个名字后按回车保存",
+    Default = "",
+    Notifications = false,
+    Callback = function(text)
+        text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if text == "" then return end -- 清空时不处理
+        local ok, msg = addWatchName(text)
+        if ok then
+            Window:Notify({Title = "玩家管理", Content = "已保存: " .. msg .. "（共 " .. #WatchPlayerList .. " 人）", Duration = 2})
+        else
+            Window:Notify({Title = "玩家管理", Content = tostring(msg), Duration = 2})
+        end
+        -- 回车保存后清空输入框，方便继续加下一个人
+        task.defer(function()
+            pcall(function()
+                if nameBoxAPI and nameBoxAPI.Set then
+                    nameBoxAPI:Set("")
+                end
+            end)
+        end)
+    end
+})
+
+WatchSection:AddButton({
+    Name = "查看已保存名单",
+    Callback = function()
+        if #WatchPlayerList == 0 then
+            Window:Notify({Title = "玩家管理", Content = "名单为空", Duration = 2})
+        else
+            Window:Notify({Title = "已保存 " .. #WatchPlayerList .. " 人", Content = table.concat(WatchPlayerList, ", "), Duration = 4})
+        end
+    end
+})
+
+WatchSection:AddButton({
+    Name = "一键清除已知名单",
+    Callback = function()
+        WatchPlayerList = {}
+        saveWatchList()
+        pcall(function()
+            if delfile and isfile and isfile(WATCH_FILE) then
+                delfile(WATCH_FILE)
+            elseif writefile then
+                writefile(WATCH_FILE, "")
+            end
+        end)
+        Window:Notify({Title = "玩家管理", Content = "已清空监控名单", Duration = 2})
+    end
+})
+
+WatchSection:AddToggle({
+    Name = "指定玩家进入时自动离开",
+    Default = false,
+    Callback = function(state)
+        WatchPlayerEnabled = state
+        if state then
+            if #WatchPlayerList == 0 then
+                Window:Notify({Title = "玩家管理", Content = "名单为空，请先添加玩家名", Duration = 3})
+                return
+            end
+            for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+                if p ~= game.Players.LocalPlayer and isWatchedPlayer(p.Name) then
+                    Window:Notify({Title = "玩家管理", Content = "检测到 " .. p.Name .. "，正在离开", Duration = 2})
+                    task.wait(0.3)
+                    doLeaveServer()
+                    return
+                end
+            end
+            Window:Notify({Title = "玩家管理", Content = "已开启：监控 " .. #WatchPlayerList .. " 人", Duration = 2})
+        else
+            Window:Notify({Title = "玩家管理", Content = "已关闭：指定玩家监控", Duration = 2})
+        end
+    end
+})
+
+game:GetService("Players").PlayerAdded:Connect(function(p)
+    if not WatchPlayerEnabled then return end
+    if #WatchPlayerList == 0 then return end
+    if isWatchedPlayer(p.Name) then
+        Window:Notify({Title = "玩家管理", Content = p.Name .. " 已进入，正在离开", Duration = 2})
+        task.wait(0.2)
+        doLeaveServer()
+    end
+end)
+
+-- 2. 人数达到上限时离开
+WatchSection:AddSlider({
+    Name = "人数上限",
+    Min = 1,
+    Max = 50,
+    Default = 10,
+    Increment = 1,
+    Notifications = false,
+    Callback = function(value)
+        WatchCountLimit = value
+    end
+})
+
+WatchSection:AddToggle({
+    Name = "人数达到上限时自动离开",
+    Default = false,
+    Callback = function(state)
+        WatchCountEnabled = state
+        if state then
+            local count = #game:GetService("Players"):GetPlayers()
+            if count >= WatchCountLimit then
+                Window:Notify({Title = "玩家管理", Content = "当前人数 " .. count .. " ≥ " .. WatchCountLimit .. "，正在离开", Duration = 2})
+                task.wait(0.3)
+                doLeaveServer()
+                return
+            end
+            Window:Notify({Title = "玩家管理", Content = "已开启：人数 ≥ " .. WatchCountLimit .. " 时离开", Duration = 2})
+        else
+            Window:Notify({Title = "玩家管理", Content = "已关闭：人数监控", Duration = 2})
+        end
+    end
+})
+
+game:GetService("Players").PlayerAdded:Connect(function()
+    if not WatchCountEnabled then return end
+    task.wait(0.15)
+    local count = #game:GetService("Players"):GetPlayers()
+    if count >= WatchCountLimit then
+        Window:Notify({Title = "玩家管理", Content = "人数已达 " .. count .. "，正在离开", Duration = 2})
+        task.wait(0.2)
+        doLeaveServer()
+    end
+end)
+
+-------------------------------------------------
+-- 标签页：独立项目（1. ka  2. 制作一部手机）
+-------------------------------------------------
+local SoloTab = Window:AddTab("独立项目")
+local SoloSection = SoloTab:AddSection("独立项目")
+
+SoloSection:AddButton({
+    Name = "1. 巫 kaiju alpha",
+    Callback = function()
+        if getgenv().WuLoadKaijuAlpha then
+            getgenv().WuLoadKaijuAlpha(true)
+        else
+            Window:Notify({Title = "提示", Content = "Kaiju 模块未就绪", Duration = 2})
+        end
+    end
+})
+
+SoloSection:AddButton({
+    Name = "2. 制作一部手机",
+    Callback = function()
+        if getgenv().WuLoadPhoneTycoon then
+            getgenv().WuLoadPhoneTycoon()
+        else
+            Window:Notify({Title = "提示", Content = "制作一部手机 模块未就绪", Duration = 2})
+        end
+    end
+})
+
+-------------------------------------------------
+-- 标签页：更多脚本
+-------------------------------------------------
+local MoreScriptsTab = Window:AddTab("更多脚本")
+local MoreSection = MoreScriptsTab:AddSection("脚本合集")
+
+local function addMoreScript(name, url, key)
+    MoreSection:AddButton({
+        Name = name,
+        Callback = function()
+            local k = key or url
+            if _G.LoadedScripts[k] then
+                Window:Notify({Title = "提示", Content = name .. " 已加载，请勿重复点击", Duration = 2})
+                return
+            end
+            _G.LoadedScripts[k] = true
+            pcall(function()
+                loadstring(game:HttpGet(url))()
+            end)
+            Window:Notify({Title = "提示", Content = "已加载 " .. name, Duration = 2})
+        end
+    })
+end
+
+addMoreScript("叶脚本", "https://raw.githubusercontent.com/roblox-ye/QQ515966991/refs/heads/main/ROBLOX-CNVIP-XIAOYE.lua")
+addMoreScript("黑白脚本", "https://raw.githubusercontent.com/tfcygvunbind/Apple/main/黑白脚本加载器", "黑白脚本")
+
+
+-- 设置已独立为「设置」板块（见下方，功能 pcall 结束后创建）
+
+end)
+
+if not okFeat then
+    warn("[巫 script] 功能失败:", errFeat)
+    pcall(function() notify("错误", tostring(errFeat), 8) end)
+else
+    print("[巫 script] 完成")
+    pcall(function() notify("巫 script", "已加载", 3) end)
+end
+
+--------------------------------------------------------------------------------------------
+-- 巫 kaiju alpha：从 GitHub raw 拉取最新源码（不再内嵌旧 B64）
+-------------------------------------------------
+getgenv().WuKaijuAlphaURL = getgenv().WuKaijuAlphaURL
+    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
+
+local function WuShowKaijuPrompt(onYes, onNo)
+    local parent = (gethui and gethui()) or game:GetService("CoreGui")
+    local old = parent:FindFirstChild("WuKaijuPrompt")
+    if old then old:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "WuKaijuPrompt"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 999
+    pcall(function() sg.Parent = parent end)
+    if not sg.Parent then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local overlay = Instance.new("Frame")
+    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    overlay.BackgroundTransparency = 0.45
+    overlay.BorderSizePixel = 0
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.Parent = sg
+
+    local card = Instance.new("Frame")
+    card.AnchorPoint = Vector2.new(0.5, 0.5)
+    card.Position = UDim2.fromScale(0.5, 0.5)
+    card.Size = UDim2.new(0, 320, 0, 168)
+    card.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
+    card.BackgroundTransparency = 0.12
+    card.BorderSizePixel = 0
+    card.Parent = overlay
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(200, 220, 255)
+    st.Thickness = 1.2
+    st.Transparency = 0.4
+    st.Parent = card
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 18, 0, 16)
+    title.Size = UDim2.new(1, -36, 0, 28)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "检测到支持服务器"
+    title.TextColor3 = Color3.fromRGB(235, 240, 248)
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = card
+
+    local desc = Instance.new("TextLabel")
+    desc.BackgroundTransparency = 1
+    desc.Position = UDim2.new(0, 18, 0, 52)
+    desc.Size = UDim2.new(1, -36, 0, 48)
+    desc.Font = Enum.Font.Gotham
+    desc.Text = "是否执行服务器脚本：巫 kaiju alpha？"
+    desc.TextColor3 = Color3.fromRGB(160, 170, 185)
+    desc.TextSize = 14
+    desc.TextWrapped = true
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = card
+
+    local function mkBtn(text)
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
+        b.BackgroundTransparency = 0.15
+        b.BorderSizePixel = 0
+        b.Size = UDim2.new(0, 120, 0, 34)
+        b.Font = Enum.Font.GothamBold
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(235, 240, 248)
+        b.TextSize = 15
+        b.AutoButtonColor = true
+        b.Parent = card
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+        return b
+    end
+
+    local btnYes = mkBtn("是")
+    btnYes.Position = UDim2.new(0, 18, 1, -48)
+    local btnNo = mkBtn("滚")
+    btnNo.AnchorPoint = Vector2.new(1, 0)
+    btnNo.Position = UDim2.new(1, -18, 1, -48)
+
+    local closed = false
+    local function close()
+        if closed then return end
+        closed = true
+        pcall(function() sg:Destroy() end)
+    end
+    btnYes.MouseButton1Click:Connect(function()
+        close()
+        if onYes then onYes() end
+    end)
+    btnNo.MouseButton1Click:Connect(function()
+        close()
+        if onNo then onNo() end
+    end)
+end
+
+
+-------------------------------------------------
+-- 制作一部手机（内嵌，独立项目）
+-------------------------------------------------
+getgenv().WuLoadPhoneTycoon = function()
+    if getgenv().WuPhoneTycoonLoaded then
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "制作一部手机",
+                Text = "已经加载 请勿重复点击",
+                Duration = 3,
+            })
+        end)
+        -- 若仅隐藏了 UI，重新显示
+        pcall(function()
+            local ui = getgenv().WuPhoneTycoonUI
+            if ui then ui.Enabled = true end
+        end)
+        return
+    end
+    local b64 = [[LS1bWwogIOW3qyDCtyDliLbkvZzkuIDpg6jmiYvmnLrvvIjni6znq4vpobnnm64gwrcg5pyq5a6M5oiQ54mI77yJCiAg5YaF5bWM6Ieq5Yqo56CU56m2ICsg6YeN55Sf5pCs5a6277ybVUkg566A5rSB5rex6Imy77yI5peg6IOM5pmv5Zu+L+mfs+aViO+8iQpdXQpwcmludCgiW+WItuS9nOS4gOmDqOaJi+acul0g5Yqg6L295LitLi4uIikKCmlmIGdldGdlbnYoKS5XdVBob25lVHljb29uTG9hZGVkIHRoZW4KICAgIHBjYWxsKGZ1bmN0aW9uKCkKICAgICAgICBnYW1lOkdldFNlcnZpY2UoIlN0YXJ0ZXJHdWkiKTpTZXRDb3JlKCJTZW5kTm90aWZpY2F0aW9uIiwgewogICAgICAgICAgICBUaXRsZSA9ICLliLbkvZzkuIDpg6jmiYvmnLoiLAogICAgICAgICAgICBUZXh0ID0gIuW3sue7j+WKoOi9vSDor7fli7/ph43lpI3ngrnlh7siLAogICAgICAgICAgICBEdXJhdGlvbiA9IDMsCiAgICAgICAgfSkKICAgIGVuZCkKICAgIHJldHVybgplbmQKCmxvY2FsIG9rR3VpLCBndWlPckVyciA9IHBjYWxsKGZ1bmN0aW9uKCkKICAgIHJldHVybiBnYW1lOkdldFNlcnZpY2UoIlBsYXllcnMiKS5Mb2NhbFBsYXllci5QbGF5ZXJHdWk6V2FpdEZvckNoaWxkKCJQaG9uZVR5Y29vbkd1aSIsIDgpCmVuZCkKaWYgbm90IG9rR3VpIG9yIG5vdCBndWlPckVyciB0aGVuCiAgICBwY2FsbChmdW5jdGlvbigpCiAgICAgICAgZ2FtZTpHZXRTZXJ2aWNlKCJTdGFydGVyR3VpIik6U2V0Q29yZSgiU2VuZE5vdGlmaWNhdGlvbiIsIHsKICAgICAgICAgICAgVGl0bGUgPSAi5Yi25L2c5LiA6YOo5omL5py6IiwKICAgICAgICAgICAgVGV4dCA9ICLmnKrmo4DmtYvliLAgUGhvbmVUeWNvb25HdWnvvIjmmK/lkKbov5vplJnmnI3vvJ/vvIkiLAogICAgICAgICAgICBEdXJhdGlvbiA9IDUsCiAgICAgICAgfSkKICAgIGVuZCkKICAgIHdhcm4oIlvliLbkvZzkuIDpg6jmiYvmnLpdIOaXoCBQaG9uZVR5Y29vbkd1aSIpCiAgICByZXR1cm4KZW5kCgpsb2NhbCBmdW5jdGlvbiBiNjRkZWNvZGUoZGF0YSkKICAgIGxvY2FsIGIgPSAiQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODkrLyIKICAgIGRhdGEgPSBzdHJpbmcuZ3N1YihkYXRhLCAiW14iIC4uIGIgLi4gIj1dIiwgIiIpCiAgICByZXR1cm4gKGRhdGE6Z3N1YigiLiIsIGZ1bmN0aW9uKHgpCiAgICAgICAgaWYgeCA9PSAiPSIgdGhlbiByZXR1cm4gIiIgZW5kCiAgICAgICAgbG9jYWwgciwgZiA9ICIiLCAoYjpmaW5kKHgpIC0gMSkKICAgICAgICBmb3IgaSA9IDYsIDEsIC0xIGRvIHIgPSByIC4uIChmICUgMl5pIC0gZiAlIDJeKGktMSkgPiAwIGFuZCAiMSIgb3IgIjAiKSBlbmQKICAgICAgICByZXR1cm4gcgogICAgZW5kKTpnc3ViKCIlZCVkJWQ/JWQ/JWQ/JWQ/JWQ/JWQ/IiwgZnVuY3Rpb24oeCkKICAgICAgICBpZiAjeCB+PSA4IHRoZW4gcmV0dXJuICIiIGVuZAogICAgICAgIGxvY2FsIGMgPSAwCiAgICAgICAgZm9yIGkgPSAxLCA4IGRvIGMgPSBjICsgKHg6c3ViKGksIGkpID09ICIxIiBhbmQgMl4oOCAtIGkpIG9yIDApIGVuZAogICAgICAgIHJldHVybiBzdHJpbmcuY2hhcihjKQogICAgZW5kKSkKZW5kCgpsb2NhbCBmdW5jdGlvbiBydW5DaHVuayhzcmMsIHRhZykKICAgIGxvY2FsIGZuLCBlcnIgPSBsb2Fkc3RyaW5nKHNyYykKICAgIGlmIG5vdCBmbiB0aGVuIHdhcm4oIlvliLbkvZzkuIDpg6jmiYvmnLpdIiwgdGFnLCAi57yW6K+R5aSx6LSlOiIsIGVycikgcmV0dXJuIGZhbHNlIGVuZAogICAgbG9jYWwgb2ssIGUgPSBwY2FsbChmbikKICAgIGlmIG5vdCBvayB0aGVuIHdhcm4oIlvliLbkvZzkuIDpg6jmiYvmnLpdIiwgdGFnLCAi5omn6KGM5aSx6LSlOiIsIGUpIHJldHVybiBmYWxzZSBlbmQKICAgIHJldHVybiB0cnVlCmVuZAoKcnVuQ2h1bmsoYjY0ZGVjb2RlKCJMUzA5UFNCQmRYUnZJRkpsYzJWaGNtTm9JSFkySUNobGRtVnVkQzlqYkc5amF5QmtjbWwyWlc0c0lHNXZJRzFsZEdGdFpYUm9iMlFnYUc5dmEzTXBJRDA5TFMwS0xTMGc1TDZkNkxXVzc3eWFWR2xqYXlEb3Y1em5xSXZrdW92a3U3YnZ2SWpsajZyb3JxTHBtSVh2dkl6a3VJM21sTG5saHBub3NJUG5sS2p2dklrS0xTMGc2S0dNNUxpNjc3eWE1WStxNVp5bzRvQ2M1YTZlNmFxTTVhNms1Nm02NlpleTRvQ2Q1cGUyNW9tVDVieUE1TGlBNXF5aDU2Q1U1Nm0yNloyaTVwMi83N3lNNVpDdjVZcW81WkNPNTZ1TDVZaTc1WVd6NlpldDc3eWI1WVcyNUwyWjVwZTI2WmUwNloyZ0lHUmhlU0RvcnFIbWxiRG5yWW5sdm9VS0NteHZZMkZzSUZCc1lYbGxjbk1nUFNCbllXMWxPa2RsZEZObGNuWnBZMlVvSWxCc1lYbGxjbk1pS1Fwc2IyTmhiQ0JTVXlBOUlHZGhiV1U2UjJWMFUyVnlkbWxqWlNnaVVtVndiR2xqWVhSbFpGTjBiM0poWjJVaUtRb0tiRzlqWVd3Z1ozVnBJRDBnVUd4aGVXVnljeTVNYjJOaGJGQnNZWGxsY2k1UWJHRjVaWEpIZFdrNlYyRnBkRVp2Y2tOb2FXeGtLQ0pRYUc5dVpWUjVZMjl2YmtkMWFTSXBDbXh2WTJGc0lFTlhJRDBnWjNWcExsSnZiM1F1U0hWa0xrZGhiV1ZYYVc1a2IzY0tiRzlqWVd3Z2RHRmlJRDBnUTFjdVZHRmljeTVYYVc1VVlXSmZVbVZ6WldGeVkyZ0tDbXh2WTJGc0lIQnlaWFlnUFNCblpYUm5aVzUyS0NrdVgxOWhkWFJ2VW1WelpXRnlZMmdLYVdZZ2NISmxkaUJoYm1RZ2NISmxkaTV5ZFc1dWFXNW5JSFJvWlc0Z2NHTmhiR3dvWm5WdVkzUnBiMjRvS1NCd2NtVjJMbk4wYjNBb0tTQmxibVFwSUdWdVpBb0tiRzlqWVd3Z1V5QTlJSHNLQ1hKMWJtNXBibWNnUFNCbVlXeHpaU3dnYzNSaGNuUnpJRDBnTUN3Z1ptRnBiRlJwWTJ0eklEMGdNQ3dLQ1d4aGMzUkRZWEprSUQwZ0lpSXNJR3hoYzNSRmRtVnVkQ0E5SUNJaUxDQnNZV0lnUFNBaWFXUnNaU0lzQ2dseWNDQTlJREFzSUdSaGVTQTlJREFzSUhSaGNtZGxkRVJoZVNBOUlEQXNJR1JoZVhOTVpXWjBJRDBnTUN3S0NYTjBZWEowWldSQmRDQTlJREFzSUcxaGVGTjBZWEowY3lBOUlEVXdNQ3dLZlFwblpYUm5aVzUyS0NrdVgxOWhkWFJ2VW1WelpXRnlZMmdnUFNCVENncHBaaUJ1YjNRZ1oyVjBaMlZ1ZGlncExsOWZkR2xqYTBsdWMzUmhiR3hsWkNCMGFHVnVDZ2xuWlhSblpXNTJLQ2t1WDE5MGFXTnJTVzV6ZEdGc2JHVmtJRDBnZEhKMVpRb0paMlYwWjJWdWRpZ3BMbDlmZEdsamF5QTlJSHNnYlc5dVpYa2dQU0F3TENCeWNDQTlJREFzSUdSaGVTQTlJREFnZlFvSlptOXlJRjhzSUdRZ2FXNGdhWEJoYVhKektGSlRPa2RsZEVSbGMyTmxibVJoYm5SektDa3BJR1J2Q2drSmFXWWdaRHBKYzBFb0lsSmxiVzkwWlVWMlpXNTBJaWtnWVc1a0lHUXVUbUZ0WlNBOVBTQWlWR2xqYXlJZ2RHaGxiZ29KQ1Fsa0xrOXVRMnhwWlc1MFJYWmxiblE2UTI5dWJtVmpkQ2htZFc1amRHbHZiaWgwS1FvSkNRa0phV1lnZEhsd1pTaDBLU0E5UFNBaWRHRmliR1VpSUhSb1pXNEtDUWtKQ1Fsc2IyTmhiQ0JqZFhJZ1BTQm5aWFJuWlc1MktDa3VYMTkwYVdOckNna0pDUWtKWTNWeUxtMXZibVY1SUQwZ2RHOXVkVzFpWlhJb2RDNXRiMjVsZVNrZ2IzSWdZM1Z5TG0xdmJtVjVDZ2tKQ1FrSlkzVnlMbkp3SUQwZ2RHOXVkVzFpWlhJb2RDNXljQ2tnYjNJZ1kzVnlMbkp3Q2drSkNRa0pZM1Z5TG1SaGVTQTlJSFJ2Ym5WdFltVnlLSFF1WkdGNUtTQnZjaUJqZFhJdVpHRjVDZ2tKQ1FsbGJtUUtDUWtKWlc1a0tRb0pDV1Z1WkFvSlpXNWtDbVZ1WkFvS2JHOWpZV3dnWm5WdVkzUnBiMjRnYzNsdVkxUnBZMnNvS1FvSmJHOWpZV3dnZENBOUlHZGxkR2RsYm5Zb0tTNWZYM1JwWTJzS0NXbG1JSFFnZEdobGJnb0pDVk11Y25BZ1BTQjBMbkp3SUc5eUlGTXVjbkFLQ1FsVExtUmhlU0E5SUhRdVpHRjVJRzl5SUZNdVpHRjVDZ2xsYm1RS1pXNWtDZ3BzYjJOaGJDQm1kVzVqZEdsdmJpQm1hWEpsS0dJcENnbHBaaUJpSUdGdVpDQm1hWEpsYzJsbmJtRnNJSFJvWlc0Z2NHTmhiR3dvWm1seVpYTnBaMjVoYkN3Z1lpNUJZM1JwZG1GMFpXUXBJR1Z1WkFwbGJtUUtDbXh2WTJGc0lHWjFibU4wYVc5dUlHTnNiM05sVjJsdVpHOTNLQ2tLQ1d4dlkyRnNJR05pSUQwZ1ExYzZSbWx1WkVacGNuTjBRMmhwYkdRb0lrTnNiM05sUW5WMGRHOXVJaWtLQ1dsbUlHTmlJR0Z1WkNCRFZ5NVdhWE5wWW14bElIUm9aVzRnWm1seVpTaGpZaWtnWlc1a0NtVnVaQW9LYkc5allXd2dablZ1WTNScGIyNGdjM1JoY25SQ2RHNUpiaWh3WVc1bEtRb0pabTl5SUY4c0lHUWdhVzRnYVhCaGFYSnpLSEJoYm1VNlIyVjBSR1Z6WTJWdVpHRnVkSE1vS1NrZ1pHOEtDUWxwWmlCa09rbHpRU2dpUjNWcFFuVjBkRzl1SWlrZ1lXNWtJSE4wY21sdVp5NW1hVzVrS0hOMGNtbHVaeTVzYjNkbGNpaGtMbFJsZUhRZ2IzSWdJaUlwTENBaWMzUmhjblFnY21WelpXRnlZMmdpTENBeExDQjBjblZsS1NCMGFHVnVDZ2tKQ1hKbGRIVnliaUJrQ2drSlpXNWtDZ2xsYm1RS1pXNWtDZ290TFNEbWlaUGx2SURwbmFMbW5iL2x1YmJrdUlEbXJLSG1nS2Zvcjd2bGo1YnZ2SnJtbUsvbGtLYm5xYnJwbDdJZ0x5RGxpYW5rdlpubHBLbm1sYkFnTHlEbGo2L25vSlRucWJibGphSG5pWWZsajRyb2lySG90TGtLYkc5allXd2dablZ1WTNScGIyNGdjbVZoWkZCaGJtVW9LUW9KWm1seVpTaDBZV0lwQ2dsMFlYTnJMbmRoYVhRb01DNDVLUW9KYkc5allXd2djR0Z1WlNBOUlFTlhMbEJoYm1Wc1EyOXVkR1Z1ZEFvSmJHOWpZV3dnYVc1bWJ5QTlJSHNnYVdSc1pTQTlJR1poYkhObExDQmtZWGx6SUQwZ2JtbHNMQ0JqWVhKa0lEMGdibWxzTENCamIzTjBJRDBnYm1sc0xDQnVZVzFsSUQwZ2JtbHNJSDBLQ1dadmNpQmZMQ0JrSUdsdUlHbHdZV2x5Y3lod1lXNWxPa2RsZEVSbGMyTmxibVJoYm5SektDa3BJR1J2Q2drSmFXWWdaRHBKYzBFb0lsUmxlSFJNWVdKbGJDSXBJSFJvWlc0S0NRa0piRzlqWVd3Z2RDQTlJR1F1VkdWNGRBb0pDUWxwWmlCemRISnBibWN1Wm1sdVpDaDBMQ0FpYkdGaUlHbHpJR2xrYkdVaUxDQXhMQ0IwY25WbEtTQjBhR1Z1SUdsdVptOHVhV1JzWlNBOUlIUnlkV1VnWlc1a0Nna0pDV3h2WTJGc0lHNGdQU0J6ZEhKcGJtY3ViV0YwWTJnb2RDd2dJbDRvSldRcktTQmtZWGx6UHlCc1pXWjBKQ0lwQ2drSkNXbG1JRzRnZEdobGJpQnBibVp2TG1SaGVYTWdQU0IwYjI1MWJXSmxjaWh1S1NCbGJtUUtDUWxsYm1RS0NXVnVaQW9KWm05eUlGOHNJR1FnYVc0Z2FYQmhhWEp6S0hCaGJtVTZSMlYwUkdWelkyVnVaR0Z1ZEhNb0tTa2daRzhLQ1FscFppQmtPa2x6UVNnaVIzVnBRblYwZEc5dUlpa2dZVzVrSUc1dmRDQnBibVp2TG1OaGNtUWdkR2hsYmdvSkNRbHNiMk5oYkNCamIzTjBUR0ZpWld3c0lHNWhiV1ZNWVdKbGJBb0pDUWxtYjNJZ1h5d2dlQ0JwYmlCcGNHRnBjbk1vWkRwSFpYUkVaWE5qWlc1a1lXNTBjeWdwS1NCa2J3b0pDUWtKYVdZZ2VEcEpjMEVvSWxSbGVIUk1ZV0psYkNJcElIUm9aVzRLQ1FrSkNRbHBaaUJ6ZEhKcGJtY3ViV0YwWTJnb2VDNVVaWGgwTENBaVhpZ2xaQ3NwSUZKUUpDSXBJSFJvWlc0S0NRa0pDUWtKWTI5emRFeGhZbVZzSUQwZ2VBb0pDUWtKQ1dWc2MyVnBaaUI0TGxSbGVIUWdmajBnSWlJZ1lXNWtJRzV2ZENCemRISnBibWN1Wm1sdVpDaDRMbFJsZUhRc0lDSlNSVUZFV1NCVVR5QlNSVk5GUVZKRFNDSXNJREVzSUhSeWRXVXBJSFJvWlc0S0NRa0pDUWtKYm1GdFpVeGhZbVZzSUQwZ2JtRnRaVXhoWW1Wc0lHOXlJSGdLQ1FrSkNRbGxibVFLQ1FrSkNXVnVaQW9KQ1FsbGJtUUtDUWtKYVdZZ1kyOXpkRXhoWW1Wc0lIUm9aVzRLQ1FrSkNXbHVabTh1WTJGeVpDQTlJR1FLQ1FrSkNXbHVabTh1WTI5emRDQTlJSFJ2Ym5WdFltVnlLSE4wY21sdVp5NXRZWFJqYUNoamIzTjBUR0ZpWld3dVZHVjRkQ3dnSWw0b0pXUXJLU0lwS1FvSkNRa0phVzVtYnk1dVlXMWxJRDBnYm1GdFpVeGhZbVZzSUdGdVpDQnVZVzFsVEdGaVpXd3VWR1Y0ZENCdmNpQmtMazVoYldVS0NRa0paVzVrQ2drSlpXNWtDZ2xsYm1RS0NYSmxkSFZ5YmlCcGJtWnZDbVZ1WkFvS2JHOWpZV3dnWm5WdVkzUnBiMjRnWVdOeGRXbHlaVlZKS0hScGJXVnZkWFFwQ2dsc2IyTmhiQ0IwTUNBOUlHOXpMbU5zYjJOcktDa0tDWGRvYVd4bElIUnlkV1VnWkc4S0NRbHNiMk5oYkNCb1pXeGtJRDBnWjJWMFoyVnVkaWdwTGw5ZmRXbE1iMk5yQ2drSmFXWWdibTkwSUdobGJHUWdiM0lnS0c5ekxtTnNiMk5yS0NrZ0xTQm9aV3hrS1NBK0lEZ2dkR2hsYmdvSkNRbG5aWFJuWlc1MktDa3VYMTkxYVV4dlkyc2dQU0J2Y3k1amJHOWpheWdwQ2drSkNYSmxkSFZ5YmlCMGNuVmxDZ2tKWlc1a0Nna0phV1lnYjNNdVkyeHZZMnNvS1NBdElIUXdJRDRnZEdsdFpXOTFkQ0IwYUdWdUlISmxkSFZ5YmlCbVlXeHpaU0JsYm1RS0NRbDBZWE5yTG5kaGFYUW9NQzR4S1FvSlpXNWtDbVZ1WkFvS2JHOWpZV3dnWm5WdVkzUnBiMjRnY21Wc1pXRnpaVlZKS0NrS0NXZGxkR2RsYm5Zb0tTNWZYM1ZwVEc5amF5QTlJRzVwYkFwbGJtUUtDbXh2WTJGc0lHWjFibU4wYVc5dUlIUnllVk4wWVhKMFRHOWphMlZrS0NrS0NYTjVibU5VYVdOcktDa0tDV3h2WTJGc0lHbHVabThnUFNCeVpXRmtVR0Z1WlNncENnbFRMbXhoWWlBOUlHbHVabTh1WkdGNWN5QmhibVFnS0NKeVpYTmxZWEpqYUdsdVp5QW9JaUF1TGlCcGJtWnZMbVJoZVhNZ0xpNGdJbVFwSWlrZ2IzSWdLR2x1Wm04dWFXUnNaU0JoYm1RZ0ltbGtiR1VpSUc5eUlDSjFibXR1YjNkdUlpa0tDZ2xwWmlCdWIzUWdhVzVtYnk1cFpHeGxJR0Z1WkNCdWIzUWdhVzVtYnk1a1lYbHpJSFJvWlc0S0NRbGpiRzl6WlZkcGJtUnZkeWdwQ2drSlV5NXNZWE4wUlhabGJuUWdQU0FpY0dGdVpTQnpkR0YwWlNCMWJtdHViM2R1SWdvSkNYSmxkSFZ5YmlCbVlXeHpaUW9KWlc1a0Nnb0pMUzBnNWJleTVweUo1TGlBNmFHNTVaeW82TGVSNzd5STVMNkw1YWFDNUxpSzVMaUE2TDJ1NVlpazVwYXQ1YVN4NkxTbDc3eUo3N3lNNTV1MDVvNmw2SzZ3NWIyVjU1dXU1cUNIQ2dscFppQnBibVp2TG1SaGVYTWdkR2hsYmdvSkNWTXVaR0Y1YzB4bFpuUWdQU0JwYm1adkxtUmhlWE1LQ1FsVExuUmhjbWRsZEVSaGVTQTlJRk11WkdGNUlDc2dhVzVtYnk1a1lYbHpJQ3NnTVFvSkNWTXVjM1JoY25SbFpFRjBJRDBnYjNNdVkyeHZZMnNvS1FvSkNXTnNiM05sVjJsdVpHOTNLQ2tLQ1FsVExteGhjM1JGZG1WdWRDQTlJQ0poYkhKbFlXUjVJSEpsYzJWaGNtTm9hVzVuSWdvSkNYSmxkSFZ5YmlCMGNuVmxDZ2xsYm1RS0NnbHBaaUJ1YjNRZ2FXNW1ieTVqWVhKa0lIUm9aVzRLQ1FsamJHOXpaVmRwYm1SdmR5Z3BDZ2tKVXk1c1lYTjBSWFpsYm5RZ1BTQWlibThnY21WaFpIa2dZMkZ5WkNJS0NRbHlaWFIxY200Z1ptRnNjMlVLQ1dWdVpBb0tDV2xtSUdsdVptOHVZMjl6ZENCaGJtUWdVeTV5Y0NBK0lEQWdZVzVrSUdsdVptOHVZMjl6ZENBK0lGTXVjbkFnZEdobGJnb0pDV05zYjNObFYybHVaRzkzS0NrS0NRbFRMbXhoYzNSRmRtVnVkQ0E5SUhOMGNtbHVaeTVtYjNKdFlYUW9JblJ2YnlCbGVIQmxibk5wZG1VZ0pXUWdQaUFsWkNJc0lHbHVabTh1WTI5emRDd2diV0YwYUM1bWJHOXZjaWhUTG5Kd0tTa0tDUWx5WlhSMWNtNGdabUZzYzJVS0NXVnVaQW9LQ1MwdElPZUN1ZVdOb2VlSmh5QXRQaURvcjZibWc0WHBvYlVLQ1dacGNtVW9hVzVtYnk1allYSmtLUW9KZEdGemF5NTNZV2wwS0RBdU9Da0tDV3h2WTJGc0lITmlJRDBnYzNSaGNuUkNkRzVKYmloRFZ5NVFZVzVsYkVOdmJuUmxiblFwQ2dscFppQnViM1FnYzJJZ2RHaGxiZ29KQ1dOc2IzTmxWMmx1Wkc5M0tDa0tDUWxUTG14aGMzUkZkbVZ1ZENBOUlDSnVieUJ6ZEdGeWRDQmlkWFIwYjI0Z1lXWjBaWElnWTJGeVpDSUtDUWx5WlhSMWNtNGdabUZzYzJVS0NXVnVaQW9LQ1dacGNtVW9jMklwQ2dsMFlYTnJMbmRoYVhRb01DNDVLUW9LQ1MwdElPbXFqT2l2Z2UrOG11bUhqZVc4Z09tZG91YWR2K2l2dStXSnFlUzltZVdrcWVhVnNBb0piRzlqWVd3Z2RtVnlJRDBnY21WaFpGQmhibVVvS1FvSmFXWWdkbVZ5TG1SaGVYTWdkR2hsYmdvSkNWTXVjM1JoY25SeklEMGdVeTV6ZEdGeWRITWdLeUF4Q2drSlV5NXNZWE4wUTJGeVpDQTlJR2x1Wm04dWJtRnRaU0J2Y2lBaVB5SUtDUWxUTG1SaGVYTk1aV1owSUQwZ2RtVnlMbVJoZVhNS0NRbFRMblJoY21kbGRFUmhlU0E5SUZNdVpHRjVJQ3NnZG1WeUxtUmhlWE1nS3lBeENna0pVeTV6ZEdGeWRHVmtRWFFnUFNCdmN5NWpiRzlqYXlncENna0pVeTVtWVdsc1ZHbGphM01nUFNBd0Nna0pVeTVzWVhOMFJYWmxiblFnUFNCemRISnBibWN1Wm05eWJXRjBLQ0p6ZEdGeWRHVmtJQ1Z6SUNnbFpHUXBJaXdnVXk1c1lYTjBRMkZ5WkN3Z2RtVnlMbVJoZVhNcENna0pZMnh2YzJWWGFXNWtiM2NvS1FvSkNYSmxkSFZ5YmlCMGNuVmxDZ2xsYm1RS0NXTnNiM05sVjJsdVpHOTNLQ2tLQ1ZNdWJHRnpkRVYyWlc1MElEMGdJbk4wWVhKMElHaGhaQ0J1YnlCbFptWmxZM1FpQ2dseVpYUjFjbTRnWm1Gc2MyVUtaVzVrQ2dwc2IyTmhiQ0JtZFc1amRHbHZiaUIwY25sVGRHRnlkQ2dwQ2dscFppQnViM1FnWVdOeGRXbHlaVlZKS0RZcElIUm9aVzRLQ1FsVExteGhjM1JGZG1WdWRDQTlJQ0oxYVNCaWRYTjVJZ29KQ1hKbGRIVnliaUJtWVd4elpRb0paVzVrQ2dsc2IyTmhiQ0J2YXl3Z2NtVnpJRDBnY0dOaGJHd29kSEo1VTNSaGNuUk1iMk5yWldRcENnbHlaV3hsWVhObFZVa29LUW9KYVdZZ2JtOTBJRzlySUhSb1pXNEtDUWxUTG14aGMzUkZkbVZ1ZENBOUlDSmxjbkp2Y2pvZ0lpQXVMaUIwYjNOMGNtbHVaeWh5WlhNcENna0pjbVYwZFhKdUlHWmhiSE5sQ2dsbGJtUUtDWEpsZEhWeWJpQnlaWE1LWlc1a0NncHNiMk5oYkNCbWRXNWpkR2x2YmlCc2IyOXdLQ2tLQ1hkb2FXeGxJRk11Y25WdWJtbHVaeUJrYndvSkNYTjVibU5VYVdOcktDa0tDUWxzYjJOaGJDQmtiMjVsSUQwZ1V5NTBZWEpuWlhSRVlYa2dQaUF3SUdGdVpDQlRMbVJoZVNBK1BTQlRMblJoY21kbGRFUmhlUW9KQ1d4dlkyRnNJSFJwYldWa1QzVjBJRDBnVXk1MFlYSm5aWFJFWVhrZ1BpQXdJR0Z1WkNBb2IzTXVZMnh2WTJzb0tTQXRJRk11YzNSaGNuUmxaRUYwS1NBK0lERTRNQW9KQ1dsbUlGTXVkR0Z5WjJWMFJHRjVJRDA5SURBZ2IzSWdaRzl1WlNCdmNpQjBhVzFsWkU5MWRDQjBhR1Z1Q2drSkNXbG1JRk11ZEdGeVoyVjBSR0Y1SUQ0Z01DQjBhR1Z1Q2drSkNRbFRMblJoY21kbGRFUmhlU0E5SURBS0NRa0pDVk11YkdGemRFVjJaVzUwSUQwZ0lteGhZaUJtY21WbExDQndhV05yYVc1bklHNWxlSFFpQ2drSkNXVnVaQW9KQ1FscFppQnViM1FnZEhKNVUzUmhjblFvS1NCMGFHVnVDZ2tKQ1FsVExtWmhhV3hVYVdOcmN5QTlJRk11Wm1GcGJGUnBZMnR6SUNzZ01Rb0pDUWtKYVdZZ1V5NW1ZV2xzVkdsamEzTWdQajBnTWpBZ2IzSWdVeTV6ZEdGeWRITWdQajBnVXk1dFlYaFRkR0Z5ZEhNZ2RHaGxiZ29KQ1FrSkNWTXVjblZ1Ym1sdVp5QTlJR1poYkhObENna0pDUWtKVXk1c1lYTjBSWFpsYm5RZ1BTQWljM1J2Y0hCbFpEb2dJaUF1TGlCVExteGhjM1JGZG1WdWRBb0pDUWtKWld4elpRb0pDUWtKQ1hSaGMyc3VkMkZwZENneUtRb0pDUWtKWlc1a0Nna0pDV1Z1WkFvSkNXVnNjMlVLQ1FrSmRHRnpheTUzWVdsMEtEQXVOU2tLQ1FsbGJtUUtDV1Z1WkFwbGJtUUtDbVoxYm1OMGFXOXVJRk11YzNSaGNuUW9LUW9KYVdZZ1V5NXlkVzV1YVc1bklIUm9aVzRnY21WMGRYSnVJQ0poYkhKbFlXUjVJSEoxYm01cGJtY2lJR1Z1WkFvSlV5NXlkVzV1YVc1bklEMGdkSEoxWlFvSlV5NW1ZV2xzVkdsamEzTWdQU0F3Q2dsVExuUmhjbWRsZEVSaGVTQTlJREFLQ1hSaGMyc3VjM0JoZDI0b2JHOXZjQ2tLQ1hKbGRIVnliaUFpYzNSaGNuUmxaQ0lLWlc1a0NncG1kVzVqZEdsdmJpQlRMbk4wYjNBb0tRb0pVeTV5ZFc1dWFXNW5JRDBnWm1Gc2MyVUtDWEpsZEhWeWJpQWljM1J2Y0hCbFpDSUtaVzVrQ2dwbWRXNWpkR2x2YmlCVExuTjBZWFJsS0NrS0NYTjVibU5VYVdOcktDa0tDWEpsZEhWeWJpQjdDZ2tKY25WdWJtbHVaeUE5SUZNdWNuVnVibWx1Wnl3Z2MzUmhjblJ6SUQwZ1V5NXpkR0Z5ZEhNc0Nna0pjbkFnUFNCdFlYUm9MbVpzYjI5eUtGTXVjbkFwTENCa1lYa2dQU0JUTG1SaGVTd0tDUWxzWVdJZ1BTQlRMbXhoWWl3Z2JHRnpkRU5oY21RZ1BTQlRMbXhoYzNSRFlYSmtMQ0JrWVhselRHVm1kQ0E5SUZNdVpHRjVjMHhsWm5Rc0Nna0pkR0Z5WjJWMFJHRjVJRDBnVXk1MFlYSm5aWFJFWVhrc0lHeGhjM1JGZG1WdWRDQTlJRk11YkdGemRFVjJaVzUwTEFvSmZRcGxibVFLQ25KbGRIVnliaUFpWVhWMGIxSmxjMlZoY21Ob0lIWTJJR3h2WVdSbFpDSUsiKSwgIuiHquWKqOeglOeptiIpCnJ1bkNodW5rKGI2NGRlY29kZSgiTFMwOVBTQkJkWFJ2SUVWNGRISmhJSFl6T2lEa3ZLRG1pYjhvNVllNjVaU3U1WVdzNVkrNEtTQXZJT1dLbnVXRnJPV3VwQ2pta0t6b3Y0RXBJRDA5TFMwS0xTMGdaSEo1UFdaaGJITmxJT2FYdHVhSnAraWhqT1M0amVXUHIrbUFodWFUamVTOW5PKzhtMlJ5ZVQxMGNuVmxJT1dQcXVXSXBPV3VtdVc1dHVpdXNPVzlsZWVLdHVhQWdRb0tiRzlqWVd3Z1VHeGhlV1Z5Y3lBOUlHZGhiV1U2UjJWMFUyVnlkbWxqWlNnaVVHeGhlV1Z5Y3lJcENteHZZMkZzSUZKVElEMGdaMkZ0WlRwSFpYUlRaWEoyYVdObEtDSlNaWEJzYVdOaGRHVmtVM1J2Y21GblpTSXBDZ3BzYjJOaGJDQm5kV2tnUFNCUWJHRjVaWEp6TGt4dlkyRnNVR3hoZVdWeUxsQnNZWGxsY2tkMWFUcFhZV2wwUm05eVEyaHBiR1FvSWxCb2IyNWxWSGxqYjI5dVIzVnBJaWtLYkc5allXd2dRMWNnUFNCbmRXa3VVbTl2ZEM1SWRXUXVSMkZ0WlZkcGJtUnZkd3BzYjJOaGJDQndZVzVsSUQwZ1ExY3VVR0Z1Wld4RGIyNTBaVzUwQ2dwc2IyTmhiQ0J3Y21WMklEMGdaMlYwWjJWdWRpZ3BMbDlmWVhWMGIwVjRkSEpoQ21sbUlIQnlaWFlnWVc1a0lIQnlaWFl1Y25WdWJtbHVaeUIwYUdWdUlIQmpZV3hzS0hCeVpYWXVjM1J2Y0NrZ1pXNWtDZ3BzYjJOaGJDQlRJRDBnZXdvSmNuVnVibWx1WnlBOUlHWmhiSE5sTENCa2Nua2dQU0IwY25WbExBb0piVzl1WlhrZ1BTQXdMQ0J5Y0NBOUlEQXNJR1JoZVNBOUlEQXNDZ2x2Wm1acFkyVkRiM04wSUQwZ2JtbHNMQ0J2Wm1acFkyVkZiR2xuYVdKc1pTQTlJR1poYkhObExDQnZabVpwWTJWVWIwZHZJRDBnSWlJc0NnbHNaV2RoWTNsU1pYWmxiblZsSUQwZ01Dd2diR1ZuWVdONVJXeHBaMmxpYkdVZ1BTQm1ZV3h6WlN3Z2JHVm5ZV041U0ZFZ1BTQm1ZV3h6WlN3S0NXTm9aV05yUlhabGNua2dQU0E1TUN3Z2JHRnpkRU5vWldOcklEMGdNQ3dLQ1d4aGMzUkZkbVZ1ZENBOUlDSnBaR3hsSWl3S2ZRcG5aWFJuWlc1MktDa3VYMTloZFhSdlJYaDBjbUVnUFNCVENnb3RMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMEtMUzBnNVorNjU2R0E1YmVsNVlXM0NpMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExRb0tMUzBnNWErODZJaXE1b3lKNlpLdTc3eWFabWx5WlhOcFoyNWhiQ0RsdDdMb3I0SG1uSW5tbFlnS2JHOWpZV3dnWm5WdVkzUnBiMjRnY0hKbGMzTk9ZWFlvWWlrS0NXbG1JR0lnWVc1a0lHWnBjbVZ6YVdkdVlXd2dkR2hsYmlCd1kyRnNiQ2htYVhKbGMybG5ibUZzTENCaUxrRmpkR2wyWVhSbFpDa2daVzVrQ21WdVpBb0tMUzBnNVlxbzVMMmM1b3lKNlpLdTc3eWE1THlZNVlXSTU1dTA1bzZsNkxDRDU1U281YmV5NXJPbzVZYU01NXFFNWFTRTU1Q0c1WWU5NXBXd0NpMHRJTys4aU9tRHFPV0lodWFNaWVtU3J1ZWFoQ0JCWTNScGRtRjBaV1FnNWErNUlHWnBjbVZ6YVdkdVlXd2c1cGVnNVpPTjVicVU3N3lNNUwyR0lHaGhibVJzWlhJZzVZK3Y1NXUwNkxDRDc3eUpDbXh2WTJGc0lHWjFibU4wYVc5dUlIQnlaWE56UVdOMGFXOXVLR0lwQ2dscFppQnViM1FnWWlCMGFHVnVJSEpsZEhWeWJpQm1ZV3h6WlNCbGJtUUtDV2xtSUdkbGRHTnZibTVsWTNScGIyNXpJSFJvWlc0S0NRbHNiMk5oYkNCdmF5d2dZMjl1Ym5NZ1BTQndZMkZzYkNoblpYUmpiMjV1WldOMGFXOXVjeXdnWWk1QlkzUnBkbUYwWldRcENna0phV1lnYjJzZ1lXNWtJSFI1Y0dVb1kyOXVibk1wSUQwOUlDSjBZV0pzWlNJZ2RHaGxiZ29KQ1Fsc2IyTmhiQ0JqWVd4c1pXUWdQU0JtWVd4elpRb0pDUWxtYjNJZ1h5d2dZeUJwYmlCcGNHRnBjbk1vWTI5dWJuTXBJR1J2Q2drSkNRbHBaaUJqTGtWdVlXSnNaV1FnZmowZ1ptRnNjMlVnWVc1a0lHTXVSblZ1WTNScGIyNGdkR2hsYmdvSkNRa0pDV3h2WTJGc0lHOXJNaUE5SUhCallXeHNLR011Um5WdVkzUnBiMjRwQ2drSkNRa0phV1lnYjJzeUlIUm9aVzRnWTJGc2JHVmtJRDBnZEhKMVpTQmxibVFLQ1FrSkNXVnVaQW9KQ1FsbGJtUUtDUWtKYVdZZ1kyRnNiR1ZrSUhSb1pXNGdjbVYwZFhKdUlIUnlkV1VnWlc1a0Nna0paVzVrQ2dsbGJtUUtDV2xtSUdacGNtVnphV2R1WVd3Z2RHaGxiaUJ5WlhSMWNtNGdjR05oYkd3b1ptbHlaWE5wWjI1aGJDd2dZaTVCWTNScGRtRjBaV1FwSUdWdVpBb0pjbVYwZFhKdUlHWmhiSE5sQ21WdVpBb0tiRzlqWVd3Z1puVnVZM1JwYjI0Z1kyeHZjMlZYYVc1a2IzY29LUW9KYkc5allXd2dZMklnUFNCRFZ6cEdhVzVrUm1seWMzUkRhR2xzWkNnaVEyeHZjMlZDZFhSMGIyNGlLUW9KYVdZZ1kySWdZVzVrSUVOWExsWnBjMmxpYkdVZ2RHaGxiaUJ3Y21WemMwNWhkaWhqWWlrZ1pXNWtDbVZ1WkFvS2JHOWpZV3dnWm5WdVkzUnBiMjRnWm1sdVpGUmhZaWh1WVcxbEtRb0pjbVYwZFhKdUlFTlhMbFJoWW5NNlJtbHVaRVpwY25OMFEyaHBiR1FvYm1GdFpTa0taVzVrQ2dwc2IyTmhiQ0JtZFc1amRHbHZiaUJtYVc1a1FuUnVLSEp2YjNRc0lIQnlaV1pwZUNrS0NXWnZjaUJmTENCa0lHbHVJR2x3WVdseWN5aHliMjkwT2tkbGRFUmxjMk5sYm1SaGJuUnpLQ2twSUdSdkNna0phV1lnWkRwSmMwRW9Ja2QxYVVKMWRIUnZiaUlwSUdGdVpDQnpkSEpwYm1jdWMzVmlLR1F1VkdWNGRDQnZjaUFpSWl3Z01Td2dJM0J5WldacGVDa2dQVDBnY0hKbFptbDRJSFJvWlc0S0NRa0pjbVYwZFhKdUlHUUtDUWxsYm1RS0NXVnVaQXBsYm1RS0NteHZZMkZzSUdaMWJtTjBhVzl1SUdScFoybDBjeWh6S1FvSmNtVjBkWEp1SUhSdmJuVnRZbVZ5S0hOMGNtbHVaeTV0WVhSamFDZ29jM1J5YVc1bkxtZHpkV0lvY3lCdmNpQWlJaXdnSWxzbEpDd2xjMTBpTENBaUlpa3BMQ0FpS0NWa0t5a2lLU2tLWlc1a0Nnb3RMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMEtMUzBnVkdsamErKzhtdWkwcCtXNGdTQXZJT1drcWVhVnNPKzhpT1dGc2VTNnErV05sZVM0Z09pdW91bVloZSs4aVFvdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwS2FXWWdibTkwSUdkbGRHZGxibllvS1M1ZlgzUnBZMnRKYm5OMFlXeHNaV1FnZEdobGJnb0paMlYwWjJWdWRpZ3BMbDlmZEdsamEwbHVjM1JoYkd4bFpDQTlJSFJ5ZFdVS0NXZGxkR2RsYm5Zb0tTNWZYM1JwWTJzZ1BTQjdJRzF2Ym1WNUlEMGdNQ3dnY25BZ1BTQXdMQ0JrWVhrZ1BTQXdJSDBLQ1dadmNpQmZMQ0JrSUdsdUlHbHdZV2x5Y3loU1V6cEhaWFJFWlhOalpXNWtZVzUwY3lncEtTQmtid29KQ1dsbUlHUTZTWE5CS0NKU1pXMXZkR1ZGZG1WdWRDSXBJR0Z1WkNCa0xrNWhiV1VnUFQwZ0lsUnBZMnNpSUhSb1pXNEtDUWtKWkM1UGJrTnNhV1Z1ZEVWMlpXNTBPa052Ym01bFkzUW9ablZ1WTNScGIyNG9kQ2tLQ1FrSkNXbG1JSFI1Y0dVb2RDa2dQVDBnSW5SaFlteGxJaUIwYUdWdUNna0pDUWtKYkc5allXd2dZM1Z5SUQwZ1oyVjBaMlZ1ZGlncExsOWZkR2xqYXdvSkNRa0pDV04xY2k1dGIyNWxlU0E5SUhSdmJuVnRZbVZ5S0hRdWJXOXVaWGtwSUc5eUlHTjFjaTV0YjI1bGVRb0pDUWtKQ1dOMWNpNXljQ0E5SUhSdmJuVnRZbVZ5S0hRdWNuQXBJRzl5SUdOMWNpNXljQW9KQ1FrSkNXTjFjaTVrWVhrZ1BTQjBiMjUxYldKbGNpaDBMbVJoZVNrZ2IzSWdZM1Z5TG1SaGVRb0pDUWtKWlc1a0Nna0pDV1Z1WkNrS0NRbGxibVFLQ1dWdVpBcGxibVFLQ214dlkyRnNJR1oxYm1OMGFXOXVJSE41Ym1OVWFXTnJLQ2tLQ1d4dlkyRnNJSFFnUFNCblpYUm5aVzUyS0NrdVgxOTBhV05yQ2dscFppQjBJSFJvWlc0S0NRbFRMbTF2Ym1WNUlEMGdkQzV0YjI1bGVTQnZjaUJUTG0xdmJtVjVDZ2tKVXk1eWNDQTlJSFF1Y25BZ2IzSWdVeTV5Y0FvSkNWTXVaR0Y1SUQwZ2RDNWtZWGtnYjNJZ1V5NWtZWGtLQ1dWdVpBcGxibVFLQ2kwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFFvdExTQlZTU0RrdXBMbWxxWHBsSUh2dklqa3VJNGdZWFYwYnkxeVpYTmxZWEpqYUNEbGhiSG5sS2p2dklrS0xTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdENteHZZMkZzSUdaMWJtTjBhVzl1SUdGamNYVnBjbVZWU1NoMGFXMWxiM1YwS1FvSmJHOWpZV3dnZERBZ1BTQnZjeTVqYkc5amF5Z3BDZ2wzYUdsc1pTQjBjblZsSUdSdkNna0piRzlqWVd3Z2FHVnNaQ0E5SUdkbGRHZGxibllvS1M1ZlgzVnBURzlqYXdvSkNXbG1JRzV2ZENCb1pXeGtJRzl5SUNodmN5NWpiRzlqYXlncElDMGdhR1ZzWkNrZ1BpQTRJSFJvWlc0S0NRa0paMlYwWjJWdWRpZ3BMbDlmZFdsTWIyTnJJRDBnYjNNdVkyeHZZMnNvS1FvSkNRbHlaWFIxY200Z2RISjFaUW9KQ1dWdVpBb0pDV2xtSUc5ekxtTnNiMk5yS0NrZ0xTQjBNQ0ErSUhScGJXVnZkWFFnZEdobGJpQnlaWFIxY200Z1ptRnNjMlVnWlc1a0Nna0pkR0Z6YXk1M1lXbDBLREF1TVNrS0NXVnVaQXBsYm1RS0NteHZZMkZzSUdaMWJtTjBhVzl1SUhKbGJHVmhjMlZWU1NncENnbG5aWFJuWlc1MktDa3VYMTkxYVV4dlkyc2dQU0J1YVd3S1pXNWtDZ290TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzBLTFMwZzVZcWU1WVdzNWE2azc3eWE1cDJoNUx1MjVZV282WU9vNXJ1aDZMYXo1b21ONTRLNUlFMXZkbVVnYVc0S0xTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdENteHZZMkZzSUdaMWJtTjBhVzl1SUdOb1pXTnJUMlptYVdObEtDa0tDWEJ5WlhOelRtRjJLR1pwYm1SVVlXSW9JbGRwYmxSaFlsOURiMjF3WVc1NUlpa3BDZ2wwWVhOckxuZGhhWFFvTUM0NUtRb0piRzlqWVd3Z2JtRjJJRDBnWm1sdVpFSjBiaWh3WVc1bExDQWlUMlptYVdObElpa0tDV2xtSUc1aGRpQjBhR1Z1SUhCeVpYTnpUbUYyS0c1aGRpa2dkR0Z6YXk1M1lXbDBLREF1T1NrZ1pXNWtDZ29KYkc5allXd2diWFlLQ1dadmNpQmZMQ0JrSUdsdUlHbHdZV2x5Y3lod1lXNWxPa2RsZEVSbGMyTmxibVJoYm5SektDa3BJR1J2Q2drSmFXWWdaRHBKYzBFb0lrZDFhVUoxZEhSdmJpSXBJR0Z1WkNCa0xrNWhiV1VnUFQwZ0lrMXZkbVZDZFhSMGIyNGlJSFJvWlc0Z2JYWWdQU0JrSUdKeVpXRnJJR1Z1WkFvSlpXNWtDZ2xwWmlCdWIzUWdiWFlnZEdobGJnb0pDVk11YjJabWFXTmxSV3hwWjJsaWJHVWdQU0JtWVd4elpRb0pDVk11YjJabWFXTmxWRzlIYnlBOUlDSnVieUJpZFhSMGIyNGlDZ2tKY21WMGRYSnVDZ2xsYm1RS0NnbFRMbTltWm1salpVTnZjM1FnUFNCa2FXZHBkSE1vYlhZdVZHVjRkQ2tLQ1d4dlkyRnNJR0pzYjJOclpXUXNJSFJ2WjI4Z1BTQm1ZV3h6WlN3Z0lpSUtDV3h2WTJGc0lITmpiM0JsSUQwZ2JYWXVVR0Z5Wlc1MElHOXlJSEJoYm1VS0NXWnZjaUJmTENCa0lHbHVJR2x3WVdseWN5aHpZMjl3WlRwSFpYUkVaWE5qWlc1a1lXNTBjeWdwS1NCa2J3b0pDV2xtSUdRNlNYTkJLQ0pVWlhoMFRHRmlaV3dpS1NCMGFHVnVDZ2tKQ1d4dlkyRnNJSFFnUFNCa0xsUmxlSFFnYjNJZ0lpSUtDUWtKYVdZZ2MzUnlhVzVuTG5OMVlpaDBMQ0F4TENBM0tTQTlQU0FpVkc4Z1oyODZJQ0lnZEdobGJnb0pDUWtKWW14dlkydGxaQ0E5SUhSeWRXVUtDUWtKQ1hSdloyOGdQU0IwQ2drSkNXVnNjMlZwWmlCemRISnBibWN1YzNWaUtIUXNJREVzSURNcElEMDlJQ0pjZFhzeU1ESXlmU0lnZEdobGJnb0pDUWtKWW14dlkydGxaQ0E5SUhSeWRXVUtDUWtKWlc1a0Nna0paVzVrQ2dsbGJtUUtDVk11YjJabWFXTmxWRzlIYnlBOUlIUnZaMjhLQ1ZNdWIyWm1hV05sUld4cFoybGliR1VnUFNBb2JtOTBJR0pzYjJOclpXUXBJR0Z1WkNCVExtOW1abWxqWlVOdmMzUWdmajBnYm1sc0lHRnVaQ0JUTG0xdmJtVjVJRDQ5SUZNdWIyWm1hV05sUTI5emRBb0tDV2xtSUZNdWIyWm1hV05sUld4cFoybGliR1VnZEdobGJnb0pDV2xtSUZNdVpISjVJSFJvWlc0S0NRa0pVeTVzWVhOMFJYWmxiblFnUFNCemRISnBibWN1Wm05eWJXRjBLQ0p2Wm1acFkyVWdjbVZoWkhrZ0tDUWxaQ2tpTENCVExtOW1abWxqWlVOdmMzUXBDZ2tKWld4elpRb0pDUWx3Y21WemMwRmpkR2x2YmlodGRpa0tDUWtKVXk1c1lYTjBSWFpsYm5RZ1BTQWlZMnhwWTJ0bFpDQnRiM1psTFdsdUlnb0pDUWwwWVhOckxuZGhhWFFvTVM0MUtRb0pDV1Z1WkFvSlpXeHpaV2xtSUhSdloyOGdmajBnSWlJZ2RHaGxiZ29KQ1ZNdWJHRnpkRVYyWlc1MElEMGdJbTltWm1salpTQmliRzlqYTJWa09pQWlJQzR1SUhSdloyOEtDV1Z1WkFwbGJtUUtDaTB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUW90TFNEa3ZLRG1pYi92dkpybWdMdnBnNmpsdDdMbWtLd2dLeURtZ0x2bWxMYmxoYVhpaWFVeUxqWGt1cjhnNW9tTjVZZTY1WlN1Q2kwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFFwc2IyTmhiQ0JtZFc1amRHbHZiaUJqYUdWamEweGxaMkZqZVNncENnbHdjbVZ6YzA1aGRpaG1hVzVrVkdGaUtDSlhhVzVVWVdKZlEyOXRjR0Z1ZVNJcEtRb0pkR0Z6YXk1M1lXbDBLREF1T1NrS0NXeHZZMkZzSUc1aGRpQTlJR1pwYm1SQ2RHNG9jR0Z1WlN3Z0lreGxaMkZqZVNJcENnbHBaaUJ1WVhZZ2RHaGxiaUJ3Y21WemMwNWhkaWh1WVhZcElIUmhjMnN1ZDJGcGRDZ3dMamtwSUdWdVpBb0tDVk11YkdWbllXTjVVbVYyWlc1MVpTQTlJREFLQ1ZNdWJHVm5ZV041U0ZFZ1BTQm1ZV3h6WlFvSlptOXlJRjhzSUdRZ2FXNGdhWEJoYVhKektIQmhibVU2UjJWMFJHVnpZMlZ1WkdGdWRITW9LU2tnWkc4S0NRbHBaaUJrT2tselFTZ2lWR1Y0ZEV4aFltVnNJaWtnZEdobGJnb0pDUWxzYjJOaGJDQjBJRDBnWkM1VVpYaDBJRzl5SUNJaUNna0pDV3h2WTJGc0lHNGdQU0J6ZEhKcGJtY3ViV0YwWTJnb2RDd2dJbDRsSkNnbFpGc2xaQ3hkS2lrZ2MyOGdabUZ5SkNJcENna0pDV2xtSUc0Z2RHaGxiaUJUTG14bFoyRmplVkpsZG1WdWRXVWdQU0IwYjI1MWJXSmxjaWdvYzNSeWFXNW5MbWR6ZFdJb2Jpd2dJaXdpTENBaUlpa3BLU0JsYm1RS0NRa0phV1lnYzNSeWFXNW5MbVpwYm1Rb2RDd2dJazF2ZG1VZ2FXNTBieUJJWldGa2NYVmhjblJsY25NaUxDQXhMQ0IwY25WbEtTQjBhR1Z1Q2drSkNRbFRMbXhsWjJGamVVaFJJRDBnS0hOMGNtbHVaeTV6ZFdJb2RDd2dNU3dnTXlrZ1BUMGdJbHgxZXpJM01UTjlJaWtLQ1FrSlpXNWtDZ2tKWlc1a0NnbGxibVFLQ1ZNdWJHVm5ZV041Uld4cFoybGliR1VnUFNCVExteGxaMkZqZVVoUklHRnVaQ0JUTG14bFoyRmplVkpsZG1WdWRXVWdQajBnTWpVd01EQXdNREF3Q2dvSmFXWWdVeTVzWldkaFkzbEZiR2xuYVdKc1pTQjBhR1Z1Q2drSmFXWWdVeTVrY25rZ2RHaGxiZ29KQ1FsVExteGhjM1JGZG1WdWRDQTlJQ0pzWldkaFkza2djbVZoWkhraUNna0paV3h6WlFvSkNRbHNiMk5oYkNCelpXeHNJRDBnWm1sdVpFSjBiaWh3WVc1bExDQWlVMlZzYkNCamIyMXdZVzU1SWlrS0NRa0phV1lnYzJWc2JDQjBhR1Z1Q2drSkNRbHdjbVZ6YzBGamRHbHZiaWh6Wld4c0tRb0pDUWtKZEdGemF5NTNZV2wwS0RFdU1pa0tDUWtKQ1MwdElPV1ByK2lEdmVXOHVlV0h1dVM2ak9hc29lZWhydWl1cEFvSkNRa0piRzlqWVd3Z1kyOXVabWx5YlFvSkNRa0pabTl5SUY4c0lHUWdhVzRnYVhCaGFYSnpLSEJoYm1VNlIyVjBSR1Z6WTJWdVpHRnVkSE1vS1NrZ1pHOEtDUWtKQ1FscFppQmtPa2x6UVNnaVIzVnBRblYwZEc5dUlpa2dkR2hsYmdvSkNRa0pDUWxzYjJOaGJDQjBJRDBnYzNSeWFXNW5MbXh2ZDJWeUtHUXVWR1Y0ZENCdmNpQWlJaWtLQ1FrSkNRa0phV1lnWkM1V2FYTnBZbXhsSUdGdVpDQW9jM1J5YVc1bkxuTjFZaWgwTENBeExDQXpLU0E5UFNBaWVXVnpJaUJ2Y2lCemRISnBibWN1Wm1sdVpDaDBMQ0FpWTI5dVptbHliU0lzSURFc0lIUnlkV1VwS1NCMGFHVnVDZ2tKQ1FrSkNRbGpiMjVtYVhKdElEMGdaQW9KQ1FrSkNRbGxibVFLQ1FrSkNRbGxibVFLQ1FrSkNXVnVaQW9KQ1FrSmFXWWdZMjl1Wm1seWJTQjBhR1Z1Q2drSkNRa0pjSEpsYzNOQlkzUnBiMjRvWTI5dVptbHliU2tLQ1FrSkNRbFRMbXhoYzNSRmRtVnVkQ0E5SUNKemIyeGtJR052YlhCaGJua2dLR052Ym1acGNtMWxaQ2tpQ2drSkNRbGxiSE5sQ2drSkNRa0pVeTVzWVhOMFJYWmxiblFnUFNBaWMyVnNiQ0JqYkdsamEyVmtJQ2h1YnlCamIyNW1hWEp0SUdScFlXeHZaeWtpQ2drSkNRbGxibVFLQ1FrSkNYUmhjMnN1ZDJGcGRDZ3hMalVwQ2drSkNXVnNjMlVLQ1FrSkNWTXViR0Z6ZEVWMlpXNTBJRDBnSW5ObGJHd2dZblYwZEc5dUlHNXZkQ0JtYjNWdVpDSUtDUWtKWlc1a0Nna0paVzVrQ2dsbGJtUUtaVzVrQ2dvdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwS0xTMGc2WjJpNXAyLzViZWg1cU9BQ2kwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFFwc2IyTmhiQ0JtZFc1amRHbHZiaUJqYUdWamExQmhibVZzYzB4dlkydGxaQ2dwQ2dsemVXNWpWR2xqYXlncENnbGphR1ZqYTA5bVptbGpaU2dwQ2dsamFHVmphMHhsWjJGamVTZ3BDZ2xqYkc5elpWZHBibVJ2ZHlncENtVnVaQW9LYkc5allXd2dablZ1WTNScGIyNGdZMmhsWTJ0UVlXNWxiSE1vS1FvSmFXWWdibTkwSUdGamNYVnBjbVZWU1NnMktTQjBhR1Z1Q2drSlV5NXNZWE4wUlhabGJuUWdQU0FpZFdrZ1luVnplU0lLQ1FseVpYUjFjbTRnWm1Gc2MyVUtDV1Z1WkFvSmJHOWpZV3dnYjJzc0lISmxjeUE5SUhCallXeHNLR05vWldOclVHRnVaV3h6VEc5amEyVmtLUW9KY21Wc1pXRnpaVlZKS0NrS0NXbG1JRzV2ZENCdmF5QjBhR1Z1Q2drSlV5NXNZWE4wUlhabGJuUWdQU0FpWlhKeWIzSTZJQ0lnTGk0Z2RHOXpkSEpwYm1jb2NtVnpLUW9KQ1hKbGRIVnliaUJtWVd4elpRb0paVzVrQ2dseVpYUjFjbTRnZEhKMVpRcGxibVFLQ2kwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFFvdExTRG5sSi9sa2IzbGtham1uSjhLTFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0TFMwdExTMHRMUzB0Q21aMWJtTjBhVzl1SUZNdWMzUmhjblFvS1FvSmFXWWdVeTV5ZFc1dWFXNW5JSFJvWlc0Z2NtVjBkWEp1SUNKaGJISmxZV1I1SUhKMWJtNXBibWNpSUdWdVpBb0pVeTV5ZFc1dWFXNW5JRDBnZEhKMVpRb0pVeTVzWVhOMFEyaGxZMnNnUFNCdmN5NWpiRzlqYXlncElDMGdLRk11WTJobFkydEZkbVZ5ZVNBdElEVXBDZ2wwWVhOckxuTndZWGR1S0daMWJtTjBhVzl1S0NrS0NRbDNhR2xzWlNCVExuSjFibTVwYm1jZ1pHOEtDUWtKYVdZZ2IzTXVZMnh2WTJzb0tTQXRJRk11YkdGemRFTm9aV05ySUQ0Z1V5NWphR1ZqYTBWMlpYSjVJR0Z1WkNCdWIzUWdRMWN1Vm1semFXSnNaU0IwYUdWdUNna0pDUWxwWmlCamFHVmphMUJoYm1Wc2N5Z3BJSFJvWlc0S0NRa0pDUWxUTG14aGMzUkRhR1ZqYXlBOUlHOXpMbU5zYjJOcktDa0tDUWtKQ1dWc2MyVUtDUWtKQ1FsVExteGhjM1JEYUdWamF5QTlJRzl6TG1Oc2IyTnJLQ2tnTFNBb1V5NWphR1ZqYTBWMlpYSjVJQzBnTVRBcENna0pDUWxsYm1RS0NRa0paVzVrQ2drSkNYUmhjMnN1ZDJGcGRDZ3hLUW9KQ1dWdVpBb0paVzVrS1FvSmNtVjBkWEp1SUNKemRHRnlkR1ZrSWdwbGJtUUtDbVoxYm1OMGFXOXVJRk11YzNSdmNDZ3BDZ2xUTG5KMWJtNXBibWNnUFNCbVlXeHpaUW9KY21WMGRYSnVJQ0p6ZEc5d2NHVmtJZ3BsYm1RS0NtWjFibU4wYVc5dUlGTXVjMlYwUkhKNUtIWXBDZ2xUTG1SeWVTQTlJSFlnWVc1a0lIUnlkV1VnYjNJZ1ptRnNjMlVLQ1hKbGRIVnliaUFpWkhKNVBTSWdMaTRnZEc5emRISnBibWNvVXk1a2Nua3BDbVZ1WkFvS1puVnVZM1JwYjI0Z1V5NXpkR0YwWlNncENnbHplVzVqVkdsamF5Z3BDZ2x5WlhSMWNtNGdld29KQ1hKMWJtNXBibWNnUFNCVExuSjFibTVwYm1jc0lHUnllU0E5SUZNdVpISjVMQW9KQ1cxdmJtVjVJRDBnYldGMGFDNW1iRzl2Y2loVExtMXZibVY1S1N3Z1pHRjVJRDBnVXk1a1lYa3NDZ2tKYjJabWFXTmxRMjl6ZENBOUlGTXViMlptYVdObFEyOXpkQ3dnYjJabWFXTmxSV3hwWjJsaWJHVWdQU0JUTG05bVptbGpaVVZzYVdkcFlteGxMQ0J2Wm1acFkyVlViMGR2SUQwZ1V5NXZabVpwWTJWVWIwZHZMQW9KQ1d4bFoyRmplVkpsZG1WdWRXVWdQU0JUTG14bFoyRmplVkpsZG1WdWRXVXNJR3hsWjJGamVVVnNhV2RwWW14bElEMGdVeTVzWldkaFkzbEZiR2xuYVdKc1pTd2diR1ZuWVdONVNGRWdQU0JUTG14bFoyRmplVWhSTEFvSkNXeGhjM1JGZG1WdWRDQTlJRk11YkdGemRFVjJaVzUwTEFvSmZRcGxibVFLQ25KbGRIVnliaUFpWVhWMGIwVjRkSEpoSUhZeklHeHZZV1JsWkNJSyIpLCAi6YeN55Sf5pCs5a62IikKCmxvY2FsIFBsYXllcnMgPSBnYW1lOkdldFNlcnZpY2UoIlBsYXllcnMiKQpsb2NhbCBVSVMgPSBnYW1lOkdldFNlcnZpY2UoIlVzZXJJbnB1dFNlcnZpY2UiKQpsb2NhbCBob3N0ID0gKGdldGh1aSBhbmQgZ2V0aHVpKCkpIG9yIGdhbWU6R2V0U2VydmljZSgiQ29yZUd1aSIpCnBjYWxsKGZ1bmN0aW9uKCkKICAgIGxvY2FsIG9sZCA9IGhvc3Q6RmluZEZpcnN0Q2hpbGQoIld1UGhvbmVUeWNvb25VSSIpCiAgICBpZiBvbGQgdGhlbiBvbGQ6RGVzdHJveSgpIGVuZAplbmQpCgpsb2NhbCBzZyA9IEluc3RhbmNlLm5ldygiU2NyZWVuR3VpIikKc2cuTmFtZSA9ICJXdVBob25lVHljb29uVUkiCnNnLlJlc2V0T25TcGF3biA9IGZhbHNlCnNnLklnbm9yZUd1aUluc2V0ID0gdHJ1ZQpzZy5aSW5kZXhCZWhhdmlvciA9IEVudW0uWkluZGV4QmVoYXZpb3IuU2libGluZwpzZy5EaXNwbGF5T3JkZXIgPSAxMjAKc2cuUGFyZW50ID0gaG9zdAoKbG9jYWwgcGFuZWwgPSBJbnN0YW5jZS5uZXcoIkZyYW1lIikKcGFuZWwuTmFtZSA9ICJNYWluIgpwYW5lbC5BbmNob3JQb2ludCA9IFZlY3RvcjIubmV3KDAsIDAuNSkKcGFuZWwuUG9zaXRpb24gPSBVRGltMi5uZXcoMCwgMTYsIDAuNSwgMCkKcGFuZWwuU2l6ZSA9IFVEaW0yLmZyb21PZmZzZXQoMjgwLCAzMzApCnBhbmVsLkJhY2tncm91bmRDb2xvcjMgPSBDb2xvcjMuZnJvbVJHQigxOCwgMjAsIDI2KQpwYW5lbC5CYWNrZ3JvdW5kVHJhbnNwYXJlbmN5ID0gMC4wOApwYW5lbC5Cb3JkZXJTaXplUGl4ZWwgPSAwCnBhbmVsLlBhcmVudCA9IHNnCkluc3RhbmNlLm5ldygiVUlDb3JuZXIiLCBwYW5lbCkuQ29ybmVyUmFkaXVzID0gVURpbS5uZXcoMCwgMTIpCmxvY2FsIHN0cm9rZSA9IEluc3RhbmNlLm5ldygiVUlTdHJva2UiKQpzdHJva2UuQ29sb3IgPSBDb2xvcjMuZnJvbVJHQig4MCwgMTQwLCAyMjApCnN0cm9rZS5UaGlja25lc3MgPSAxLjIKc3Ryb2tlLlRyYW5zcGFyZW5jeSA9IDAuMzUKc3Ryb2tlLlBhcmVudCA9IHBhbmVsCgpsb2NhbCBoZWFkZXIgPSBJbnN0YW5jZS5uZXcoIkZyYW1lIikKaGVhZGVyLlNpemUgPSBVRGltMi5uZXcoMSwgMCwgMCwgNDApCmhlYWRlci5CYWNrZ3JvdW5kQ29sb3IzID0gQ29sb3IzLmZyb21SR0IoMjgsIDMyLCA0MikKaGVhZGVyLkJvcmRlclNpemVQaXhlbCA9IDAKaGVhZGVyLlBhcmVudCA9IHBhbmVsCkluc3RhbmNlLm5ldygiVUlDb3JuZXIiLCBoZWFkZXIpLkNvcm5lclJhZGl1cyA9IFVEaW0ubmV3KDAsIDEyKQoKbG9jYWwgdGl0bGUgPSBJbnN0YW5jZS5uZXcoIlRleHRMYWJlbCIpCnRpdGxlLkJhY2tncm91bmRUcmFuc3BhcmVuY3kgPSAxCnRpdGxlLlBvc2l0aW9uID0gVURpbTIuZnJvbU9mZnNldCgxMiwgMCkKdGl0bGUuU2l6ZSA9IFVEaW0yLm5ldygxLCAtNTIsIDEsIDApCnRpdGxlLkZvbnQgPSBFbnVtLkZvbnQuR290aGFtQm9sZAp0aXRsZS5UZXh0ID0gIuW3qyDCtyDliLbkvZzkuIDpg6jmiYvmnLoiCnRpdGxlLlRleHRTaXplID0gMTUKdGl0bGUuVGV4dENvbG9yMyA9IENvbG9yMy5mcm9tUkdCKDIzNSwgMjQwLCAyNTApCnRpdGxlLlRleHRYQWxpZ25tZW50ID0gRW51bS5UZXh0WEFsaWdubWVudC5MZWZ0CnRpdGxlLlBhcmVudCA9IGhlYWRlcgoKbG9jYWwgYnRuQ2xvc2UgPSBJbnN0YW5jZS5uZXcoIlRleHRCdXR0b24iKQpidG5DbG9zZS5BbmNob3JQb2ludCA9IFZlY3RvcjIubmV3KDEsIDAuNSkKYnRuQ2xvc2UuUG9zaXRpb24gPSBVRGltMi5uZXcoMSwgLTgsIDAuNSwgMCkKYnRuQ2xvc2UuU2l6ZSA9IFVEaW0yLmZyb21PZmZzZXQoMjgsIDI4KQpidG5DbG9zZS5CYWNrZ3JvdW5kQ29sb3IzID0gQ29sb3IzLmZyb21SR0IoNTAsIDQwLCA0NSkKYnRuQ2xvc2UuVGV4dCA9ICLDlyIKYnRuQ2xvc2UuVGV4dENvbG9yMyA9IENvbG9yMy5mcm9tUkdCKDI1NSwgMjAwLCAyMDApCmJ0bkNsb3NlLkZvbnQgPSBFbnVtLkZvbnQuR290aGFtQm9sZApidG5DbG9zZS5UZXh0U2l6ZSA9IDE2CmJ0bkNsb3NlLlBhcmVudCA9IGhlYWRlcgpJbnN0YW5jZS5uZXcoIlVJQ29ybmVyIiwgYnRuQ2xvc2UpLkNvcm5lclJhZGl1cyA9IFVEaW0ubmV3KDAsIDgpCgpsb2NhbCBib2R5ID0gSW5zdGFuY2UubmV3KCJTY3JvbGxpbmdGcmFtZSIpCmJvZHkuUG9zaXRpb24gPSBVRGltMi5mcm9tT2Zmc2V0KDAsIDQ0KQpib2R5LlNpemUgPSBVRGltMi5uZXcoMSwgMCwgMSwgLTQ4KQpib2R5LkJhY2tncm91bmRUcmFuc3BhcmVuY3kgPSAxCmJvZHkuQm9yZGVyU2l6ZVBpeGVsID0gMApib2R5LlNjcm9sbEJhclRoaWNrbmVzcyA9IDQKYm9keS5DYW52YXNTaXplID0gVURpbTIubmV3KDAsIDAsIDAsIDApCmJvZHkuQXV0b21hdGljQ2FudmFzU2l6ZSA9IEVudW0uQXV0b21hdGljU2l6ZS5ZCmJvZHkuUGFyZW50ID0gcGFuZWwKCmxvY2FsIGxpc3QgPSBJbnN0YW5jZS5uZXcoIlVJTGlzdExheW91dCIpCmxpc3QuUGFkZGluZyA9IFVEaW0ubmV3KDAsIDgpCmxpc3QuU29ydE9yZGVyID0gRW51bS5Tb3J0T3JkZXIuTGF5b3V0T3JkZXIKbGlzdC5QYXJlbnQgPSBib2R5CmxvY2FsIHBhZCA9IEluc3RhbmNlLm5ldygiVUlQYWRkaW5nIikKcGFkLlBhZGRpbmdMZWZ0ID0gVURpbS5uZXcoMCwgMTIpCnBhZC5QYWRkaW5nUmlnaHQgPSBVRGltLm5ldygwLCAxMikKcGFkLlBhZGRpbmdUb3AgPSBVRGltLm5ldygwLCA4KQpwYWQuUGFkZGluZ0JvdHRvbSA9IFVEaW0ubmV3KDAsIDEyKQpwYWQuUGFyZW50ID0gYm9keQoKbG9jYWwgZnVuY3Rpb24gc2VjdGlvbkxhYmVsKHRleHQsIG9yZGVyKQogICAgbG9jYWwgbCA9IEluc3RhbmNlLm5ldygiVGV4dExhYmVsIikKICAgIGwuQmFja2dyb3VuZFRyYW5zcGFyZW5jeSA9IDEKICAgIGwuU2l6ZSA9IFVEaW0yLm5ldygxLCAwLCAwLCAyMCkKICAgIGwuRm9udCA9IEVudW0uRm9udC5Hb3RoYW1Cb2xkCiAgICBsLlRleHRTaXplID0gMTMKICAgIGwuVGV4dENvbG9yMyA9IENvbG9yMy5mcm9tUkdCKDE0MCwgMTgwLCAyNTUpCiAgICBsLlRleHRYQWxpZ25tZW50ID0gRW51bS5UZXh0WEFsaWdubWVudC5MZWZ0CiAgICBsLlRleHQgPSB0ZXh0CiAgICBsLkxheW91dE9yZGVyID0gb3JkZXIKICAgIGwuUGFyZW50ID0gYm9keQplbmQKCmxvY2FsIGZ1bmN0aW9uIG1ha2VUb2dnbGUobmFtZSwgb3JkZXIsIGdldE9uLCBvblRvZ2dsZSkKICAgIGxvY2FsIHJvdyA9IEluc3RhbmNlLm5ldygiRnJhbWUiKQogICAgcm93LlNpemUgPSBVRGltMi5uZXcoMSwgMCwgMCwgNDApCiAgICByb3cuQmFja2dyb3VuZENvbG9yMyA9IENvbG9yMy5mcm9tUkdCKDI4LCAzMiwgNDApCiAgICByb3cuQm9yZGVyU2l6ZVBpeGVsID0gMAogICAgcm93LkxheW91dE9yZGVyID0gb3JkZXIKICAgIHJvdy5QYXJlbnQgPSBib2R5CiAgICBJbnN0YW5jZS5uZXcoIlVJQ29ybmVyIiwgcm93KS5Db3JuZXJSYWRpdXMgPSBVRGltLm5ldygwLCA4KQogICAgbG9jYWwgbGJsID0gSW5zdGFuY2UubmV3KCJUZXh0TGFiZWwiKQogICAgbGJsLkJhY2tncm91bmRUcmFuc3BhcmVuY3kgPSAxCiAgICBsYmwuUG9zaXRpb24gPSBVRGltMi5mcm9tT2Zmc2V0KDEwLCAwKQogICAgbGJsLlNpemUgPSBVRGltMi5uZXcoMSwgLTcwLCAxLCAwKQogICAgbGJsLkZvbnQgPSBFbnVtLkZvbnQuR290aGFtCiAgICBsYmwuVGV4dFNpemUgPSAxNAogICAgbGJsLlRleHRDb2xvcjMgPSBDb2xvcjMuZnJvbVJHQigyMzAsIDIzNSwgMjQ1KQogICAgbGJsLlRleHRYQWxpZ25tZW50ID0gRW51bS5UZXh0WEFsaWdubWVudC5MZWZ0CiAgICBsYmwuVGV4dCA9IG5hbWUKICAgIGxibC5QYXJlbnQgPSByb3cKICAgIGxvY2FsIGJ0biA9IEluc3RhbmNlLm5ldygiVGV4dEJ1dHRvbiIpCiAgICBidG4uQW5jaG9yUG9pbnQgPSBWZWN0b3IyLm5ldygxLCAwLjUpCiAgICBidG4uUG9zaXRpb24gPSBVRGltMi5uZXcoMSwgLTgsIDAuNSwgMCkKICAgIGJ0bi5TaXplID0gVURpbTIuZnJvbU9mZnNldCg1MiwgMjYpCiAgICBidG4uRm9udCA9IEVudW0uRm9udC5Hb3RoYW1Cb2xkCiAgICBidG4uVGV4dFNpemUgPSAxMgogICAgYnRuLlRleHRDb2xvcjMgPSBDb2xvcjMubmV3KDEsMSwxKQogICAgYnRuLkJvcmRlclNpemVQaXhlbCA9IDAKICAgIGJ0bi5QYXJlbnQgPSByb3cKICAgIEluc3RhbmNlLm5ldygiVUlDb3JuZXIiLCBidG4pLkNvcm5lclJhZGl1cyA9IFVEaW0ubmV3KDAsIDYpCiAgICBsb2NhbCBmdW5jdGlvbiBwYWludCgpCiAgICAgICAgbG9jYWwgb24gPSBnZXRPbigpCiAgICAgICAgYnRuLlRleHQgPSBvbiBhbmQgIk9OIiBvciAiT0ZGIgogICAgICAgIGJ0bi5CYWNrZ3JvdW5kQ29sb3IzID0gb24gYW5kIENvbG9yMy5mcm9tUkdCKDQwLCAxNjAsIDkwKSBvciBDb2xvcjMuZnJvbVJHQig3MCwgNzUsIDkwKQogICAgZW5kCiAgICBwYWludCgpCiAgICBidG4uTW91c2VCdXR0b24xQ2xpY2s6Q29ubmVjdChmdW5jdGlvbigpCiAgICAgICAgb25Ub2dnbGUobm90IGdldE9uKCkpCiAgICAgICAgdGFzay53YWl0KDAuMDUpCiAgICAgICAgcGFpbnQoKQogICAgZW5kKQogICAgcmV0dXJuIHBhaW50CmVuZAoKbG9jYWwgc3RhdHVzID0gSW5zdGFuY2UubmV3KCJUZXh0TGFiZWwiKQpzdGF0dXMuQmFja2dyb3VuZFRyYW5zcGFyZW5jeSA9IDEKc3RhdHVzLlNpemUgPSBVRGltMi5uZXcoMSwgMCwgMCwgODApCnN0YXR1cy5Gb250ID0gRW51bS5Gb250LkdvdGhhbQpzdGF0dXMuVGV4dFNpemUgPSAxMgpzdGF0dXMuVGV4dENvbG9yMyA9IENvbG9yMy5mcm9tUkdCKDE2MCwgMTcwLCAxODUpCnN0YXR1cy5UZXh0WEFsaWdubWVudCA9IEVudW0uVGV4dFhBbGlnbm1lbnQuTGVmdApzdGF0dXMuVGV4dFlBbGlnbm1lbnQgPSBFbnVtLlRleHRZQWxpZ25tZW50LlRvcApzdGF0dXMuVGV4dFdyYXBwZWQgPSB0cnVlCnN0YXR1cy5UZXh0ID0gIueKtuaAge+8muW+heWRvSIKc3RhdHVzLkxheW91dE9yZGVyID0gOTAKc3RhdHVzLlBhcmVudCA9IGJvZHkKCnNlY3Rpb25MYWJlbCgiMS4g6Ieq5Yqo56CU56m2IiwgMSkKbG9jYWwgcGFpbnRSZXNlYXJjaCA9IG1ha2VUb2dnbGUoIuiHquWKqOeglOeptiIsIDIsIGZ1bmN0aW9uKCkKICAgIGxvY2FsIHMgPSBnZXRnZW52KCkuX19hdXRvUmVzZWFyY2gKICAgIHJldHVybiBzIGFuZCBzLnJ1bm5pbmcKZW5kLCBmdW5jdGlvbih3YW50KQogICAgbG9jYWwgcyA9IGdldGdlbnYoKS5fX2F1dG9SZXNlYXJjaAogICAgaWYgbm90IHMgdGhlbiByZXR1cm4gZW5kCiAgICBpZiB3YW50IHRoZW4gaWYgcy5zdGFydCB0aGVuIHMuc3RhcnQoKSBlbmQgZWxzZSBpZiBzLnN0b3AgdGhlbiBzLnN0b3AoKSBlbmQgZW5kCmVuZCkKCnNlY3Rpb25MYWJlbCgiMi4g6YeN55SfIC8g5pCs5a62IiwgMykKbG9jYWwgcGFpbnRFeHRyYSA9IG1ha2VUb2dnbGUoIuiHquWKqOmHjeeUn+aQrOWutu+8iOato+W8j++8iSIsIDQsIGZ1bmN0aW9uKCkKICAgIGxvY2FsIHMgPSBnZXRnZW52KCkuX19hdXRvRXh0cmEKICAgIHJldHVybiBzIGFuZCBzLnJ1bm5pbmcgYW5kIG5vdCBzLmRyeQplbmQsIGZ1bmN0aW9uKHdhbnQpCiAgICBsb2NhbCBzID0gZ2V0Z2VudigpLl9fYXV0b0V4dHJhCiAgICBpZiBub3QgcyB0aGVuIHJldHVybiBlbmQKICAgIGlmIHdhbnQgdGhlbgogICAgICAgIGlmIHMuc2V0RHJ5IHRoZW4gcy5zZXREcnkoZmFsc2UpIGVuZAogICAgICAgIGlmIHMuc3RhcnQgdGhlbiBzLnN0YXJ0KCkgZW5kCiAgICBlbHNlCiAgICAgICAgaWYgcy5zdG9wIHRoZW4gcy5zdG9wKCkgZW5kCiAgICBlbmQKZW5kKQoKbWFrZVRvZ2dsZSgi5LuF5qOA5rWL5qih5byPIGRyeSIsIDUsIGZ1bmN0aW9uKCkKICAgIGxvY2FsIHMgPSBnZXRnZW52KCkuX19hdXRvRXh0cmEKICAgIHJldHVybiBub3QgcyBvciBzLmRyeQplbmQsIGZ1bmN0aW9uKHdhbnQpCiAgICBsb2NhbCBzID0gZ2V0Z2VudigpLl9fYXV0b0V4dHJhCiAgICBpZiBzIGFuZCBzLnNldERyeSB0aGVuIHMuc2V0RHJ5KHdhbnQgYW5kIHRydWUgb3IgZmFsc2UpIGVuZAplbmQpCgpzZWN0aW9uTGFiZWwoIuaAu+aOpyIsIDYpCm1ha2VUb2dnbGUoIuS4gOmUruWFqOW8gC/lhajlgZwiLCA3LCBmdW5jdGlvbigpCiAgICBsb2NhbCBhID0gZ2V0Z2VudigpLl9fYXV0b1Jlc2VhcmNoCiAgICBsb2NhbCBiID0gZ2V0Z2VudigpLl9fYXV0b0V4dHJhCiAgICByZXR1cm4gKGEgYW5kIGEucnVubmluZykgb3IgKGIgYW5kIGIucnVubmluZykKZW5kLCBmdW5jdGlvbih3YW50KQogICAgbG9jYWwgYSA9IGdldGdlbnYoKS5fX2F1dG9SZXNlYXJjaAogICAgbG9jYWwgYiA9IGdldGdlbnYoKS5fX2F1dG9FeHRyYQogICAgaWYgd2FudCB0aGVuCiAgICAgICAgaWYgYiBhbmQgYi5zZXREcnkgdGhlbiBiLnNldERyeShmYWxzZSkgZW5kCiAgICAgICAgaWYgYiBhbmQgYi5zdGFydCB0aGVuIGIuc3RhcnQoKSBlbmQKICAgICAgICBpZiBhIGFuZCBhLnN0YXJ0IHRoZW4gYS5zdGFydCgpIGVuZAogICAgZWxzZQogICAgICAgIGlmIGEgYW5kIGEuc3RvcCB0aGVuIGEuc3RvcCgpIGVuZAogICAgICAgIGlmIGIgYW5kIGIuc3RvcCB0aGVuIGIuc3RvcCgpIGVuZAogICAgZW5kCmVuZCkKCnRhc2suc3Bhd24oZnVuY3Rpb24oKQogICAgd2hpbGUgc2cuUGFyZW50IGRvCiAgICAgICAgcGNhbGwoZnVuY3Rpb24oKQogICAgICAgICAgICBsb2NhbCBhID0gZ2V0Z2VudigpLl9fYXV0b1Jlc2VhcmNoIG9yIHt9CiAgICAgICAgICAgIGxvY2FsIGIgPSBnZXRnZW52KCkuX19hdXRvRXh0cmEgb3Ige30KICAgICAgICAgICAgbG9jYWwgdCA9IGdldGdlbnYoKS5fX3RpY2sgb3Ige30KICAgICAgICAgICAgc3RhdHVzLlRleHQgPSBzdHJpbmcuZm9ybWF0KAogICAgICAgICAgICAgICAgIueglOeptjogJXMgfCBsYWI9JXNcbuaXpT0lcyBSUD0lcyDmrKHmlbA9JXNcbuaQrOWutjogJXMgZHJ5PSVzXG4lcyIsCiAgICAgICAgICAgICAgICBhLnJ1bm5pbmcgYW5kICLov5DooYzkuK0iIG9yICLlhbPpl60iLAogICAgICAgICAgICAgICAgdG9zdHJpbmcoYS5sYWIgb3IgIi0iKSwKICAgICAgICAgICAgICAgIHRvc3RyaW5nKHQuZGF5IG9yIGEuZGF5IG9yICItIiksCiAgICAgICAgICAgICAgICB0b3N0cmluZyh0LnJwIG9yIGEucnAgb3IgIi0iKSwKICAgICAgICAgICAgICAgIHRvc3RyaW5nKGEuc3RhcnRzIG9yIDApLAogICAgICAgICAgICAgICAgYi5ydW5uaW5nIGFuZCAi6L+Q6KGM5LitIiBvciAi5YWz6ZetIiwKICAgICAgICAgICAgICAgIHRvc3RyaW5nKGIuZHJ5KSwKICAgICAgICAgICAgICAgIHRvc3RyaW5nKGEubGFzdEV2ZW50IG9yIGIubGFzdEV2ZW50IG9yICIiKQogICAgICAgICAgICApCiAgICAgICAgICAgIHBjYWxsKHBhaW50UmVzZWFyY2gpCiAgICAgICAgICAgIHBjYWxsKHBhaW50RXh0cmEpCiAgICAgICAgZW5kKQogICAgICAgIHRhc2sud2FpdCgwLjYpCiAgICBlbmQKZW5kKQoKZG8KICAgIGxvY2FsIGRyYWdnaW5nLCBzdGFydCwgb3JpZ2luCiAgICBoZWFkZXIuSW5wdXRCZWdhbjpDb25uZWN0KGZ1bmN0aW9uKGlucHV0KQogICAgICAgIGlmIGlucHV0LlVzZXJJbnB1dFR5cGUgPT0gRW51bS5Vc2VySW5wdXRUeXBlLk1vdXNlQnV0dG9uMSBvciBpbnB1dC5Vc2VySW5wdXRUeXBlID09IEVudW0uVXNlcklucHV0VHlwZS5Ub3VjaCB0aGVuCiAgICAgICAgICAgIGRyYWdnaW5nID0gdHJ1ZQogICAgICAgICAgICBzdGFydCA9IGlucHV0LlBvc2l0aW9uCiAgICAgICAgICAgIG9yaWdpbiA9IHBhbmVsLlBvc2l0aW9uCiAgICAgICAgZW5kCiAgICBlbmQpCiAgICBVSVMuSW5wdXRFbmRlZDpDb25uZWN0KGZ1bmN0aW9uKGlucHV0KQogICAgICAgIGlmIGlucHV0LlVzZXJJbnB1dFR5cGUgPT0gRW51bS5Vc2VySW5wdXRUeXBlLk1vdXNlQnV0dG9uMSBvciBpbnB1dC5Vc2VySW5wdXRUeXBlID09IEVudW0uVXNlcklucHV0VHlwZS5Ub3VjaCB0aGVuCiAgICAgICAgICAgIGRyYWdnaW5nID0gZmFsc2UKICAgICAgICBlbmQKICAgIGVuZCkKICAgIFVJUy5JbnB1dENoYW5nZWQ6Q29ubmVjdChmdW5jdGlvbihpbnB1dCkKICAgICAgICBpZiBub3QgZHJhZ2dpbmcgdGhlbiByZXR1cm4gZW5kCiAgICAgICAgaWYgaW5wdXQuVXNlcklucHV0VHlwZSA9PSBFbnVtLlVzZXJJbnB1dFR5cGUuTW91c2VNb3ZlbWVudCBvciBpbnB1dC5Vc2VySW5wdXRUeXBlID09IEVudW0uVXNlcklucHV0VHlwZS5Ub3VjaCB0aGVuCiAgICAgICAgICAgIGxvY2FsIGQgPSBpbnB1dC5Qb3NpdGlvbiAtIHN0YXJ0CiAgICAgICAgICAgIHBhbmVsLlBvc2l0aW9uID0gVURpbTIubmV3KG9yaWdpbi5YLlNjYWxlLCBvcmlnaW4uWC5PZmZzZXQgKyBkLlgsIG9yaWdpbi5ZLlNjYWxlLCBvcmlnaW4uWS5PZmZzZXQgKyBkLlkpCiAgICAgICAgZW5kCiAgICBlbmQpCmVuZAoKYnRuQ2xvc2UuTW91c2VCdXR0b24xQ2xpY2s6Q29ubmVjdChmdW5jdGlvbigpCiAgICBzZy5FbmFibGVkID0gZmFsc2UKZW5kKQoKZ2V0Z2VudigpLld1UGhvbmVUeWNvb25Mb2FkZWQgPSB0cnVlCmdldGdlbnYoKS5XdVBob25lVHljb29uVUkgPSBzZwpwcmludCgiW+WItuS9nOS4gOmDqOaJi+acul0gVUkg5bey5Yqg6L29IikKcGNhbGwoZnVuY3Rpb24oKQogICAgZ2FtZTpHZXRTZXJ2aWNlKCJTdGFydGVyR3VpIik6U2V0Q29yZSgiU2VuZE5vdGlmaWNhdGlvbiIsIHsKICAgICAgICBUaXRsZSA9ICLliLbkvZzkuIDpg6jmiYvmnLoiLAogICAgICAgIFRleHQgPSAi5bey5Yqg6L2977yI5pyq5a6M5oiQ54mI77yJIiwKICAgICAgICBEdXJhdGlvbiA9IDMsCiAgICB9KQplbmQpCg==]]
+    local function b64decode(data)
+        local b = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        data = string.gsub(data, "[^" .. b .. "=]", "")
+        return (data:gsub(".", function(x)
+            if x == "=" then return "" end
+            local r, f = "", (b:find(x) - 1)
+            for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i-1) > 0 and "1" or "0") end
+            return r
+        end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(x)
+            if #x ~= 8 then return "" end
+            local c = 0
+            for i = 1, 8 do c = c + (x:sub(i, i) == "1" and 2^(8 - i) or 0) end
+            return string.char(c)
+        end))
+    end
+    local src = b64decode(b64)
+    local fn, err = loadstring(src)
+    if not fn then
+        warn("[巫] 制作一部手机 编译失败:", err)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "制作一部手机",
+                Text = "编译失败",
+                Duration = 4,
+            })
+        end)
+        return
+    end
+    local ok, e = pcall(fn)
+    if not ok then
+        warn("[巫] 制作一部手机 执行失败:", e)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "制作一部手机",
+                Text = "执行失败",
+                Duration = 4,
+            })
+        end)
+    end
+end
+
+getgenv().WuLoadKaijuAlpha = function(skipPrompt)
+    if getgenv().WuKaijuLoaded then
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "巫 kaiju alpha",
+                Text = "已经加载 请勿重复点击",
+                Duration = 4,
+            })
+        end)
+        return
+    end
+    local function doLoad()
+        local ok, err = pcall(function()
+            local url = getgenv().WuKaijuAlphaURL
+                or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
+            local raw = game:HttpGet(url)
+            assert(type(raw) == "string" and #raw > 100, "HttpGet 失败或内容过短")
+            -- 防止误下到 GitHub HTML 页面
+            assert(not raw:find("<!DOCTYPE html>", 1, true), "拿到的是网页不是脚本，请检查 raw 链接")
+            local fn, compileErr = loadstring(raw)
+            assert(fn, compileErr)
+            fn()
+        end)
+        if ok then
+            getgenv().WuKaijuLoaded = true
+            pcall(function()
+                game:GetService("StarterGui"):SetCore("SendNotification", {
+                    Title = "巫 kaiju alpha",
+                    Text = "已加载",
+                    Duration = 3,
+                })
+            end)
+        else
+            warn("[巫 script] Kaiju 加载失败:", err)
+            pcall(function()
+                game:GetService("StarterGui"):SetCore("SendNotification", {
+                    Title = "巫 kaiju alpha",
+                    Text = "加载失败",
+                    Duration = 5,
+                })
+            end)
+        end
+    end
+    if skipPrompt then
+        doLoad()
+    else
+        WuShowKaijuPrompt(doLoad, function() end)
+    end
+end
+
+task.spawn(function()
+    task.wait(1.0)
+    local ALLOWED = {
+        [127403135954624] = true,
+        [139769003880269] = true,
+    }
+    if not ALLOWED[game.PlaceId] then return end
+    if getgenv().WuKaijuPromptShown or getgenv().WuKaijuLoaded then return end
+    getgenv().WuKaijuPromptShown = true
+    WuShowKaijuPrompt(function()
+        if getgenv().WuLoadKaijuAlpha then
+            getgenv().WuLoadKaijuAlpha(true)
+        end
+    end, function() end)
+end)
+
+task.spawn(function()
+    task.wait(1.0)
+    -- 制作一部手机 / Build a Phone Empire
+    -- 分享链: https://www.roblox.com/share?code=f1925bb56298904c9195ba62cbf06731&type=ExperienceDetails
+    local PHONE_ALLOWED = {
+        [101914705206759] = true, -- root place: Build a Phone Empire
+    }
+    local function isPhoneServer()
+        if PHONE_ALLOWED[game.PlaceId] then return true end
+        -- 兼容子场景 / 更新后的 PlaceId：界面特征检测
+        local ok, g = pcall(function()
+            local lp = game:GetService("Players").LocalPlayer
+            return lp and lp:FindFirstChild("PlayerGui") and lp.PlayerGui:FindFirstChild("PhoneTycoonGui")
+        end)
+        return ok and g ~= nil
+    end
+    if not isPhoneServer() then return end
+    if getgenv().WuPhonePromptShown or getgenv().WuPhoneTycoonLoaded then return end
+    getgenv().WuPhonePromptShown = true
+
+    local parent = (gethui and gethui()) or game:GetService("CoreGui")
+    local oldGui = parent:FindFirstChild("WuPhonePrompt")
+    if oldGui then oldGui:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "WuPhonePrompt"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 999
+    pcall(function() sg.Parent = parent end)
+    if not sg.Parent then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local overlay = Instance.new("Frame")
+    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    overlay.BackgroundTransparency = 0.45
+    overlay.BorderSizePixel = 0
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.Parent = sg
+
+    local card = Instance.new("Frame")
+    card.AnchorPoint = Vector2.new(0.5, 0.5)
+    card.Position = UDim2.fromScale(0.5, 0.5)
+    card.Size = UDim2.new(0, 320, 0, 168)
+    card.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
+    card.BackgroundTransparency = 0.12
+    card.BorderSizePixel = 0
+    card.Parent = overlay
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(200, 220, 255)
+    st.Thickness = 1.2
+    st.Transparency = 0.4
+    st.Parent = card
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 18, 0, 16)
+    title.Size = UDim2.new(1, -36, 0, 28)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "检测到支持服务器"
+    title.TextColor3 = Color3.fromRGB(235, 240, 248)
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = card
+
+    local desc = Instance.new("TextLabel")
+    desc.BackgroundTransparency = 1
+    desc.Position = UDim2.new(0, 18, 0, 52)
+    desc.Size = UDim2.new(1, -36, 0, 48)
+    desc.Font = Enum.Font.Gotham
+    desc.Text = "是否执行独立项目：制作一部手机？"
+    desc.TextColor3 = Color3.fromRGB(160, 170, 185)
+    desc.TextSize = 14
+    desc.TextWrapped = true
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = card
+
+    local function mkBtn(text)
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
+        b.BackgroundTransparency = 0.15
+        b.BorderSizePixel = 0
+        b.Size = UDim2.new(0, 120, 0, 34)
+        b.Font = Enum.Font.GothamBold
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(235, 240, 248)
+        b.TextSize = 15
+        b.AutoButtonColor = true
+        b.Parent = card
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+        return b
+    end
+
+    local btnYes = mkBtn("是")
+    btnYes.Position = UDim2.new(0, 18, 1, -48)
+    local btnNo = mkBtn("滚")
+    btnNo.AnchorPoint = Vector2.new(1, 0)
+    btnNo.Position = UDim2.new(1, -18, 1, -48)
+
+    local closed = false
+    local function close()
+        if closed then return end
+        closed = true
+        pcall(function() sg:Destroy() end)
+    end
+    btnYes.MouseButton1Click:Connect(function()
+        close()
+        if getgenv().WuLoadPhoneTycoon then
+            getgenv().WuLoadPhoneTycoon()
+        end
+    end)
+    btnNo.MouseButton1Click:Connect(function()
+        close()
+    end)
+end)
+
+
+
+-- 缩放后检查滚动区域：保留 VeloraUI 自己的 CanvasSize 计算
+local function WuIsWuScreenGui(sg)
+    return sg ~= nil and sg == getgenv().WuScript_GUI
+end
+
+local function WuFixScroll(sf)
+    -- VeloraUI 自己维护标签页、弹层和下拉框的 CanvasSize；这里只确保滚动可用，
+    -- 不再覆盖 AutomaticCanvasSize / CanvasSize，避免打断库的布局计算。
+    pcall(function()
+        sf.ScrollingEnabled = true
+    end)
+end
+
+local function WuRefreshScroll()
+    local root = getgenv().WuScript_GUI
+    if not root or not root.Parent then return end
+    for _, sf in ipairs(root:GetDescendants()) do
+        if sf:IsA("ScrollingFrame") then WuFixScroll(sf) end
+    end
+end
+
+getgenv().WuRefreshScroll = WuRefreshScroll
+
+-- 独立板块：设置（VeloraUI 兼容接口，可改缩放/字体）
+-------------------------------------------------
+task.spawn(function()
+    task.wait(0.15)
+    local ok, err = pcall(function()
+        -- 使用 VeloraUI 的兼容 NewPage 接口，保证缩放/字体设置可用
+        local _NP = Window.NewPage
+        local SettingsPage = _NP(Window, {
+            Title = "设置",
+            Desc = "界面 · 主题 · 字体",
+            Icon = "Gear",
+        })
+
+        SettingsPage:Section("界面")
+
+        -- 防抖：滑条拖动时只在停手 0.25 秒后才真正应用并存盘
+        local function WuDebounce(delay, fn)
+            local token = 0
+            return function(...)
+                token = token + 1
+                local my, args = token, table.pack(...)
+                task.delay(delay, function()
+                    if my == token then fn(table.unpack(args, 1, args.n)) end
+                end)
+            end
+        end
+
+        local function WuApplyScale(scale)
+            scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
+            getgenv().WuUIScale = scale
+            -- VeloraUI 窗口缩放
+            pcall(function()
+                if Window and Window.SetScale then Window:SetScale(scale) end
+            end)
+            local root = getgenv().WuScript_GUI
+            if root and root.Parent then
+                -- Velora 的根窗口直接暴露在 Window._raw.Root；优先缩放窗口本体，
+                -- 不要缩放全屏的 Windows 容器，否则会与库内 UIScale 叠乘。
+                local main = Window and Window._raw and Window._raw.Root
+                if not main then main = root:FindFirstChildWhichIsA("Frame", false) end
+                if not main then
+                    for _, ch in ipairs(root:GetChildren()) do
+                        if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
+                    end
+                end
+                local target = main or root
+                local us = target:FindFirstChild("WuOnlyUIScale")
+                if not us then
+                    us = Instance.new("UIScale")
+                    us.Name = "WuOnlyUIScale"
+                    us.Parent = target
+                end
+                -- VeloraUI 已有 UIScale 时不再叠乘，只记配置
+                if not target:FindFirstChildWhichIsA("UIScale") then
+                    us.Scale = scale
+                else
+                    us.Scale = 1
+                end
+            end
+            pcall(WuRefreshScroll)
+            pcall(WuSaveUIConfig)
+        end
+        local WuApplyScaleDebounced = WuDebounce(0.25, WuApplyScale)
+
+        SettingsPage:Slider({
+            Title = "界面缩放(%)",
+            Min = 50,
+            Max = 150,
+            Value = math.floor((getgenv().WuUIScale or 1) * 100 + 0.5),
+            Rounding = 0,
+            Suffix = "%",
+            Callback = function(v)
+                WuApplyScaleDebounced((tonumber(v) or 100) / 100)
+            end
+        })
+
+        local WU_WEIGHTS = {
+            Thin = Enum.FontWeight.Thin, ExtraLight = Enum.FontWeight.ExtraLight,
+            Light = Enum.FontWeight.Light, Regular = Enum.FontWeight.Regular,
+            Medium = Enum.FontWeight.Medium, SemiBold = Enum.FontWeight.SemiBold,
+            Bold = Enum.FontWeight.Bold, ExtraBold = Enum.FontWeight.ExtraBold,
+            Heavy = Enum.FontWeight.Heavy,
+        }
+
+        -- 只处理巫 UI 自己的 ScreenGui；新增的文字控件会在 DescendantAdded 后自动套用
+        local function WuStyleText(inst, mul, face)
+            if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+                local origin = inst:GetAttribute("WuBaseTextSize")
+                if not origin then
+                    origin = tonumber(inst.TextSize) or 8
+                    -- 保留 VeloraUI 原始字号作基准，避免强行 12 撑破固定行高
+                    inst:SetAttribute("WuBaseTextSize", origin)
+                end
+                -- 仅轻度放大；上限避免溢出 Section 行高
+                local size = origin * math.clamp(mul, 0.9, 1.35)
+                inst.TextSize = math.clamp(size, 6, 16)
+                pcall(function() inst.FontFace = face end)
+            end
+        end
+
+        local function WuApplyFontStyle()
+            local root = getgenv().WuScript_GUI
+            if not root or not root.Parent then return end
+            local mul = tonumber(getgenv().WuFontScale) or 1
+            local weight = WU_WEIGHTS[tostring(getgenv().WuFontWeight or "Bold")] or Enum.FontWeight.Bold
+            -- 原来是 Italic（斜体），中文斜体不好看；想要斜体改成 Enum.FontStyle.Italic
+            local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Normal)
+            for _, inst in ipairs(root:GetDescendants()) do
+                WuStyleText(inst, mul, face)
+            end
+            pcall(WuSaveUIConfig)
+        end
+        local WuApplyFontDebounced = WuDebounce(0.25, WuApplyFontStyle)
+
+        -- 启动时应用已记忆的缩放/字体；之后新增控件（懒加载的页）也补上样式
+        task.defer(function()
+            task.wait(0.25)
+            WuApplyScale(getgenv().WuUIScale or 1)
+            WuApplyFontStyle()
+            local root = getgenv().WuScript_GUI
+            if root then
+                root.DescendantAdded:Connect(function(inst)
+                    if inst:IsA("ScrollingFrame") then WuFixScroll(inst) end
+                    WuApplyFontDebounced()
+                end)
+            end
+        end)
+
+        SettingsPage:Section("字体")
+        SettingsPage:Slider({
+            Title = "字体大小(%)",
+            Min = 80,
+            Max = 140,
+            Value = math.floor((getgenv().WuFontScale or 1) * 100 + 0.5),
+            Rounding = 0,
+            Suffix = "%",
+            Callback = function(v)
+                getgenv().WuFontScale = (tonumber(v) or 100) / 100
+                WuApplyFontDebounced()
+            end
+        })
+        SettingsPage:Dropdown({
+            Title = "字体粗细",
+            List = { "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Heavy" },
+            Value = tostring(getgenv().WuFontWeight or "Bold"),
+            Multi = false,
+            Callback = function(v)
+                if type(v) == "table" then
+                    for k, on in pairs(v) do if on then v = k break end end
+                end
+                getgenv().WuFontWeight = tostring(v or "Bold")
+                WuApplyFontDebounced()
+            end
+        })
+
+        SettingsPage:Section("其它")
+        SettingsPage:Button({
+            Title = "重置卡密（下次需重新输入）",
+            Text = "重置",
+            Callback = function()
+                pcall(function()
+                    if clearSavedKey then clearSavedKey() end
+                    if writefile then
+                        writefile("WuScript_ForceKeyEntry.txt", "1")
+                    end
+                end)
+                notify("卡密", "已清除，下次执行需重新输入", 3)
+            end
+        })
+        SettingsPage:Button({
+            Title = "复制作者联系方式",
+            Text = "复制",
+            Callback = function()
+                local CONTACT = "3600136747"
+                pcall(function()
+                    if setclipboard then setclipboard(CONTACT)
+                    elseif toclipboard then toclipboard(CONTACT) end
+                end)
+                notify("联系", CONTACT, 2)
+            end
+        })
+        SettingsPage:Keybind({
+            Title = "菜单快捷键提示",
+            Value = Enum.KeyCode.RightControl,
+            Callback = function(key)
+                notify("快捷键", "当前: " .. tostring(key and key.Name), 2)
+            end
+        })
+
+        print("[巫 script] 设置板块已创建")
+        -- 初次刷新滚动区域（之后新增的 ScrollingFrame 由 DescendantAdded 处理）
+        task.defer(WuRefreshScroll)
+        task.delay(0.5, WuRefreshScroll)
+
+    end)
+    if not ok then
+        warn("[巫 script] 设置板块失败:", err)
+    end
+end)
