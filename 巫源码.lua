@@ -529,15 +529,18 @@ end)
 
 -- 加载动画已删除（保持极简）
 
-print("[巫 script] 加载 UI 库...")
---[[
-  优先官方 MugiHub（与 README 相同用法）；
-  若执行器对混淆脚本 stack overflow / 下载失败，自动回退 Rayfield。
-]]
+print("[巫 script] 加载 UI 库 (VisionWare)...")
+-- VisionWare-UI：https://github.com/octobertm6/VisionWare-UI （约80KB，未混淆）
 local okLib, Library = pcall(function()
+    local CACHE = "WuScript_VisionWare_Cache.lua"
+    local urls = {
+        "https://raw.githubusercontent.com/octobertm6/VisionWare-UI/main/VisionWare.lua",
+        "https://raw.githubusercontent.com/octobertm6/VisionWare-UI/refs/heads/main/VisionWare.lua",
+        "https://cdn.jsdelivr.net/gh/octobertm6/VisionWare-UI@main/VisionWare.lua",
+    }
     local function httpGet(url)
         local ok, res = pcall(function() return game:HttpGet(url) end)
-        if ok and type(res) == "string" and #res > 20000 then return res end
+        if ok and type(res) == "string" and #res > 10000 then return res end
         ok, res = pcall(function()
             local req = (syn and syn.request) or http_request or request or (http and http.request)
             if not req then return nil end
@@ -545,396 +548,228 @@ local okLib, Library = pcall(function()
             if type(r) == "table" then return r.Body or r.body end
             return nil
         end)
-        if ok and type(res) == "string" and #res > 20000 then return res end
+        if ok and type(res) == "string" and #res > 10000 then return res end
         return nil
     end
 
-    local function loadFromUrls(urls, cacheName, minSize)
-        minSize = minSize or 20000
-        local src
-        pcall(function()
-            if isfile and isfile(cacheName) and readfile then
-                local c = readfile(cacheName)
-                if type(c) == "string" and #c > minSize then
-                    src = c
-                    print("[巫 script] 使用缓存:", cacheName, #c)
-                end
-            end
-        end)
-        if not src then
-            for _, url in ipairs(urls) do
-                print("[巫 script] 下载:", tostring(url):sub(1, 72))
-                local body = httpGet(url)
-                if body and #body > minSize then
-                    src = body
-                    pcall(function() if writefile then writefile(cacheName, body) end end)
-                    print("[巫 script] 下载成功, 字节:", #body)
-                    break
-                end
-                task.wait(0.08)
+    local src
+    pcall(function()
+        if isfile and isfile(CACHE) and readfile then
+            local c = readfile(CACHE)
+            if type(c) == "string" and #c > 10000 and c:find("CreateWindow", 1, true) then
+                src = c
+                print("[巫 script] 使用 VisionWare 本地缓存")
             end
         end
-        if not src then return nil, "下载失败"
+    end)
+    if not src then
+        local last = "无可用源"
+        for _, url in ipairs(urls) do
+            print("[巫 script] 下载 VisionWare:", tostring(url):sub(1, 72))
+            local body = httpGet(url)
+            if body and body:find("CreateWindow", 1, true) then
+                src = body
+                pcall(function() if writefile then writefile(CACHE, body) end end)
+                print("[巫 script] VisionWare 下载成功, 字节:", #body)
+                break
+            end
+            last = "下载失败"
+            task.wait(0.08)
         end
-        local chunk, err = loadstring(src)
-        if not chunk then return nil, "编译失败: " .. tostring(err) end
-        local okRun, mod = pcall(chunk)
-        if not okRun then
-            -- 缓存可能损坏或执行器不兼容
-            pcall(function()
-                if delfile and isfile and isfile(cacheName) then delfile(cacheName) end
-            end)
-            return nil, "执行失败: " .. tostring(mod)
-        end
-        if type(mod) ~= "table" then return nil, "返回值不是 table" end
-        return mod, nil
+        if not src then error("VisionWare " .. last) end
     end
 
-    ------------------------------------------------------------------
-    -- A) 尝试 MugiHub（官方用法）
-    ------------------------------------------------------------------
-    local mugiUrls = {
-        "https://raw.githubusercontent.com/4MugiHub/MugiHub/refs/heads/main/Mugi",
-        "https://raw.githubusercontent.com/4MugiHub/MugiHub/main/Mugi",
-        "https://cdn.jsdelivr.net/gh/4MugiHub/MugiHub@main/Mugi",
-    }
-    local MugiHub, mugiErr = loadFromUrls(mugiUrls, "WuScript_MugiHub_Cache.lua", 50000)
-    local MH = MugiHub and (MugiHub.Library or MugiHub)
+    local chunk, cerr = loadstring(src)
+    assert(chunk, "VisionWare 编译失败: " .. tostring(cerr))
+    local okRun, VisionWare = pcall(chunk)
+    assert(okRun, "VisionWare 执行失败: " .. tostring(VisionWare))
+    assert(type(VisionWare) == "table" and type(VisionWare.CreateWindow) == "function",
+        "VisionWare.CreateWindow 无效")
 
-    if type(MH) == "table" and (type(MH.CreateWindow) == "function" or type(MH.Window) == "function") then
-        print("[巫 script] 使用 MugiHub")
-        local Library = {}
-        Library._MugiHub = MugiHub
-        Library._MH = MH
-
-        local function notifyMH(opts)
-            opts = opts or {}
-            local content = opts.Content or opts.Desc or opts.Text or opts.Message or ""
-            local title = opts.Title
-            local delay = tonumber(opts.Duration or opts.Delay) or 3
-            pcall(function()
-                MH:SetNotification({
-                    Title = title and tostring(title) or nil,
-                    Content = tostring(content),
-                    Delay = delay,
-                    Type = opts.Type,
-                })
-            end)
-        end
-
-        local function wrapSection(sec)
-            local S = {}
-            local function call(method, args)
-                local ok, res = pcall(function() return sec[method](sec, args) end)
-                if not ok then warn("[巫][MugiHub]", method, res) end
-                return res
-            end
-            function S:AddButton(t)
-                t = t or {}
-                call("AddButton", { Name = t.Name or t.Title or "按钮", Callback = t.Callback or function() end, Icon = t.Icon })
-                return S
-            end
-            function S:Button(t) return S:AddButton(t) end
-            function S:AddToggle(t)
-                t = t or {}
-                local def = t.Default == true or t.Value == true or t.State == true
-                return call("AddToggle", { Name = t.Name or t.Title or "开关", Default = def, Callback = t.Callback or function() end }) or S
-            end
-            function S:Toggle(t) return S:AddToggle(t) end
-            function S:AddSlider(t)
-                t = t or {}
-                local minV, maxV = tonumber(t.Min) or 0, tonumber(t.Max) or 100
-                local defV = tonumber(t.Default or t.Value) or minV
-                return call("AddSlider", {
-                    Name = t.Name or t.Title or "滑条", Min = minV, Max = maxV, Default = defV,
-                    Increment = t.Increment or t.Rounding, Suffix = t.Suffix or "",
-                    Callback = t.Callback or function() end,
-                }) or S
-            end
-            function S:Slider(t) return S:AddSlider(t) end
-            function S:AddDropdown(t)
-                t = t or {}
-                local opts = t.Options or t.List or {}
-                local cb = t.Callback or function() end
-                return call("AddDropdown", {
-                    Name = t.Name or t.Title or "下拉",
-                    Options = opts, Default = t.Default or t.Value, Multi = t.Multi,
-                    Callback = function(sel)
-                        if type(sel) == "table" and not t.Multi then cb(sel[1] or sel) else cb(sel) end
-                    end,
-                }) or S
-            end
-            function S:Dropdown(t) return S:AddDropdown(t) end
-            function S:AddTextbox(t)
-                t = t or {}
-                return call("AddTextbox", {
-                    Name = t.Name or t.Title or "输入",
-                    Default = t.Default or t.Value or "",
-                    PlaceholderText = t.PlaceholderText or t.Placeholder or "",
-                    Callback = t.Callback or function() end,
-                }) or call("AddInput", {
-                    Name = t.Name or t.Title or "输入",
-                    Default = t.Default or t.Value or "",
-                    Callback = t.Callback or function() end,
-                }) or S
-            end
-            function S:AddInput(t) return S:AddTextbox(t) end
-            function S:Textbox(t) return S:AddTextbox(t) end
-            function S:AddKeybind(t)
-                t = t or {}
-                return call("AddKeybind", {
-                    Name = t.Name or t.Title or "快捷键",
-                    Default = t.Default or t.Value or Enum.KeyCode.RightControl,
-                    Callback = t.Callback or function() end,
-                }) or S
-            end
-            function S:Keybind(t) return S:AddKeybind(t) end
-            function S:AddLabel(t)
-                t = t or {}
-                local text = type(t) == "string" and t or tostring(t.Text or t.Name or "")
-                call("AddLabel", { Name = text, Text = text })
-                return S
-            end
-            function S:Label(t) return S:AddLabel(t) end
-            return S
-        end
-
-        function Library:Window(opts)
-            opts = opts or {}
-            local title = tostring(opts.Title or "巫 script")
-            local subtitle = tostring(opts.SubTitle or opts.Subtitle or "by wu")
-            local keybind = opts.ToggleKey or opts.Keybind or Enum.KeyCode.RightControl
-            local scale = tonumber(opts.Scale) or 0.95
-
-            local wuHost = (gethui and gethui()) or game:GetService("CoreGui")
-            local before = {}
-            for _, g in ipairs(wuHost:GetChildren()) do before[g] = true end
-
-            local rawWin
-            if type(MH.CreateWindow) == "function" then
-                -- 官方推荐：位置参数 + 命名字段均可
-                rawWin = MH:CreateWindow({
-                    title,
-                    subtitle,
-                    112,
-                    UDim2.fromOffset(520, 340),
-                    keybind,
-                    opts.Icon or "hub",
-                    Title = title,
-                    Description = subtitle,
-                    ["Tab Width"] = 112,
-                    SizeUi = UDim2.fromOffset(520, 340),
-                    Keybind = keybind,
-                    Icon = opts.Icon or "hub",
-                    Scale = scale,
-                })
-            else
-                rawWin = MH:Window({ Title = title, Description = subtitle })
-            end
-
-            local function markGui(sg)
-                pcall(function()
-                    sg:SetAttribute("WuScriptUI", true)
-                    getgenv().WuScript_GUI = sg
-                end)
-            end
-            for _, g in ipairs(wuHost:GetChildren()) do
-                if g:IsA("ScreenGui") and not before[g] then markGui(g) break end
-            end
-            task.spawn(function()
-                local t0 = tick()
-                while tick() - t0 < 2 and not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) do
-                    for _, g in ipairs(wuHost:GetChildren()) do
-                        if g:IsA("ScreenGui") and not before[g] then markGui(g) return end
-                    end
-                    task.wait(0.1)
-                end
-            end)
-
-            local Window = { _raw = rawWin }
-            function Window:Notify(o) notifyMH(o) end
-            function Window:Notification(o) notifyMH(o) end
-            function Window:SetScale(v)
-                pcall(function() if rawWin.SetScale then rawWin:SetScale(tonumber(v) or 1) end end)
-            end
-            function Window:Toggle()
-                pcall(function() if rawWin.Toggle then rawWin:Toggle() end end)
-            end
-            function Window:Destroy()
-                pcall(function() if rawWin.Destroy then rawWin:Destroy() end end)
-            end
-
-            local function makePageFromTab(tab, name)
-                local Page = { Title = name, _tab = tab }
-                function Page:Section(secName)
-                    local sec = tab:AddSection(tostring(secName or "分组"))
-                    return wrapSection(sec)
-                end
-                function Page:AddSection(secName) return Page:Section(secName) end
-                function Page:AddButton(t) return wrapSection(tab):AddButton(t) end
-                function Page:AddToggle(t) return wrapSection(tab):AddToggle(t) end
-                function Page:AddSlider(t) return wrapSection(tab):AddSlider(t) end
-                function Page:AddDropdown(t) return wrapSection(tab):AddDropdown(t) end
-                function Page:AddTextbox(t) return wrapSection(tab):AddTextbox(t) end
-                function Page:AddKeybind(t) return wrapSection(tab):AddKeybind(t) end
-                function Page:AddLabel(t) return wrapSection(tab):AddLabel(t) end
-                return Page
-            end
-
-            function Window:NewPage(pageOpts)
-                pageOpts = pageOpts or {}
-                local name = tostring(pageOpts.Title or "Page")
-                local icon = pageOpts.Icon or "folder"
-                local tab = rawWin:AddTab({ name, icon })
-                return makePageFromTab(tab, name)
-            end
-            function Window:AddTab(name, icon)
-                local tab = rawWin:AddTab({ tostring(name), icon or "folder" })
-                local Page = makePageFromTab(tab, name)
-                function Page:AddSection(secName)
-                    local sec = tab:AddSection(tostring(secName or "分组"))
-                    return wrapSection(sec)
-                end
-                return Page
-            end
-            Window.AddPage = Window.NewPage
-            return Window
-        end
-
-        return Library
-    end
-
-    warn("[巫 script] MugiHub 不可用，回退 Rayfield:", tostring(mugiErr))
-    ------------------------------------------------------------------
-    -- B) 回退 Rayfield（更轻，避免 stack overflow）
-    ------------------------------------------------------------------
-    local rfUrls = {
-        "https://sirius.menu/rayfield",
-        "https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua",
-        "https://cdn.jsdelivr.net/gh/SiriusSoftwareLtd/Rayfield@main/source.lua",
-    }
-    local Rayfield, rfErr = loadFromUrls(rfUrls, "WuScript_Rayfield_Cache.lua", 20000)
-    if not Rayfield or type(Rayfield.CreateWindow) ~= "function" then
-        error("MugiHub: " .. tostring(mugiErr) .. " | Rayfield: " .. tostring(rfErr))
-    end
-    print("[巫 script] 使用 Rayfield（MugiHub 回退）")
+    print("[巫 script] 使用 VisionWare UI")
 
     local Library = {}
-    Library._Rayfield = Rayfield
-    local function notifyRF(opts)
+    Library._VisionWare = VisionWare
+
+    local function notifyVW(opts)
         opts = opts or {}
+        local content = opts.Content or opts.Desc or opts.Text or opts.Message or ""
+        local title = opts.Title or "巫 script"
+        local delay = tonumber(opts.Duration or opts.Delay) or 3
+        -- 优先当前窗口 Notify
+        local win = Library._activeWindow
+        if win and type(win.Notify) == "function" then
+            pcall(function()
+                win:Notify({ Title = tostring(title), Content = tostring(content), Duration = delay })
+            end)
+            return
+        end
         pcall(function()
-            Rayfield:Notify({
-                Title = tostring(opts.Title or "巫 script"),
-                Content = tostring(opts.Content or opts.Desc or opts.Text or ""),
-                Duration = tonumber(opts.Duration or opts.Delay) or 3,
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = tostring(title),
+                Text = tostring(content),
+                Duration = delay,
             })
         end)
     end
+    Library.Notify = notifyVW
 
-    local function wrapSection(tab)
+    local function wrapSection(sec)
         local S = {}
         function S:AddButton(t)
             t = t or {}
             pcall(function()
-                tab:CreateButton({ Name = tostring(t.Name or t.Title or "按钮"), Callback = t.Callback or function() end })
+                sec:CreateButton({
+                    Name = tostring(t.Name or t.Title or "按钮"),
+                    Callback = t.Callback or function() end,
+                })
             end)
             return S
         end
         function S:Button(t) return S:AddButton(t) end
+
         function S:AddToggle(t)
             t = t or {}
             local def = t.Default == true or t.Value == true or t.State == true
             local api
             pcall(function()
-                api = tab:CreateToggle({
+                api = sec:CreateToggle({
                     Name = tostring(t.Name or t.Title or "开关"),
                     CurrentValue = def,
+                    Flag = t.Flag,
                     Callback = t.Callback or function() end,
                 })
             end)
             return api or S
         end
         function S:Toggle(t) return S:AddToggle(t) end
+
         function S:AddSlider(t)
             t = t or {}
-            local minV, maxV = tonumber(t.Min) or 0, tonumber(t.Max) or 100
+            local minV = tonumber(t.Min) or 0
+            local maxV = tonumber(t.Max) or 100
             local defV = tonumber(t.Default or t.Value) or minV
             local api
             pcall(function()
-                api = tab:CreateSlider({
+                api = sec:CreateSlider({
                     Name = tostring(t.Name or t.Title or "滑条"),
                     Range = { minV, maxV },
                     Increment = tonumber(t.Increment or t.Rounding) or 1,
-                    Suffix = tostring(t.Suffix or ""),
                     CurrentValue = defV,
+                    Suffix = tostring(t.Suffix or ""),
+                    Flag = t.Flag,
                     Callback = t.Callback or function() end,
                 })
             end)
             return api or S
         end
         function S:Slider(t) return S:AddSlider(t) end
+
         function S:AddDropdown(t)
             t = t or {}
-            local opts, list = t.Options or t.List or {}, {}
+            local opts = t.Options or t.List or {}
+            local list = {}
             if type(opts) == "table" then
                 for _, v in ipairs(opts) do table.insert(list, tostring(v)) end
-                if #list == 0 then for k, v in pairs(opts) do if v then table.insert(list, tostring(k)) end end end
+                if #list == 0 then
+                    for k, v in pairs(opts) do
+                        if type(k) == "number" then table.insert(list, tostring(v))
+                        elseif v then table.insert(list, tostring(k)) end
+                    end
+                end
             end
             local def = t.Default or t.Value
-            if type(def) == "table" then def = def[1] end
+            if type(def) == "table" then
+                -- multi default
+            elseif def ~= nil then
+                def = tostring(def)
+            else
+                def = list[1]
+            end
             local api
             pcall(function()
-                api = tab:CreateDropdown({
+                api = sec:CreateDropdown({
                     Name = tostring(t.Name or t.Title or "下拉"),
                     Options = list,
-                    CurrentOption = { tostring(def or list[1] or "") },
+                    CurrentOption = def,
                     MultipleOptions = t.Multi and true or false,
-                    Callback = function(opt)
+                    Flag = t.Flag,
+                    Callback = function(choice)
                         local cb = t.Callback or function() end
-                        if type(opt) == "table" and not t.Multi then cb(opt[1] or opt) else cb(opt) end
+                        cb(choice)
                     end,
                 })
             end)
+            if api and not api.Set then
+                api.Set = function(_, v)
+                    pcall(function()
+                        if api.SetValue then api:SetValue(v)
+                        elseif api.Refresh then api:Refresh(list) end
+                    end)
+                end
+            end
             return api or S
         end
         function S:Dropdown(t) return S:AddDropdown(t) end
+
         function S:AddTextbox(t)
             t = t or {}
             local api
             pcall(function()
-                api = tab:CreateInput({
+                api = sec:CreateInput({
                     Name = tostring(t.Name or t.Title or "输入"),
                     PlaceholderText = tostring(t.PlaceholderText or t.Placeholder or ""),
                     CurrentValue = tostring(t.Default or t.Value or ""),
-                    RemoveTextAfterFocusLost = false,
+                    Flag = t.Flag,
                     Callback = t.Callback or function() end,
                 })
             end)
+            if api and not api.Set then
+                api.Set = function(_, v)
+                    pcall(function()
+                        if api.SetValue then api:SetValue(tostring(v or "")) end
+                    end)
+                end
+            end
             return api or S
         end
         function S:AddInput(t) return S:AddTextbox(t) end
         function S:Textbox(t) return S:AddTextbox(t) end
+        function S:Input(t) return S:AddTextbox(t) end
+
         function S:AddKeybind(t)
             t = t or {}
+            local key = t.Default or t.Value or Enum.KeyCode.RightControl
+            local keyStr = key
+            if typeof(key) == "EnumItem" then keyStr = key.Name end
             local api
             pcall(function()
-                api = tab:CreateKeybind({
+                api = sec:CreateKeybind({
                     Name = tostring(t.Name or t.Title or "快捷键"),
-                    CurrentKeybind = t.Default or t.Value or Enum.KeyCode.RightControl,
+                    CurrentKeybind = tostring(keyStr),
+                    HoldToInteract = t.HoldToInteract and true or false,
+                    Flag = t.Flag,
                     Callback = t.Callback or function() end,
                 })
             end)
             return api or S
         end
         function S:Keybind(t) return S:AddKeybind(t) end
+
         function S:AddLabel(t)
             t = t or {}
-            local text = type(t) == "string" and t or tostring(t.Text or t.Name or "")
-            pcall(function() tab:CreateSection(text) end)
+            local text = type(t) == "string" and t or tostring(t.Text or t.Name or t.Title or "")
+            pcall(function()
+                if sec.CreateParagraph then
+                    sec:CreateParagraph({ Title = text, Content = "", Lines = 1 })
+                elseif sec.CreateInfo then
+                    sec:CreateInfo({ Name = text, Value = "" })
+                end
+            end)
             return S
         end
         function S:Label(t) return S:AddLabel(t) end
+
         return S
     end
 
@@ -942,60 +777,140 @@ local okLib, Library = pcall(function()
         opts = opts or {}
         local title = tostring(opts.Title or "巫 script")
         local subtitle = tostring(opts.SubTitle or opts.Subtitle or "by wu")
+        local keybind = opts.ToggleKey or opts.Keybind or Enum.KeyCode.RightControl
+
         local wuHost = (gethui and gethui()) or game:GetService("CoreGui")
         local before = {}
         for _, g in ipairs(wuHost:GetChildren()) do before[g] = true end
 
-        local rawWin = Rayfield:CreateWindow({
-            Name = title .. " · " .. subtitle,
-            LoadingTitle = title,
-            LoadingSubtitle = subtitle,
-            ConfigurationSaving = { Enabled = false },
-            KeySystem = false,
+        local rawWin = VisionWare:CreateWindow({
+            Name = title,
+            Subtitle = string.upper(subtitle),
+            Footer = subtitle .. " · VisionWare",
+            Scale = tonumber(opts.Scale) or 1.35,
+            ToggleKey = keybind,
+            ConfigFolder = "WuScript_VW",
+            Backdrop = false,
+            Snow = false,
         })
+        Library._activeWindow = rawWin
 
         local function markGui(sg)
-            pcall(function() sg:SetAttribute("WuScriptUI", true) getgenv().WuScript_GUI = sg end)
+            pcall(function()
+                sg:SetAttribute("WuScriptUI", true)
+                getgenv().WuScript_GUI = sg
+            end)
         end
         for _, g in ipairs(wuHost:GetChildren()) do
-            if g:IsA("ScreenGui") and not before[g] then markGui(g) break end
+            if (g:IsA("ScreenGui") or g:IsA("Folder")) and not before[g] then
+                if g:IsA("ScreenGui") then markGui(g) break end
+                for _, d in ipairs(g:GetDescendants()) do
+                    if d:IsA("ScreenGui") then markGui(d) break end
+                end
+            end
         end
+        task.spawn(function()
+            local t0 = tick()
+            while tick() - t0 < 2.5 and not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) do
+                for _, g in ipairs(wuHost:GetChildren()) do
+                    if g:IsA("ScreenGui") and not before[g] then
+                        markGui(g)
+                        return
+                    end
+                end
+                task.wait(0.1)
+            end
+        end)
 
         local Window = { _raw = rawWin }
-        function Window:Notify(o) notifyRF(o) end
-        function Window:Notification(o) notifyRF(o) end
-        function Window:SetScale() end
-        function Window:Toggle() end
+        function Window:Notify(o) notifyVW(o) end
+        function Window:Notification(o) notifyVW(o) end
+        function Window:SetScale(v)
+            pcall(function()
+                if rawWin.SetScale then rawWin:SetScale(tonumber(v) or 1) end
+            end)
+        end
+        function Window:Toggle()
+            pcall(function()
+                if rawWin.Toggle then rawWin:Toggle()
+                elseif rawWin.SetVisible then rawWin:SetVisible(false) end
+            end)
+        end
         function Window:Destroy()
-            pcall(function() if Rayfield.Destroy then Rayfield:Destroy() end end)
+            pcall(function()
+                if rawWin.Unload then rawWin:Unload()
+                elseif rawWin.Destroy then rawWin:Destroy() end
+            end)
+        end
+
+        local categoryReady = false
+        local function ensureCategory()
+            if categoryReady then return end
+            categoryReady = true
+            pcall(function() rawWin:CreateCategory("功能") end)
+        end
+
+        -- 每个 Tab 内默认 Section 缓存，避免无 Section 时控件无处可挂
+        local function defaultSection(tab, name)
+            if not tab._wuDefaultSec then
+                local ok, sec = pcall(function()
+                    return tab:CreateSection({ Name = tostring(name or "主页"), Side = "Full" })
+                end)
+                tab._wuDefaultSec = (ok and sec) or nil
+            end
+            return tab._wuDefaultSec
         end
 
         local function makePageFromTab(tab, name)
             local Page = { Title = name, _tab = tab }
             function Page:Section(secName)
-                pcall(function() tab:CreateSection(tostring(secName or "分组")) end)
-                return wrapSection(tab)
+                local ok, sec = pcall(function()
+                    return tab:CreateSection({ Name = tostring(secName or "分组"), Side = "Full" })
+                end)
+                if ok and sec then return wrapSection(sec) end
+                local d = defaultSection(tab, secName)
+                return d and wrapSection(d) or wrapSection(tab)
             end
             function Page:AddSection(secName) return Page:Section(secName) end
-            local proxy = wrapSection(tab)
-            for k, v in pairs(proxy) do if type(v) == "function" then Page[k] = v end end
+
+            -- 直接在 Page 上挂控件 → 落到默认 Section
+            local function withDef(method)
+                return function(_, t)
+                    local d = defaultSection(tab, "主页")
+                    local w = d and wrapSection(d) or wrapSection(tab)
+                    return w[method](w, t)
+                end
+            end
+            Page.AddButton = withDef("AddButton")
+            Page.Button = Page.AddButton
+            Page.AddToggle = withDef("AddToggle")
+            Page.Toggle = Page.AddToggle
+            Page.AddSlider = withDef("AddSlider")
+            Page.Slider = Page.AddSlider
+            Page.AddDropdown = withDef("AddDropdown")
+            Page.Dropdown = Page.AddDropdown
+            Page.AddTextbox = withDef("AddTextbox")
+            Page.AddInput = Page.AddTextbox
+            Page.AddKeybind = withDef("AddKeybind")
+            Page.AddLabel = withDef("AddLabel")
             return Page
         end
 
         function Window:NewPage(pageOpts)
             pageOpts = pageOpts or {}
             local name = tostring(pageOpts.Title or "Page")
-            return makePageFromTab(rawWin:CreateTab(name), name)
+            local icon = pageOpts.Icon or "Box"
+            ensureCategory()
+            local tab = rawWin:CreateTab(name, icon)
+            return makePageFromTab(tab, name)
         end
-        function Window:AddTab(name)
-            local tab = rawWin:CreateTab(tostring(name))
-            local Page = makePageFromTab(tab, name)
-            function Page:AddSection(secName)
-                pcall(function() tab:CreateSection(tostring(secName or "分组")) end)
-                return wrapSection(tab)
-            end
-            return Page
+
+        function Window:AddTab(name, icon)
+            ensureCategory()
+            local tab = rawWin:CreateTab(tostring(name), icon or "Box")
+            return makePageFromTab(tab, name)
         end
+
         Window.AddPage = Window.NewPage
         return Window
     end
@@ -1005,20 +920,17 @@ end)
 
 if not okLib or type(Library) ~= "table" then
     local errMsg = tostring(Library)
-    warn("[巫 script] UI 库失败:", errMsg)
+    warn("[巫 script] VisionWare 失败:", errMsg)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "巫 script",
-            Text = "UI 加载失败: " .. errMsg:sub(1, 90),
+            Text = "VisionWare 加载失败: " .. errMsg:sub(1, 90),
             Duration = 10,
         })
     end)
     pcall(function()
-        if delfile and isfile and isfile("WuScript_Rayfield_Cache.lua") then
-            delfile("WuScript_Rayfield_Cache.lua")
-        end
-        if delfile and isfile and isfile("WuScript_MugiHub_Cache.lua") then
-            delfile("WuScript_MugiHub_Cache.lua")
+        if delfile and isfile and isfile("WuScript_VisionWare_Cache.lua") then
+            delfile("WuScript_VisionWare_Cache.lua")
         end
     end)
     return
