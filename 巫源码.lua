@@ -531,9 +531,94 @@ end)
 
 print("[巫 script] 加载 MugiHub...")
 local okLib, Library = pcall(function()
-    local MugiHub = loadstring(game:HttpGet("https://raw.githubusercontent.com/4MugiHub/MugiHub/refs/heads/main/Mugi"))()
-    assert(type(MugiHub) == "table" and type(MugiHub.Library) == "table", "MugiHub.Library 无效")
+    -- Mugi 约 1.3MB：手机端 raw.githubusercontent 易超时，多镜像 + 本地缓存
+    local MUGI_CACHE = "WuScript_MugiHub_Cache.lua"
+    local urls = {
+        "https://raw.githubusercontent.com/4MugiHub/MugiHub/refs/heads/main/Mugi",
+        "https://raw.githubusercontent.com/4MugiHub/MugiHub/main/Mugi",
+        "https://cdn.jsdelivr.net/gh/4MugiHub/MugiHub@main/Mugi",
+        "https://cdn.jsdelivr.net/gh/4MugiHub/MugiHub@refs/heads/main/Mugi",
+        "https://mirror.ghproxy.com/https://raw.githubusercontent.com/4MugiHub/MugiHub/main/Mugi",
+        "https://ghproxy.net/https://raw.githubusercontent.com/4MugiHub/MugiHub/main/Mugi",
+    }
+    local function httpGet(url)
+        local ok, res = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and type(res) == "string" and #res > 50000 then
+            return res
+        end
+        -- 部分执行器支持 request
+        ok, res = pcall(function()
+            local req = (syn and syn.request) or http_request or request or (http and http.request)
+            if not req then return nil end
+            local r = req({ Url = url, Method = "GET" })
+            if type(r) == "table" then
+                return r.Body or r.body
+            end
+            return nil
+        end)
+        if ok and type(res) == "string" and #res > 50000 then
+            return res
+        end
+        return nil
+    end
+
+    local src = nil
+    -- 1) 本地缓存
+    pcall(function()
+        if isfile and isfile(MUGI_CACHE) and readfile then
+            local c = readfile(MUGI_CACHE)
+            if type(c) == "string" and #c > 50000 then
+                src = c
+                print("[巫 script] 使用本地 MugiHub 缓存")
+            end
+        end
+    end)
+    -- 2) 网络多源
+    if not src then
+        local lastErr = "无可用源"
+        for _, url in ipairs(urls) do
+            print("[巫 script] 尝试下载 MugiHub:", url:sub(1, 60))
+            local body = httpGet(url)
+            if body then
+                src = body
+                pcall(function()
+                    if writefile then writefile(MUGI_CACHE, body) end
+                end)
+                print("[巫 script] MugiHub 下载成功, 字节:", #body)
+                break
+            else
+                lastErr = "下载失败: " .. tostring(url:sub(1, 50))
+            end
+            task.wait(0.15)
+        end
+        if not src then
+            error(lastErr .. "（请检查执行器 HttpGet / 网络是否可访问 GitHub）")
+        end
+    end
+
+    local chunk, compileErr = loadstring(src)
+    assert(chunk, "MugiHub 编译失败: " .. tostring(compileErr))
+    local MugiHub = chunk()
+    assert(type(MugiHub) == "table", "MugiHub 返回值不是 table: " .. type(MugiHub))
     local MH = MugiHub.Library
+    if type(MH) ~= "table" then
+        -- 个别版本直接返回 Library
+        if type(MugiHub.CreateWindow) == "function" or type(MugiHub.Window) == "function" then
+            MH = MugiHub
+        else
+            error("MugiHub.Library 无效（可能是缓存损坏，已尝试删除）")
+        end
+    end
+    -- API 完整性检查（不包 pcall，失败要往外抛）
+    if type(MH.CreateWindow) ~= "function" and type(MH.Window) ~= "function" and type(MH.NewPage) ~= "function" then
+        pcall(function()
+            if delfile and isfile and isfile(MUGI_CACHE) then delfile(MUGI_CACHE) end
+        end)
+        error("MugiHub API 不完整，已清除缓存请重试")
+    end
+
 
     local function notifyMH(opts)
         opts = opts or {}
@@ -857,11 +942,20 @@ local okLib, Library = pcall(function()
 end)
 
 if not okLib or type(Library) ~= "table" then
-    warn("[巫 script] MugiHub 失败:", Library)
+    local errMsg = tostring(Library)
+    warn("[巫 script] MugiHub 失败:", errMsg)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "巫 script", Text = "MugiHub 加载失败", Duration = 8
+            Title = "巫 script",
+            Text = "MugiHub 加载失败: " .. errMsg:sub(1, 80),
+            Duration = 10,
         })
+    end)
+    -- 清除可能损坏的缓存
+    pcall(function()
+        if delfile and isfile and isfile("WuScript_MugiHub_Cache.lua") then
+            delfile("WuScript_MugiHub_Cache.lua")
+        end
     end)
     return
 end
