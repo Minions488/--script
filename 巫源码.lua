@@ -74,17 +74,17 @@ local WU_UI_CFG_FILE = "WuScript_UIConfig.txt" -- 缩放/字体大小/粗细 记
 
 -- UI 配置记忆（与卡密同样用 writefile/readfile）
 local function WuLoadUIConfig()
+    -- 不再记忆/恢复 UI 缩放，每次启动固定为 1；仅保留字体配置
     local cfg = { scale = 1, fontScale = 1, fontWeight = "Bold" }
     pcall(function()
         if isfile and isfile(WU_UI_CFG_FILE) and readfile then
             local raw = tostring(readfile(WU_UI_CFG_FILE) or "")
             local a, b, c = raw:match("^([%d%.]+)|([%d%.]+)|([%w]+)")
-            if a then cfg.scale = math.clamp(tonumber(a) or 1, 0.5, 1.5) end
             if b then cfg.fontScale = math.clamp(tonumber(b) or 1, 0.8, 1.4) end
             if c and c ~= "" then cfg.fontWeight = c end
         end
     end)
-    getgenv().WuUIScale = cfg.scale
+    getgenv().WuUIScale = 1
     getgenv().WuFontScale = cfg.fontScale
     getgenv().WuFontWeight = cfg.fontWeight
     return cfg
@@ -93,10 +93,10 @@ end
 local function WuSaveUIConfig()
     pcall(function()
         if not writefile then return end
-        local scale = tonumber(getgenv().WuUIScale) or 1
+        -- 缩放不持久化，固定写 1
         local fs = tonumber(getgenv().WuFontScale) or 1
         local fw = tostring(getgenv().WuFontWeight or "Bold")
-        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", scale, fs, fw))
+        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", 1, fs, fw))
     end)
 end
 
@@ -613,6 +613,10 @@ local okLib, Library = pcall(function()
         end)
     end
     Library.Notify = notifyVW
+    Library.Notification = function(_, o)
+        if type(o) ~= "table" then o = { Content = tostring(o) } end
+        notifyVW(o)
+    end
 
     local function wrapSection(sec)
         local S = {}
@@ -649,12 +653,19 @@ local okLib, Library = pcall(function()
             local minV = tonumber(t.Min) or 0
             local maxV = tonumber(t.Max) or 100
             local defV = tonumber(t.Default or t.Value) or minV
+            local inc = tonumber(t.Increment or t.Rounding)
+            if not inc then
+                local span = math.abs(maxV - minV)
+                if span <= 1 then inc = 0.01
+                elseif span <= 5 then inc = 0.1
+                else inc = 1 end
+            end
             local api
             pcall(function()
                 api = sec:CreateSlider({
                     Name = tostring(t.Name or t.Title or "滑条"),
                     Range = { minV, maxV },
-                    Increment = tonumber(t.Increment or t.Rounding) or 1,
+                    Increment = inc,
                     CurrentValue = defV,
                     Suffix = tostring(t.Suffix or ""),
                     Flag = t.Flag,
@@ -720,6 +731,7 @@ local okLib, Library = pcall(function()
                     Name = tostring(t.Name or t.Title or "输入"),
                     PlaceholderText = tostring(t.PlaceholderText or t.Placeholder or ""),
                     CurrentValue = tostring(t.Default or t.Value or ""),
+                    RemoveTextAfterFocusLost = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
                     Flag = t.Flag,
                     Callback = t.Callback or function() end,
                 })
@@ -759,14 +771,24 @@ local okLib, Library = pcall(function()
         function S:AddLabel(t)
             t = t or {}
             local text = type(t) == "string" and t or tostring(t.Text or t.Name or t.Title or "")
+            local api
             pcall(function()
-                if sec.CreateParagraph then
-                    sec:CreateParagraph({ Title = text, Content = "", Lines = 1 })
+                if sec.CreateLabel then
+                    api = sec:CreateLabel({ Name = text, Text = text })
                 elseif sec.CreateInfo then
-                    sec:CreateInfo({ Name = text, Value = "" })
+                    api = sec:CreateInfo({ Name = text, Value = "" })
+                elseif sec.CreateParagraph then
+                    api = sec:CreateParagraph({ Title = text, Content = "", Lines = 1 })
                 end
             end)
-            return S
+            if type(api) == "table" and type(api.Set) ~= "function" then
+                function api:Set(v)
+                    pcall(function()
+                        if self.SetValue then self:SetValue(tostring(v or "")) end
+                    end)
+                end
+            end
+            return api or S
         end
         function S:Label(t) return S:AddLabel(t) end
 
@@ -803,26 +825,20 @@ local okLib, Library = pcall(function()
                 getgenv().WuScript_GUI = sg
             end)
         end
-        for _, g in ipairs(wuHost:GetChildren()) do
-            if (g:IsA("ScreenGui") or g:IsA("Folder")) and not before[g] then
-                if g:IsA("ScreenGui") then markGui(g) break end
-                for _, d in ipairs(g:GetDescendants()) do
-                    if d:IsA("ScreenGui") then markGui(d) break end
+        -- VisionWare 直接暴露 Screen，优先使用
+        pcall(function()
+            if rawWin.Screen and rawWin.Screen:IsA("ScreenGui") then
+                markGui(rawWin.Screen)
+            end
+        end)
+        if not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) then
+            for _, g in ipairs(wuHost:GetChildren()) do
+                if g:IsA("ScreenGui") and not before[g] then
+                    markGui(g)
+                    break
                 end
             end
         end
-        task.spawn(function()
-            local t0 = tick()
-            while tick() - t0 < 2.5 and not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) do
-                for _, g in ipairs(wuHost:GetChildren()) do
-                    if g:IsA("ScreenGui") and not before[g] then
-                        markGui(g)
-                        return
-                    end
-                end
-                task.wait(0.1)
-            end
-        end)
 
         local Window = { _raw = rawWin }
         function Window:Notify(o) notifyVW(o) end
@@ -838,7 +854,7 @@ local okLib, Library = pcall(function()
                 end
             end)
             getgenv().WuUIScale = v
-            pcall(function() if WuSaveUIConfig then WuSaveUIConfig() end end)
+            -- 仅当前会话生效，不写入配置
         end
         function Window:Toggle()
             pcall(function()
@@ -866,13 +882,16 @@ local okLib, Library = pcall(function()
             local Page = { Title = name, _tab = tab, _lastSec = nil, _sideFlip = false }
 
             local function createSec(secName, side)
-                Page._sideFlip = not Page._sideFlip
-                side = side or (Page._sideFlip and "Left" or "Right")
+                -- 不强制左右：让 VisionWare 自动放到较短一列；长标题可用 Full
+                local name = tostring(secName or "分组")
+                if not side then
+                    local n = utf8 and utf8.len(name) or #name
+                    if n and n >= 8 then side = "Full" end
+                end
                 local ok, sec = pcall(function()
-                    return tab:CreateSection({
-                        Name = tostring(secName or "分组"),
-                        Side = side,
-                    })
+                    local opts = { Name = name }
+                    if side then opts.Side = side end
+                    return tab:CreateSection(opts)
                 end)
                 if ok and sec then
                     Page._lastSec = sec
@@ -972,18 +991,35 @@ local Window = Library:Window({
     Title = "巫 script",
     SubTitle = "by wu",
     ToggleKey = Enum.KeyCode.RightControl,
-    Scale = 1.0,
+    Scale = 1.5,
     AutoScale = false,
 })
 
 local function notify(title, desc, dur)
-    pcall(function()
-        Library:Notification({
-            Title = tostring(title or "提示"),
-            Desc = tostring(desc or ""),
-            Duration = tonumber(dur) or 2,
-        })
-    end)
+    local opts = {
+        Title = tostring(title or "提示"),
+        Content = tostring(desc or ""),
+        Desc = tostring(desc or ""),
+        Duration = tonumber(dur) or 2,
+    }
+    -- VisionWare: Window:Notify；适配层: Library.Notify
+    if type(Library.Notify) == "function" then
+        pcall(Library.Notify, Library, opts)
+    elseif type(Library.Notification) == "function" then
+        pcall(Library.Notification, Library, opts)
+    elseif Window and type(Window.Notify) == "function" then
+        pcall(Window.Notify, Window, opts)
+    else
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = opts.Title, Text = opts.Content, Duration = opts.Duration,
+            })
+        end)
+    end
+end
+Library.Notification = Library.Notify or function(_, o)
+    if type(o) ~= "table" then o = { Content = tostring(o) } end
+    notify(o.Title, o.Content or o.Desc or o.Text, o.Duration or o.Delay)
 end
 
 do
@@ -1013,13 +1049,25 @@ do
         end
         function sec:AddSlider(t)
             t = t or {}
+            local minV = tonumber(t.Min) or 0
+            local maxV = tonumber(t.Max) or 100
+            local defV = tonumber(t.Default or t.Value) or minV
+            local inc = tonumber(t.Increment or t.Rounding)
+            if not inc then
+                -- 小数范围自动用更细步进，避免 0~0.5 被当成整数锁死在 0
+                local span = math.abs(maxV - minV)
+                if span <= 1 then inc = 0.01
+                elseif span <= 5 then inc = 0.1
+                else inc = 1 end
+            end
             pcall(function()
                 page:Slider({
                     Title = t.Name or t.Title or "滑条",
-                    Min = t.Min or 0,
-                    Max = t.Max or 100,
-                    Value = t.Default or t.Value or t.Min or 0,
-                    Rounding = 0,
+                    Min = minV,
+                    Max = maxV,
+                    Value = defV,
+                    Increment = inc,
+                    Rounding = inc < 1 and 2 or 0,
                     Suffix = t.Suffix or "",
                     Callback = t.Callback or function() end,
                 })
@@ -7209,7 +7257,7 @@ task.spawn(function()
         local SettingsPage = _NP(Window, {
             Title = "设置",
             Desc = "界面 · 主题 · 字体",
-            Icon = "settings",
+            Icon = "Gear",
         })
 
         SettingsPage:Section("界面")
@@ -7286,11 +7334,12 @@ task.spawn(function()
                 local origin = inst:GetAttribute("WuBaseTextSize")
                 if not origin then
                     origin = tonumber(inst.TextSize) or 8
-                    -- VisionWare 默认字极小(约6~9)，抬一个基础值再缩放
-                    if origin < 11 then origin = 12 end
+                    -- 保留 VisionWare 原始字号作基准，避免强行 12 撑破固定行高
                     inst:SetAttribute("WuBaseTextSize", origin)
                 end
-                inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 11, 42)
+                -- 仅轻度放大；上限避免溢出 Section 行高
+                local size = origin * math.clamp(mul, 0.9, 1.35)
+                inst.TextSize = math.clamp(size, 6, 16)
                 pcall(function() inst.FontFace = face end)
             end
         end
