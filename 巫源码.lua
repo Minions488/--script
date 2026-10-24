@@ -1,4 +1,4 @@
---[[ 巫 script · BreezeUI · 完整功能移植 ]]
+--[[ 巫 script · VeloraUI · 完整功能移植 ]]
 print("[巫 script] 启动")
 pcall(function()
     if getgenv().WuScript_GUI then getgenv().WuScript_GUI:Destroy() end
@@ -529,460 +529,518 @@ end)
 
 -- 加载动画已删除（保持极简）
 
-print("[巫 script] 加载 UI 库 (VisionWare)...")
--- VisionWare-UI：https://github.com/octobertm6/VisionWare-UI （约80KB，未混淆）
+print("[巫 script] 加载 UI 库 (VeloraUI)...")
+-- VeloraUI: https://github.com/kismile36/VeloraUI
+-- 通过兼容层保留本脚本现有的 AddTab/AddSection/AddToggle 等调用，尽量不改动功能回调。
 local okLib, Library = pcall(function()
-    local CACHE = "WuScript_VisionWare_Cache.lua"
+    local CACHE = "WuScript_Velora_Cache.lua"
     local urls = {
-        "https://raw.githubusercontent.com/octobertm6/VisionWare-UI/main/VisionWare.lua",
-        "https://raw.githubusercontent.com/octobertm6/VisionWare-UI/refs/heads/main/VisionWare.lua",
-        "https://cdn.jsdelivr.net/gh/octobertm6/VisionWare-UI@main/VisionWare.lua",
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/main/Velora.lua",
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/refs/heads/main/Velora.lua",
+        "https://cdn.jsdelivr.net/gh/kismile36/VeloraUI@main/Velora.lua",
     }
+
     local function httpGet(url)
-        local ok, res = pcall(function() return game:HttpGet(url) end)
-        if ok and type(res) == "string" and #res > 10000 then return res end
+        local ok, res = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and type(res) == "string" and #res > 10000 then
+            return res
+        end
         ok, res = pcall(function()
             local req = (syn and syn.request) or http_request or request or (http and http.request)
             if not req then return nil end
             local r = req({ Url = url, Method = "GET" })
-            if type(r) == "table" then return r.Body or r.body end
+            if type(r) == "table" then
+                local code = tonumber(r.StatusCode or r.Status)
+                if code and code >= 400 then return nil end
+                return r.Body or r.body
+            end
             return nil
         end)
-        if ok and type(res) == "string" and #res > 10000 then return res end
+        if ok and type(res) == "string" and #res > 10000 then
+            return res
+        end
         return nil
     end
 
     local src
     pcall(function()
         if isfile and isfile(CACHE) and readfile then
-            local c = readfile(CACHE)
-            if type(c) == "string" and #c > 10000 and c:find("CreateWindow", 1, true) then
-                src = c
-                print("[巫 script] 使用 VisionWare 本地缓存")
+            local cached = readfile(CACHE)
+            if type(cached) == "string"
+                and #cached > 10000
+                and cached:find("function Velora.new", 1, true)
+            then
+                src = cached
+                print("[巫 script] 使用 VeloraUI 本地缓存")
             end
         end
     end)
+
     if not src then
-        local last = "无可用源"
+        local lastError = "无可用下载源"
         for _, url in ipairs(urls) do
-            print("[巫 script] 下载 VisionWare:", tostring(url):sub(1, 72))
+            print("[巫 script] 下载 VeloraUI:", tostring(url):sub(1, 78))
             local body = httpGet(url)
-            if body and body:find("CreateWindow", 1, true) then
+            if body and body:find("function Velora.new", 1, true) then
                 src = body
-                pcall(function() if writefile then writefile(CACHE, body) end end)
-                print("[巫 script] VisionWare 下载成功, 字节:", #body)
+                pcall(function()
+                    if writefile then writefile(CACHE, body) end
+                end)
+                print("[巫 script] VeloraUI 下载成功，字节:", #body)
                 break
             end
-            last = "下载失败"
-            task.wait(0.08)
+            lastError = "下载失败或内容无效"
+            task.wait(0.12)
         end
-        if not src then error("VisionWare " .. last) end
+        if not src then error("VeloraUI " .. lastError) end
     end
 
-    local chunk, cerr = loadstring(src)
-    assert(chunk, "VisionWare 编译失败: " .. tostring(cerr))
-    local okRun, VisionWare = pcall(chunk)
-    assert(okRun, "VisionWare 执行失败: " .. tostring(VisionWare))
-    assert(type(VisionWare) == "table" and type(VisionWare.CreateWindow) == "function",
-        "VisionWare.CreateWindow 无效")
+    local chunk, compileError = loadstring(src)
+    assert(chunk, "VeloraUI 编译失败: " .. tostring(compileError))
+    local runOk, Velora = pcall(chunk)
+    assert(runOk, "VeloraUI 执行失败: " .. tostring(Velora))
+    assert(type(Velora) == "table" and type(Velora.new) == "function",
+        "Velora.new 无效")
 
-    print("[巫 script] 使用 VisionWare UI")
+    local UI = Velora.new({
+        Name = "WuScript_Velora",
+        Parent = "Auto",
+        Theme = "Midnight",
+        Accent = Color3.fromRGB(105, 125, 255),
+        DestroyExisting = true,
+        IgnoreGuiInset = false,
+        ToggleKey = Enum.KeyCode.RightControl,
+        Mobile = true,
+        OpenButton = {
+            Title = "巫 script",
+            Icon = "巫",
+            Draggable = true,
+            OnlyIcon = false,
+            OnlyMobile = false,
+        },
+        Config = {
+            Folder = "WuScript_Velora",
+            File = "settings",
+            AutoSave = false,
+        },
+    })
 
-    local Library = {}
-    Library._VisionWare = VisionWare
+    local rawWindow = UI:CreateWindow({
+        Title = "巫 script",
+        Subtitle = "by wu",
+        Icon = "巫",
+        Size = UDim2.fromOffset(760, 560),
+        Resizable = true,
+        Search = true,
+        ShowUser = false,
+        CloseBehavior = "Destroy",
+        ConfirmOnClose = true,
+        CloseConfirmTitle = "是否关闭巫 script？",
+        CloseConfirmContent = "关闭后会销毁当前界面；可重新执行脚本再次打开。",
+        CloseConfirmCancel = "取消",
+        CloseConfirmConfirm = "关闭",
+    })
 
-    local function notifyVW(opts)
+    local Library = { _Velora = Velora, _UI = UI, _rawWindow = rawWindow }
+
+    local function notifyVelora(opts)
         opts = opts or {}
-        local content = opts.Content or opts.Desc or opts.Text or opts.Message or ""
-        local title = opts.Title or "巫 script"
-        local delay = tonumber(opts.Duration or opts.Delay) or 3
-        -- 优先当前窗口 Notify
-        local win = Library._activeWindow
-        if win and type(win.Notify) == "function" then
-            pcall(function()
-                win:Notify({ Title = tostring(title), Content = tostring(content), Duration = delay })
-            end)
-            return
+        if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
+        local title = tostring(opts.Title or "巫 script")
+        local content = tostring(opts.Content or opts.Desc or opts.Text or opts.Message or "")
+        local kind = opts.Type or opts.NotificationType
+        if not kind then
+            local low = string.lower(title .. " " .. content)
+            if low:find("失败", 1, true) or low:find("error", 1, true) then
+                kind = "Error"
+            elseif low:find("成功", 1, true) or low:find("完成", 1, true) then
+                kind = "Success"
+            elseif low:find("警告", 1, true) or low:find("注意", 1, true) then
+                kind = "Warning"
+            else
+                kind = "Info"
+            end
         end
-        pcall(function()
-            game:GetService("StarterGui"):SetCore("SendNotification", {
-                Title = tostring(title),
-                Text = tostring(content),
-                Duration = delay,
-            })
-        end)
-    end
-    Library.Notify = notifyVW
-    Library.Notification = function(_, o)
-        if type(o) ~= "table" then o = { Content = tostring(o) } end
-        notifyVW(o)
+        return UI:Notify({
+            Title = title,
+            Content = content,
+            Type = kind,
+            Duration = tonumber(opts.Duration or opts.Delay) or 3,
+        })
     end
 
-    local function wrapSection(sec)
-        local S = {}
+    function Library:Notify(opts)
+        return notifyVelora(opts)
+    end
+    Library.Notification = Library.Notify
+
+    local function callControl(rawSection, method, options)
+        local ok, control = pcall(function()
+            return rawSection[method](rawSection, options)
+        end)
+        if ok and control then return control end
+        warn("[巫][VeloraUI] 控件创建失败:", method, control)
+        return nil
+    end
+
+    local function asList(value)
+        local result = {}
+        if type(value) ~= "table" then return result end
+        for _, item in ipairs(value) do
+            table.insert(result, tostring(item))
+        end
+        if #result == 0 then
+            local numeric = {}
+            for k, item in pairs(value) do
+                if type(k) == "number" then
+                    table.insert(numeric, { k = k, v = tostring(item) })
+                elseif item then
+                    table.insert(result, tostring(k))
+                end
+            end
+            table.sort(numeric, function(a, b) return a.k < b.k end)
+            for _, item in ipairs(numeric) do table.insert(result, item.v) end
+        end
+        return result
+    end
+
+    local function wrapSection(rawSection)
+        local S = { _raw = rawSection, Options = {} }
+
         function S:AddButton(t)
             t = t or {}
-            pcall(function()
-                sec:CreateButton({
-                    Name = tostring(t.Name or t.Title or "按钮"),
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return S
+            return callControl(rawSection, "AddButton", {
+                Title = tostring(t.Name or t.Title or "按钮"),
+                Description = tostring(t.Description or t.Desc or ""),
+                ActionText = tostring(t.Text or t.ActionText or "执行"),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Variant = t.Variant,
+                Danger = t.Danger == true,
+            }) or S
         end
-        function S:Button(t) return S:AddButton(t) end
+        S.Button = S.AddButton
 
         function S:AddToggle(t)
             t = t or {}
-            local def = t.Default == true or t.Value == true or t.State == true
-            local api
-            pcall(function()
-                api = sec:CreateToggle({
-                    Name = tostring(t.Name or t.Title or "开关"),
-                    CurrentValue = def,
-                    Flag = t.Flag,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return api or S
+            return callControl(rawSection, "AddToggle", {
+                Title = tostring(t.Name or t.Title or "开关"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Default = t.Default == true or t.Value == true or t.State == true,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
         end
-        function S:Toggle(t) return S:AddToggle(t) end
+        S.Toggle = S.AddToggle
 
         function S:AddSlider(t)
             t = t or {}
             local minV = tonumber(t.Min) or 0
             local maxV = tonumber(t.Max) or 100
-            local defV = tonumber(t.Default or t.Value) or minV
-            local inc = tonumber(t.Increment or t.Rounding)
-            if not inc then
-                local span = math.abs(maxV - minV)
-                if span <= 1 then inc = 0.01
-                elseif span <= 5 then inc = 0.1
-                else inc = 1 end
+            local defaultV = tonumber(t.Default)
+            if defaultV == nil then defaultV = tonumber(t.Value) end
+            if defaultV == nil then defaultV = minV end
+            -- Step/Increment 是实际步进；旧参数 Rounding 表示小数位数（0 即整数）。
+            local step = tonumber(t.Step or t.Increment)
+            if step == nil then
+                local rounding = tonumber(t.Rounding)
+                if rounding ~= nil then
+                    step = 10 ^ (-math.clamp(rounding, 0, 6))
+                else
+                    local span = math.abs(maxV - minV)
+                    if span <= 1 then step = 0.01
+                    elseif span <= 5 then step = 0.1
+                    else step = 1 end
+                end
             end
-            local api
-            pcall(function()
-                api = sec:CreateSlider({
-                    Name = tostring(t.Name or t.Title or "滑条"),
-                    Range = { minV, maxV },
-                    Increment = inc,
-                    CurrentValue = defV,
-                    Suffix = tostring(t.Suffix or ""),
-                    Flag = t.Flag,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return api or S
+            if step <= 0 then step = 1 end
+            return callControl(rawSection, "AddSlider", {
+                Title = tostring(t.Name or t.Title or "滑条"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Min = minV,
+                Max = maxV,
+                Default = defaultV,
+                Step = step,
+                Suffix = tostring(t.Suffix or ""),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
         end
-        function S:Slider(t) return S:AddSlider(t) end
+        S.Slider = S.AddSlider
 
         function S:AddDropdown(t)
             t = t or {}
-            local opts = t.Options or t.List or {}
-            local list = {}
-            if type(opts) == "table" then
-                for _, v in ipairs(opts) do table.insert(list, tostring(v)) end
-                if #list == 0 then
-                    for k, v in pairs(opts) do
-                        if type(k) == "number" then table.insert(list, tostring(v))
-                        elseif v then table.insert(list, tostring(k)) end
+            local list = asList(t.Options or t.List or t.Values or {})
+            local multi = t.Multi == true or t.MultipleOptions == true
+            local emptyList = #list == 0
+            if emptyList then list = { "（暂无选项）" } end
+
+            local defaultValue = t.Default
+            if defaultValue == nil then defaultValue = t.Value end
+            if multi then
+                if type(defaultValue) ~= "table" then
+                    defaultValue = defaultValue ~= nil and { tostring(defaultValue) } or {}
+                else
+                    local filtered, allowed = {}, {}
+                    for _, option in ipairs(list) do allowed[option] = true end
+                    for _, selected in ipairs(defaultValue) do
+                        selected = tostring(selected)
+                        if allowed[selected] then table.insert(filtered, selected) end
                     end
+                    defaultValue = filtered
                 end
-            end
-            local def = t.Default or t.Value
-            if type(def) == "table" then
-                -- multi default
-            elseif def ~= nil then
-                def = tostring(def)
             else
-                def = list[1]
-            end
-            local api
-            pcall(function()
-                api = sec:CreateDropdown({
-                    Name = tostring(t.Name or t.Title or "下拉"),
-                    Options = list,
-                    CurrentOption = def,
-                    MultipleOptions = t.Multi and true or false,
-                    Flag = t.Flag,
-                    Callback = function(choice)
-                        local cb = t.Callback or function() end
-                        cb(choice)
-                    end,
-                })
-            end)
-            if api and not api.Set then
-                api.Set = function(_, v)
-                    pcall(function()
-                        if api.SetValue then api:SetValue(v)
-                        elseif api.Refresh then api:Refresh(list) end
-                    end)
+                if type(defaultValue) == "table" then defaultValue = defaultValue[1] end
+                if defaultValue ~= nil then defaultValue = tostring(defaultValue) end
+                local found = false
+                for _, option in ipairs(list) do
+                    if option == defaultValue then found = true break end
                 end
+                if not found then defaultValue = nil end
             end
-            return api or S
+
+            local api = callControl(rawSection, "AddDropdown", {
+                Title = tostring(t.Name or t.Title or "下拉选择"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Flag = t.Flag,
+                Options = list,
+                Default = defaultValue,
+                Multi = multi,
+                AllowNone = true,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            })
+            if not api then return S end
+            api.Options = asList(t.Options or t.List or t.Values or {})
+            if emptyList and type(api.SetDisabled) == "function" then
+                pcall(function() api:SetDisabled(true, "暂无可用选项") end)
+            end
+
+            -- 兼容旧源码里的 SetOptions/Refresh 接口；空结果时用禁用占位项，避免误选。
+            local function setOptions(_, newValues)
+                local values = asList(newValues or {})
+                api.Options = values
+                if #values == 0 then
+                    pcall(function()
+                        api:SetValues({ "（无匹配项）" }, false)
+                        api:SetDisabled(true, "没有匹配项")
+                    end)
+                    return true
+                end
+                local ok = pcall(function()
+                    api:SetDisabled(false)
+                    api:SetValues(values, true)
+                end)
+                return ok
+            end
+            api.SetOptions = setOptions
+            api.Refresh = setOptions
+            return api
         end
-        function S:Dropdown(t) return S:AddDropdown(t) end
+        S.Dropdown = S.AddDropdown
 
         function S:AddTextbox(t)
             t = t or {}
-            local api
-            pcall(function()
-                api = sec:CreateInput({
-                    Name = tostring(t.Name or t.Title or "输入"),
-                    PlaceholderText = tostring(t.PlaceholderText or t.Placeholder or ""),
-                    CurrentValue = tostring(t.Default or t.Value or ""),
-                    RemoveTextAfterFocusLost = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
-                    Flag = t.Flag,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            if api and not api.Set then
-                api.Set = function(_, v)
-                    pcall(function()
-                        if api.SetValue then api:SetValue(tostring(v or "")) end
-                    end)
-                end
-            end
-            return api or S
+            return callControl(rawSection, "AddInput", {
+                Title = tostring(t.Name or t.Title or "输入"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Placeholder = tostring(t.PlaceholderText or t.Placeholder or ""),
+                Default = tostring(t.Default or t.Value or ""),
+                ClearOnSubmit = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
+                Flag = t.Flag,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or { Set = function() end }
         end
-        function S:AddInput(t) return S:AddTextbox(t) end
-        function S:Textbox(t) return S:AddTextbox(t) end
-        function S:Input(t) return S:AddTextbox(t) end
+        S.AddInput = S.AddTextbox
+        S.Input = S.AddTextbox
+        S.Textbox = S.AddTextbox
 
         function S:AddKeybind(t)
             t = t or {}
             local key = t.Default or t.Value or Enum.KeyCode.RightControl
-            local keyStr = key
-            if typeof(key) == "EnumItem" then keyStr = key.Name end
-            local api
-            pcall(function()
-                api = sec:CreateKeybind({
-                    Name = tostring(t.Name or t.Title or "快捷键"),
-                    CurrentKeybind = tostring(keyStr),
-                    HoldToInteract = t.HoldToInteract and true or false,
-                    Flag = t.Flag,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return api or S
+            -- Velora 原生支持 EnumItem 与键名字符串，保留 EnumItem 可避免按键枚举丢失。
+            return callControl(rawSection, "AddKeybind", {
+                Title = tostring(t.Name or t.Title or "快捷键"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Default = key,
+                Mode = t.HoldToInteract and "Hold" or (t.Mode or "Press"),
+                Flag = t.Flag,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or S
         end
-        function S:Keybind(t) return S:AddKeybind(t) end
+        S.Keybind = S.AddKeybind
 
         function S:AddLabel(t)
-            t = t or {}
-            local text = type(t) == "string" and t or tostring(t.Text or t.Name or t.Title or "")
-            local api
-            pcall(function()
-                if sec.CreateLabel then
-                    api = sec:CreateLabel({ Name = text, Text = text })
-                elseif sec.CreateInfo then
-                    api = sec:CreateInfo({ Name = text, Value = "" })
-                elseif sec.CreateParagraph then
-                    api = sec:CreateParagraph({ Title = text, Content = "", Lines = 1 })
-                end
-            end)
-            if type(api) == "table" and type(api.Set) ~= "function" then
-                function api:Set(v)
-                    pcall(function()
-                        if self.SetValue then self:SetValue(tostring(v or "")) end
-                    end)
-                end
-            end
-            return api or S
+            local value = type(t) == "string" and t or tostring((t and (t.Text or t.Name or t.Title)) or "")
+            return callControl(rawSection, "AddLabel", { Text = value, Title = value }) or S
         end
-        function S:Label(t) return S:AddLabel(t) end
+        S.Label = S.AddLabel
 
+        function S:AddParagraph(t)
+            t = t or {}
+            return callControl(rawSection, "AddParagraph", {
+                Title = tostring(t.Title or t.Name or "说明"),
+                Content = tostring(t.Content or t.Text or t.Description or ""),
+            }) or S
+        end
+        function S:AddDivider(t)
+            return callControl(rawSection, "AddDivider", type(t) == "table" and t or {}) or S
+        end
+        function S:AddSpacer(t)
+            return callControl(rawSection, "AddSpacer", t or 8) or S
+        end
         return S
     end
 
-    function Library:Window(opts)
-        opts = opts or {}
-        local title = tostring(opts.Title or "巫 script")
-        local subtitle = tostring(opts.SubTitle or opts.Subtitle or "by wu")
-        local keybind = opts.ToggleKey or opts.Keybind or Enum.KeyCode.RightControl
+    local Window = {
+        _ui = UI,
+        _raw = rawWindow,
+        ScreenGui = UI.ScreenGui,
+    }
 
-        local wuHost = (gethui and gethui()) or game:GetService("CoreGui")
-        local before = {}
-        for _, g in ipairs(wuHost:GetChildren()) do before[g] = true end
-
-        local savedScale = tonumber(getgenv().WuUIScale) or 1
-        local vwScale = math.clamp(0.9 + savedScale * 0.9, 1.2, 2.4)
-        local rawWin = VisionWare:CreateWindow({
-            Name = title,
-            Subtitle = string.upper(subtitle),
-            Footer = subtitle .. " · VisionWare",
-            Scale = tonumber(opts.Scale) or vwScale,
-            ToggleKey = keybind,
-            ConfigFolder = "WuScript_VW",
-            Backdrop = false,
-            Snow = false,
-        })
-        Library._activeWindow = rawWin
-
-        local function markGui(sg)
-            pcall(function()
-                sg:SetAttribute("WuScriptUI", true)
-                getgenv().WuScript_GUI = sg
-            end)
+    pcall(function()
+        if UI.ScreenGui and UI.ScreenGui:IsA("ScreenGui") then
+            UI.ScreenGui:SetAttribute("WuScriptUI", true)
+            getgenv().WuScript_GUI = UI.ScreenGui
         end
-        -- VisionWare 直接暴露 Screen，优先使用
-        pcall(function()
-            if rawWin.Screen and rawWin.Screen:IsA("ScreenGui") then
-                markGui(rawWin.Screen)
+    end)
+
+    local function makePage(rawTab, name)
+        local Page = { Title = tostring(name or "页面"), _tab = rawTab, _lastSection = nil }
+        local function createSection(sectionOptions, side)
+            local opts
+            if type(sectionOptions) == "table" then
+                opts = {}
+                for k, v in pairs(sectionOptions) do opts[k] = v end
+            else
+                opts = { Title = tostring(sectionOptions or "分组"), Side = side }
             end
-        end)
-        if not (getgenv().WuScript_GUI and getgenv().WuScript_GUI.Parent) then
-            for _, g in ipairs(wuHost:GetChildren()) do
-                if g:IsA("ScreenGui") and not before[g] then
-                    markGui(g)
-                    break
-                end
-            end
-        end
-
-        local Window = { _raw = rawWin }
-        function Window:Notify(o) notifyVW(o) end
-        function Window:Notification(o) notifyVW(o) end
-        function Window:SetScale(v)
-            v = tonumber(v) or 1
-            -- VisionWare 内置 UIScale（官方范围约 0.5~4，默认 1.7）
-            pcall(function()
-                if rawWin.SetScale then
-                    -- 巫设置里 0.5~1.5 → 映射到 VisionWare 1.0~2.2
-                    local vw = 0.8 + v * 1.0
-                    rawWin:SetScale(math.clamp(vw, 0.8, 2.8))
-                end
+            opts.Title = opts.Title or opts.Name or "分组"
+            opts.Description = opts.Description or opts.Desc or ""
+            local ok, rawSectionOrError = pcall(function()
+                return rawTab:AddSection(opts)
             end)
-            getgenv().WuUIScale = v
-            -- 仅当前会话生效，不写入配置
-        end
-        function Window:Toggle()
-            pcall(function()
-                if rawWin.Toggle then rawWin:Toggle()
-                elseif rawWin.SetVisible then rawWin:SetVisible(false) end
-            end)
-        end
-        function Window:Destroy()
-            pcall(function()
-                if rawWin.Unload then rawWin:Unload()
-                elseif rawWin.Destroy then rawWin:Destroy() end
-            end)
-        end
-
-        local categoryReady = false
-        local function ensureCategory()
-            if categoryReady then return end
-            categoryReady = true
-            pcall(function() rawWin:CreateCategory("功能") end)
-        end
-
-        -- 关键：巫源码大量写法是 Page:Section("标题") 后紧跟 Page:Slider(...)
-        -- 必须把控件挂到「最近一次 Section」，不能丢到空白默认区
-        local function makePageFromTab(tab, name)
-            local Page = { Title = name, _tab = tab, _lastSec = nil, _sideFlip = false }
-
-            local function createSec(secName, side)
-                -- 不强制左右：让 VisionWare 自动放到较短一列；长标题可用 Full
-                local name = tostring(secName or "分组")
-                if not side then
-                    local n = utf8 and utf8.len(name) or #name
-                    if n and n >= 8 then side = "Full" end
-                end
-                local ok, sec = pcall(function()
-                    local opts = { Name = name }
-                    if side then opts.Side = side end
-                    return tab:CreateSection(opts)
-                end)
-                if ok and sec then
-                    Page._lastSec = sec
-                    return sec
-                end
-                warn("[巫][VisionWare] CreateSection 失败:", secName, sec)
+            if not ok or not rawSectionOrError then
+                warn("[巫][VeloraUI] 创建分组失败:", opts.Title, rawSectionOrError)
                 return nil
             end
+            local wrapped = wrapSection(rawSectionOrError)
+            Page._lastSection = wrapped
+            return wrapped
+        end
 
-            local function currentSec()
-                if Page._lastSec then return Page._lastSec end
-                return createSec("主页", "Full")
-            end
+        function Page:Section(title, side)
+            return createSection(title, side) or self
+        end
+        Page.AddSection = Page.Section
 
-            function Page:Section(secName)
-                local sec = createSec(secName)
-                return sec and wrapSection(sec) or wrapSection(tab)
-            end
-            function Page:AddSection(secName)
-                return Page:Section(secName)
-            end
-
-            local function withLast(method)
-                return function(_, t)
-                    local sec = currentSec()
-                    local w = sec and wrapSection(sec) or wrapSection(tab)
-                    local fn = w[method]
-                    if type(fn) ~= "function" then return w end
-                    local ok, res = pcall(fn, w, t)
-                    if not ok then
-                        warn("[巫][VisionWare]", method, res)
-                        return w
-                    end
-                    return res
+        local function withLast(method)
+            return function(_, options)
+                if not Page._lastSection then createSection("主页") end
+                local section = Page._lastSection
+                if section and type(section[method]) == "function" then
+                    return section[method](section, options)
                 end
+                return section or Page
             end
-            Page.AddButton = withLast("AddButton")
-            Page.Button = Page.AddButton
-            Page.AddToggle = withLast("AddToggle")
-            Page.Toggle = Page.AddToggle
-            Page.AddSlider = withLast("AddSlider")
-            Page.Slider = Page.AddSlider
-            Page.AddDropdown = withLast("AddDropdown")
-            Page.Dropdown = Page.AddDropdown
-            Page.AddTextbox = withLast("AddTextbox")
-            Page.AddInput = Page.AddTextbox
-            Page.Textbox = Page.AddTextbox
-            Page.Input = Page.AddTextbox
-            Page.AddKeybind = withLast("AddKeybind")
-            Page.Keybind = Page.AddKeybind
-            Page.AddLabel = withLast("AddLabel")
-            Page.Label = Page.AddLabel
-            return Page
         end
-
-        function Window:NewPage(pageOpts)
-            pageOpts = pageOpts or {}
-            local name = tostring(pageOpts.Title or "Page")
-            local icon = pageOpts.Icon or "Box"
-            ensureCategory()
-            local tab = rawWin:CreateTab(name, icon)
-            return makePageFromTab(tab, name)
-        end
-
-        function Window:AddTab(name, icon)
-            ensureCategory()
-            local tab = rawWin:CreateTab(tostring(name), icon or "Box")
-            return makePageFromTab(tab, name)
-        end
-
-        Window.AddPage = Window.NewPage
-        return Window
+        Page.AddButton = withLast("AddButton")
+        Page.Button = Page.AddButton
+        Page.AddToggle = withLast("AddToggle")
+        Page.Toggle = Page.AddToggle
+        Page.AddSlider = withLast("AddSlider")
+        Page.Slider = Page.AddSlider
+        Page.AddDropdown = withLast("AddDropdown")
+        Page.Dropdown = Page.AddDropdown
+        Page.AddTextbox = withLast("AddTextbox")
+        Page.AddInput = Page.AddTextbox
+        Page.Textbox = Page.AddTextbox
+        Page.Input = Page.AddTextbox
+        Page.AddKeybind = withLast("AddKeybind")
+        Page.Keybind = Page.AddKeybind
+        Page.AddLabel = withLast("AddLabel")
+        Page.Label = Page.AddLabel
+        Page.AddParagraph = withLast("AddParagraph")
+        Page.AddDivider = withLast("AddDivider")
+        Page.AddSpacer = withLast("AddSpacer")
+        return Page
     end
 
+    local tabIcons = {
+        ["通用功能"] = "主", ["皮移植"] = "皮", ["服务器信息"] = "服",
+        ["通用1"] = "通", ["范围设置"] = "范", ["甩飞与传送"] = "传",
+        ["工具"] = "工", ["趣味"] = "趣", ["各类服务器脚本"] = "游",
+        ["ESP"] = "眼", ["额外功能"] = "加", ["自瞄"] = "瞄",
+        ["玩家管理"] = "人", ["更多脚本"] = "集", ["独立项目"] = "星",
+        ["设置"] = "设",
+    }
+
+    function Window:NewPage(pageOptions)
+        pageOptions = pageOptions or {}
+        local name = tostring(pageOptions.Title or pageOptions.Name or "页面")
+        local rawTab = rawWindow:AddTab({
+            Title = name,
+            Icon = pageOptions.Icon or tabIcons[name] or string.sub(name, 1, 1),
+            Description = pageOptions.Desc or pageOptions.Description or "",
+        })
+        return makePage(rawTab, name)
+    end
+
+    function Window:AddTab(name, icon)
+        name = tostring(name or "页面")
+        return self:NewPage({ Title = name, Icon = icon or tabIcons[name] or string.sub(name, 1, 1) })
+    end
+    Window.AddPage = Window.NewPage
+
+    function Window:Notify(opts)
+        return notifyVelora(opts)
+    end
+    Window.Notification = Window.Notify
+
+    function Window:SetScale(value)
+        local scale = math.clamp(tonumber(value) or 1, 0.5, 1.5)
+        getgenv().WuUIScale = scale
+        pcall(function()
+            if rawWindow then
+                rawWindow._manualScale = scale
+                if rawWindow._updateResponsive then rawWindow._updateResponsive() end
+                local root = rawWindow.Root
+                if root then
+                    local scaleObj = rawWindow.UIScale or root:FindFirstChildWhichIsA("UIScale")
+                    if scaleObj then scaleObj.Scale = scale end
+                end
+            end
+        end)
+        return scale
+    end
+
+    function Window:Toggle()
+        pcall(function() UI:Toggle() end)
+    end
+
+    function Window:Destroy()
+        pcall(function() if rawWindow and rawWindow.Destroy then rawWindow:Destroy() end end)
+        pcall(function() if UI and UI.Destroy then UI:Destroy() end end)
+        pcall(function()
+            if getgenv().WuScript_GUI == UI.ScreenGui then getgenv().WuScript_GUI = nil end
+        end)
+    end
+
+    Library._activeWindow = Window
+    Library.Window = function() return Window end
+    print("[巫 script] 使用 VeloraUI")
     return Library
 end)
 
 if not okLib or type(Library) ~= "table" then
     local errMsg = tostring(Library)
-    warn("[巫 script] VisionWare 失败:", errMsg)
+    warn("[巫 script] VeloraUI 失败:", errMsg)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "巫 script",
-            Text = "VisionWare 加载失败: " .. errMsg:sub(1, 90),
+            Text = "VeloraUI 加载失败: " .. errMsg:sub(1, 100),
             Duration = 10,
         })
-    end)
-    pcall(function()
-        if delfile and isfile and isfile("WuScript_VisionWare_Cache.lua") then
-            delfile("WuScript_VisionWare_Cache.lua")
-        end
     end)
     return
 end
@@ -991,8 +1049,7 @@ local Window = Library:Window({
     Title = "巫 script",
     SubTitle = "by wu",
     ToggleKey = Enum.KeyCode.RightControl,
-    Scale = 1.5,
-    AutoScale = false,
+    Scale = tonumber(getgenv().WuUIScale) or 1,
 })
 
 local function notify(title, desc, dur)
@@ -1002,7 +1059,6 @@ local function notify(title, desc, dur)
         Desc = tostring(desc or ""),
         Duration = tonumber(dur) or 2,
     }
-    -- VisionWare: Window:Notify；适配层: Library.Notify
     if type(Library.Notify) == "function" then
         pcall(Library.Notify, Library, opts)
     elseif type(Library.Notification) == "function" then
@@ -1017,192 +1073,12 @@ local function notify(title, desc, dur)
         end)
     end
 end
-Library.Notification = Library.Notify or function(_, o)
-    if type(o) ~= "table" then o = { Content = tostring(o) } end
-    notify(o.Title, o.Content or o.Desc or o.Text, o.Duration or o.Delay)
-end
-
-do
-    local function bindSection(page)
-        local sec = {}
-        function sec:AddButton(t)
-            t = t or {}
-            pcall(function()
-                page:Button({
-                    Title = t.Name or t.Title or "按钮",
-                    Text = "执行",
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return sec
-        end
-        function sec:AddToggle(t)
-            t = t or {}
-            pcall(function()
-                page:Toggle({
-                    Title = t.Name or t.Title or "开关",
-                    Value = (t.Default == true) or (t.Value == true),
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return sec
-        end
-        function sec:AddSlider(t)
-            t = t or {}
-            local minV = tonumber(t.Min) or 0
-            local maxV = tonumber(t.Max) or 100
-            local defV = tonumber(t.Default or t.Value) or minV
-            local inc = tonumber(t.Increment or t.Rounding)
-            if not inc then
-                -- 小数范围自动用更细步进，避免 0~0.5 被当成整数锁死在 0
-                local span = math.abs(maxV - minV)
-                if span <= 1 then inc = 0.01
-                elseif span <= 5 then inc = 0.1
-                else inc = 1 end
-            end
-            pcall(function()
-                page:Slider({
-                    Title = t.Name or t.Title or "滑条",
-                    Min = minV,
-                    Max = maxV,
-                    Value = defV,
-                    Increment = inc,
-                    Rounding = inc < 1 and 2 or 0,
-                    Suffix = t.Suffix or "",
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return sec
-        end
-        function sec:AddTextbox(t)
-            t = t or {}
-            local box = {}
-            pcall(function()
-                box = page:Input({
-                    Title = t.Name or t.Title or "输入",
-                    Placeholder = t.PlaceholderText or t.Placeholder or "",
-                    Value = t.Default or "",
-                    ClearOnSubmit = true,
-                    Callback = t.Callback or function() end,
-                }) or {}
-            end)
-            if type(box) ~= "table" then box = {} end
-            if type(box.Set) ~= "function" then function box:Set() end end
-            return box
-        end
-        function sec:AddDropdown(t)
-            t = t or {}
-            local ctrl
-            pcall(function()
-                ctrl = page:Dropdown({
-                    Title = t.Name or t.Title or "下拉",
-                    List = t.Options or t.List or {},
-                    Value = t.Default or t.Value,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            if type(ctrl) == "table" then
-                -- 补齐 SetOptions 别名，兼容刷新按钮
-                if type(ctrl.SetOptions) ~= "function" and type(ctrl.Refresh) == "function" then
-                    function ctrl:SetOptions(list)
-                        return self:Refresh(list, true)
-                    end
-                end
-                return ctrl
-            end
-            return sec
-        end
-        function sec:AddKeybind(t)
-            t = t or {}
-            pcall(function()
-                page:Keybind({
-                    Title = t.Name or t.Title or "按键",
-                    Value = t.Default or t.Value or Enum.KeyCode.RightControl,
-                    Callback = t.Callback or function() end,
-                })
-            end)
-            return sec
-        end
-        function sec:AddLabel(t)
-            local text = type(t) == "string" and t or ((t and (t.Name or t.Text)) or "")
-            pcall(function() page:Label({ Title = text }) end)
-            return sec
-        end
-        return sec
-    end
-
-    local _NewPage = Window.NewPage
-    -- 每个页签配独立图标（图标名为 MugiHub/Lucide 风格，库里没有的会自动退回 "folder"）
-    local WU_TAB_ICONS = {
-        ["通用功能"] = "home", ["皮移植"] = "shirt", ["服务器信息"] = "server",
-        ["通用1"] = "layers", ["范围设置"] = "target", ["甩飞与传送"] = "zap",
-        ["工具"] = "wrench", ["趣味"] = "smile", ["各类服务器脚本"] = "gamepad-2",
-        ["ESP"] = "eye", ["额外功能"] = "plus-circle", ["自瞄"] = "crosshair",
-        ["玩家管理"] = "users", ["更多脚本"] = "folder",
-        ["独立项目"] = "star",
-    }
-    function Window:AddTab(name)
-        local ok, page = pcall(function()
-            return _NewPage(self, { Title = tostring(name), Desc = "", Icon = WU_TAB_ICONS[tostring(name)] or "folder" })
-        end)
-        if not ok then
-            warn("[巫] NewPage失败", name, page)
-            page = _NewPage(self, { Title = tostring(name) })
-        end
-        local proxy = {}
-        function proxy:AddSection(title)
-            pcall(function() page:Section(tostring(title or "")) end)
-            return bindSection(page)
-        end
-        for _, method in ipairs({"AddButton","AddToggle","AddSlider","AddTextbox","AddDropdown","AddKeybind","AddLabel"}) do
-            proxy[method] = function(_, opts)
-                local s = bindSection(page)
-                return s[method](s, opts)
-            end
-        end
-        return proxy
-    end
-
-    function Window:Notify(opts)
-        if type(opts) == "table" then
-            notify(opts.Title, opts.Content or opts.Desc, opts.Duration)
-        end
-    end
+Library.Notification = Library.Notify or function(_, opts)
+    if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
+    notify(opts.Title, opts.Content or opts.Desc or opts.Text, opts.Duration or opts.Delay)
 end
 
 getgenv().WuRealWindow = Window
--- 放大窗口边缘拉伸热区（仅巫 script 窗口，绝不改 Delta 等其它 UI）
-task.defer(function()
-    task.wait(0.5)
-    pcall(function()
-        local root = getgenv().WuScript_GUI
-        if not root then return end
-        for _, btn in ipairs(root:GetDescendants()) do
-            if btn:IsA("TextButton") then
-                local sz = btn.Size
-                if sz.X.Offset > 0 and sz.X.Offset <= 6 and sz.Y.Scale >= 0.9 then
-                    local w = 18
-                    if btn.Position.X.Scale >= 0.9 then
-                        btn.Size = UDim2.new(0, w, 1, 0)
-                        btn.Position = UDim2.new(1, -w, 0, 0)
-                    else
-                        btn.Size = UDim2.new(0, w, 1, 0)
-                    end
-                    btn.Active = true
-                elseif sz.Y.Offset > 0 and sz.Y.Offset <= 6 and sz.X.Scale >= 0.9 then
-                    local h = 18
-                    if btn.Position.Y.Scale >= 0.9 then
-                        btn.Size = UDim2.new(1, 0, 0, h)
-                        btn.Position = UDim2.new(0, 0, 1, -h)
-                    else
-                        btn.Size = UDim2.new(1, 0, 0, h)
-                    end
-                    btn.Active = true
-                end
-            end
-        end
-    end)
-end)
 
 -- 统一的"加载远程脚本"按钮回调：防重复点击；失败时清除标记，允许重试
 local function WuLoader(url, doneMsg)
@@ -7224,15 +7100,15 @@ end)
 
 
 
--- 缩放后刷新滚动区域：只用 AutomaticCanvasSize，不再手算 CanvasSize（避免底部多出空白）
+-- 缩放后检查滚动区域：保留 VeloraUI 自己的 CanvasSize 计算
 local function WuIsWuScreenGui(sg)
     return sg ~= nil and sg == getgenv().WuScript_GUI
 end
 
 local function WuFixScroll(sf)
+    -- VeloraUI 自己维护标签页、弹层和下拉框的 CanvasSize；这里只确保滚动可用，
+    -- 不再覆盖 AutomaticCanvasSize / CanvasSize，避免打断库的布局计算。
     pcall(function()
-        sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        sf.CanvasSize = UDim2.new(0, 0, 0, 0)
         sf.ScrollingEnabled = true
     end)
 end
@@ -7247,12 +7123,12 @@ end
 
 getgenv().WuRefreshScroll = WuRefreshScroll
 
--- 独立板块：设置（Vita 原生 API，可改主题/缩放/字体）
+-- 独立板块：设置（VeloraUI 兼容接口，可改缩放/字体）
 -------------------------------------------------
 task.spawn(function()
     task.wait(0.15)
     local ok, err = pcall(function()
-        -- 用原生 NewPage，不走兼容层，保证缩放/主题 API 可用
+        -- 使用 VeloraUI 的兼容 NewPage 接口，保证缩放/字体设置可用
         local _NP = Window.NewPage
         local SettingsPage = _NP(Window, {
             Title = "设置",
@@ -7277,13 +7153,16 @@ task.spawn(function()
         local function WuApplyScale(scale)
             scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
             getgenv().WuUIScale = scale
-            -- VisionWare 窗口缩放
+            -- VeloraUI 窗口缩放
             pcall(function()
                 if Window and Window.SetScale then Window:SetScale(scale) end
             end)
             local root = getgenv().WuScript_GUI
             if root and root.Parent then
-                local main = root:FindFirstChildWhichIsA("Frame", false)
+                -- Velora 的根窗口直接暴露在 Window._raw.Root；优先缩放窗口本体，
+                -- 不要缩放全屏的 Windows 容器，否则会与库内 UIScale 叠乘。
+                local main = Window and Window._raw and Window._raw.Root
+                if not main then main = root:FindFirstChildWhichIsA("Frame", false) end
                 if not main then
                     for _, ch in ipairs(root:GetChildren()) do
                         if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
@@ -7296,7 +7175,7 @@ task.spawn(function()
                     us.Name = "WuOnlyUIScale"
                     us.Parent = target
                 end
-                -- VisionWare 已有 UIScale 时不再叠乘，只记配置
+                -- VeloraUI 已有 UIScale 时不再叠乘，只记配置
                 if not target:FindFirstChildWhichIsA("UIScale") then
                     us.Scale = scale
                 else
@@ -7334,7 +7213,7 @@ task.spawn(function()
                 local origin = inst:GetAttribute("WuBaseTextSize")
                 if not origin then
                     origin = tonumber(inst.TextSize) or 8
-                    -- 保留 VisionWare 原始字号作基准，避免强行 12 撑破固定行高
+                    -- 保留 VeloraUI 原始字号作基准，避免强行 12 撑破固定行高
                     inst:SetAttribute("WuBaseTextSize", origin)
                 end
                 -- 仅轻度放大；上限避免溢出 Section 行高
