@@ -1,12 +1,11 @@
 --[[
-  巫 · 造一部手机源码（独立合并版）
-  - 内嵌：自动研究 + 自动重生/搬家
-  - UI：ka 同款简洁深色面板（无背景图、无音效）
-  - 目标服 PlaceId: 101914705206759（Build a Phone Empire）
+  巫 · 造一部手机源码（Obsidian UI · 与 ka 同款库）
+  UI: https://github.com/deividcomsono/Obsidian
+  无启动音效；背景图见 BG_URL
 ]]
 print("[造一部手机] 加载中...")
 
-if getgenv().WuPhoneTycoonLoaded then
+if getgenv and getgenv().WuPhoneTycoonLoaded then
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "造一部手机",
@@ -14,12 +13,15 @@ if getgenv().WuPhoneTycoonLoaded then
             Duration = 3,
         })
     end)
+    pcall(function()
+        local ui = getgenv().WuPhoneBuildUI or getgenv().WuPhoneTycoonUI
+        if ui then ui.Enabled = true end
+    end)
     return
 end
 
--- 允许名单（PlaceId）+ 界面兜底
 local PHONE_PLACE = {
-    [101914705206759] = true,
+    [101914705206759] = true, -- Build a Phone Empire
 }
 local function isPhoneServer()
     if PHONE_PLACE[game.PlaceId] then return true end
@@ -34,7 +36,7 @@ if not isPhoneServer() then
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "造一部手机",
-            Text = "该服务器不支持（请进入造手机游戏）",
+            Text = "该服务器不支持",
             Duration = 5,
         })
     end)
@@ -42,10 +44,10 @@ if not isPhoneServer() then
     return
 end
 
-local okGui, guiOrErr = pcall(function()
-    return game:GetService("Players").LocalPlayer.PlayerGui:WaitForChild("PhoneTycoonGui", 10)
+local okGui, phoneGui = pcall(function()
+    return game:GetService("Players").LocalPlayer.PlayerGui:WaitForChild("PhoneTycoonGui", 12)
 end)
-if not okGui or not guiOrErr then
+if not okGui or not phoneGui then
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "造一部手机",
@@ -71,7 +73,7 @@ local function runModule(src, tag)
     return true
 end
 
--- ========== 模块 1：自动研究 ==========
+-- ========== 模块：自动研究 ==========
 runModule([===[
 --== Auto Research v6 (event/clock driven, no metamethod hooks) ==--
 -- 依赖：Tick 远程事件（只订阅，不改写调用）
@@ -321,7 +323,7 @@ return "autoResearch v6 loaded"
 
 ]===], "研究")
 
--- ========== 模块 2：自动重生/搬家 ==========
+-- ========== 模块：自动重生/搬家 ==========
 runModule([===[
 --== Auto Extra v3: 传承(出售公司) / 办公室(搬迁) ==--
 -- dry=false 时执行不可逆操作；dry=true 只判定并记录状态
@@ -621,297 +623,200 @@ return "autoExtra v3 loaded"
 
 ]===], "重生搬家")
 
-getgenv().WuPhoneTycoonLoaded = true
-
+-- ===================== Obsidian UI（与 ka 同款） =====================
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
-local host = (gethui and gethui()) or game:GetService("CoreGui")
-pcall(function()
-    local old = host:FindFirstChild("WuPhoneBuildUI")
-    if old then old:Destroy() end
+local StarterGui = game:GetService("StarterGui")
+local localPlayer = Players.LocalPlayer
+
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local okLib, Library = pcall(function()
+    return loadstring(game:HttpGet(repo .. "Library.lua"))()
 end)
-
-local sg = Instance.new("ScreenGui")
-sg.Name = "WuPhoneBuildUI"
-sg.ResetOnSpawn = false
-sg.IgnoreGuiInset = true
-sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-sg.DisplayOrder = 120
-sg.Parent = host
-
-local panel = Instance.new("Frame")
-panel.Name = "Main"
-panel.AnchorPoint = Vector2.new(0, 0.5)
-panel.Position = UDim2.new(0, 16, 0.5, 0)
-panel.Size = UDim2.fromOffset(280, 330)
-panel.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
-panel.BackgroundTransparency = 0.15
-panel.BorderSizePixel = 0
-panel.ClipsDescendants = true
-panel.Parent = sg
-Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
-
--- 背景图
-local bg = Instance.new("ImageLabel")
-bg.Name = "Background"
-bg.BackgroundTransparency = 1
-bg.Size = UDim2.fromScale(1, 1)
-bg.Position = UDim2.fromScale(0, 0)
-bg.Image = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E6%9D%80%E7%8C%AA%E5%8C%A0.jpg"
-bg.ScaleType = Enum.ScaleType.Crop
-bg.ZIndex = 0
-bg.Parent = panel
-local bgCorner = Instance.new("UICorner")
-bgCorner.CornerRadius = UDim.new(0, 12)
-bgCorner.Parent = bg
--- 半透明遮罩，保证文字可读
-local dim = Instance.new("Frame")
-dim.Name = "Dim"
-dim.BackgroundColor3 = Color3.fromRGB(10, 12, 18)
-dim.BackgroundTransparency = 0.35
-dim.BorderSizePixel = 0
-dim.Size = UDim2.fromScale(1, 1)
-dim.ZIndex = 1
-dim.Parent = panel
-Instance.new("UICorner", dim).CornerRadius = UDim.new(0, 12)
-
-local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(80, 140, 220)
-stroke.Thickness = 1.2
-stroke.Transparency = 0.35
-stroke.Parent = panel
-
-local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 40)
-header.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-header.BackgroundTransparency = 0.25
-header.BorderSizePixel = 0
-header.ZIndex = 2
-header.Parent = panel
-Instance.new("UICorner", header).CornerRadius = UDim.new(0, 12)
-
-local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Position = UDim2.fromOffset(12, 0)
-title.Size = UDim2.new(1, -52, 1, 0)
-title.Font = Enum.Font.GothamBold
-title.Text = "巫 · 造一部手机"
-title.TextSize = 15
-title.TextColor3 = Color3.fromRGB(235, 240, 250)
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = header
-
-local btnClose = Instance.new("TextButton")
-btnClose.AnchorPoint = Vector2.new(1, 0.5)
-btnClose.Position = UDim2.new(1, -8, 0.5, 0)
-btnClose.Size = UDim2.fromOffset(28, 28)
-btnClose.BackgroundColor3 = Color3.fromRGB(50, 40, 45)
-btnClose.Text = "×"
-btnClose.TextColor3 = Color3.fromRGB(255, 200, 200)
-btnClose.Font = Enum.Font.GothamBold
-btnClose.TextSize = 16
-btnClose.Parent = header
-Instance.new("UICorner", btnClose).CornerRadius = UDim.new(0, 8)
-
-local body = Instance.new("ScrollingFrame")
-body.Position = UDim2.fromOffset(0, 44)
-body.Size = UDim2.new(1, 0, 1, -48)
-body.BackgroundTransparency = 1
-body.BorderSizePixel = 0
-body.ScrollBarThickness = 4
-body.CanvasSize = UDim2.new(0, 0, 0, 0)
-body.AutomaticCanvasSize = Enum.AutomaticSize.Y
-body.ZIndex = 2
-body.Parent = panel
-
-local list = Instance.new("UIListLayout")
-list.Padding = UDim.new(0, 8)
-list.SortOrder = Enum.SortOrder.LayoutOrder
-list.Parent = body
-local pad = Instance.new("UIPadding")
-pad.PaddingLeft = UDim.new(0, 12)
-pad.PaddingRight = UDim.new(0, 12)
-pad.PaddingTop = UDim.new(0, 8)
-pad.PaddingBottom = UDim.new(0, 12)
-pad.Parent = body
-
-local function sectionLabel(text, order)
-    local l = Instance.new("TextLabel")
-    l.BackgroundTransparency = 1
-    l.Size = UDim2.new(1, 0, 0, 20)
-    l.Font = Enum.Font.GothamBold
-    l.TextSize = 13
-    l.TextColor3 = Color3.fromRGB(140, 180, 255)
-    l.TextXAlignment = Enum.TextXAlignment.Left
-    l.Text = text
-    l.LayoutOrder = order
-    l.Parent = body
-end
-
-local function makeToggle(name, order, getOn, onToggle)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 40)
-    row.BackgroundColor3 = Color3.fromRGB(28, 32, 40)
-    row.BorderSizePixel = 0
-    row.LayoutOrder = order
-    row.Parent = body
-    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
-    local lbl = Instance.new("TextLabel")
-    lbl.BackgroundTransparency = 1
-    lbl.Position = UDim2.fromOffset(10, 0)
-    lbl.Size = UDim2.new(1, -70, 1, 0)
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 14
-    lbl.TextColor3 = Color3.fromRGB(230, 235, 245)
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Text = name
-    lbl.Parent = row
-    local btn = Instance.new("TextButton")
-    btn.AnchorPoint = Vector2.new(1, 0.5)
-    btn.Position = UDim2.new(1, -8, 0.5, 0)
-    btn.Size = UDim2.fromOffset(52, 26)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.BorderSizePixel = 0
-    btn.Parent = row
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    local function paint()
-        local on = getOn()
-        btn.Text = on and "ON" or "OFF"
-        btn.BackgroundColor3 = on and Color3.fromRGB(40, 160, 90) or Color3.fromRGB(70, 75, 90)
-    end
-    paint()
-    btn.MouseButton1Click:Connect(function()
-        onToggle(not getOn())
-        task.wait(0.05)
-        paint()
+if not okLib or not Library then
+    warn("[造一部手机] Obsidian 加载失败:", Library)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "造一部手机",
+            Text = "Obsidian UI 加载失败",
+            Duration = 5,
+        })
     end)
-    return paint
+    return
 end
 
-local status = Instance.new("TextLabel")
-status.BackgroundTransparency = 1
-status.Size = UDim2.new(1, 0, 0, 80)
-status.Font = Enum.Font.Gotham
-status.TextSize = 12
-status.TextColor3 = Color3.fromRGB(160, 170, 185)
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.TextYAlignment = Enum.TextYAlignment.Top
-status.TextWrapped = true
-status.Text = "状态：待命"
-status.LayoutOrder = 90
-status.Parent = body
+local Toggles = Library.Toggles
+local Options = Library.Options
 
-sectionLabel("1. 自动研究", 1)
-local paintResearch = makeToggle("自动研究", 2, function()
-    local s = getgenv().__autoResearch
-    return s and s.running
-end, function(want)
-    local s = getgenv().__autoResearch
-    if not s then return end
-    if want then if s.start then s.start() end else if s.stop then s.stop() end end
-end)
+local BG_URL = "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E6%9D%80%E7%8C%AA%E5%8C%A0.jpg"
 
-sectionLabel("2. 重生 / 搬家", 3)
-local paintExtra = makeToggle("自动重生搬家（正式）", 4, function()
-    local s = getgenv().__autoExtra
-    return s and s.running and not s.dry
-end, function(want)
-    local s = getgenv().__autoExtra
-    if not s then return end
-    if want then
-        if s.setDry then s.setDry(false) end
-        if s.start then s.start() end
-    else
-        if s.stop then s.stop() end
+local Window = Library:CreateWindow({
+    Title = "巫 · 造一部手机",
+    Footer = "巫 · 造一部手机 · Obsidian",
+    Center = true,
+    AutoShow = true,
+    Resizable = true,
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+    BackgroundImage = BG_URL,
+})
+
+pcall(function()
+    if Window.SetBackgroundImage then
+        Window:SetBackgroundImage(BG_URL)
+    elseif Library.SetBackgroundImage then
+        Library:SetBackgroundImage(BG_URL)
     end
 end)
 
-makeToggle("仅检测模式 dry", 5, function()
-    local s = getgenv().__autoExtra
-    return not s or s.dry
-end, function(want)
-    local s = getgenv().__autoExtra
-    if s and s.setDry then s.setDry(want and true or false) end
-end)
+local Tabs = {
+    Main = Window:AddTab("主页", "box"),
+    Extra = Window:AddTab("其他", "settings"),
+}
 
-sectionLabel("总控", 6)
-makeToggle("一键全开/全停", 7, function()
-    local a = getgenv().__autoResearch
-    local b = getgenv().__autoExtra
-    return (a and a.running) or (b and b.running)
-end, function(want)
-    local a = getgenv().__autoResearch
-    local b = getgenv().__autoExtra
-    if want then
-        if b and b.setDry then b.setDry(false) end
-        if b and b.start then b.start() end
-        if a and a.start then a.start() end
-    else
-        if a and a.stop then a.stop() end
-        if b and b.stop then b.stop() end
-    end
-end)
+local MainLeft = Tabs.Main:AddLeftGroupbox("自动研究")
+local MainRight = Tabs.Main:AddRightGroupbox("重生 / 搬家")
+local ExtraLeft = Tabs.Extra:AddLeftGroupbox("状态")
+
+local function getResearch()
+    return getgenv().__autoResearch
+end
+local function getExtra()
+    return getgenv().__autoExtra
+end
+
+MainLeft:AddToggle("AutoResearch", {
+    Text = "自动研究",
+    Default = false,
+    Callback = function(v)
+        local S = getResearch()
+        if not S then
+            pcall(function() Library:Notify("研究模块未就绪", 2) end)
+            return
+        end
+        if v then
+            if type(S.start) == "function" then
+                pcall(S.start)
+            else
+                S.running = true
+            end
+        else
+            if type(S.stop) == "function" then
+                pcall(S.stop)
+            else
+                S.running = false
+            end
+        end
+        print("[造一部手机] 自动研究:", v)
+    end,
+})
+
+MainLeft:AddLabel("空闲时自动开研究面板；依赖 Tick", true)
+
+MainRight:AddToggle("AutoRelocate", {
+    Text = "自动重生/搬家",
+    Default = false,
+    Callback = function(v)
+        local S = getExtra()
+        if not S then
+            pcall(function() Library:Notify("重生模块未就绪", 2) end)
+            return
+        end
+        if v then
+            if type(S.start) == "function" then
+                pcall(S.start)
+            else
+                S.running = true
+            end
+        else
+            if type(S.stop) == "function" then
+                pcall(S.stop)
+            else
+                S.running = false
+            end
+        end
+        print("[造一部手机] 重生/搬家:", v)
+    end,
+})
+
+MainRight:AddToggle("DryRun", {
+    Text = "试跑模式（不真正操作）",
+    Default = true,
+    Tooltip = "开启时只检测状态，不执行不可逆操作",
+    Callback = function(v)
+        local S = getExtra()
+        if S then
+            S.dry = v and true or false
+        end
+        print("[造一部手机] dry=", v)
+    end,
+})
+
+MainRight:AddLabel("dry=开：只记录；dry=关：会真正传承/搬迁", true)
+
+ExtraLeft:AddLabel("研究状态", true)
+local researchStatus = ExtraLeft:AddLabel("研究: 等待中…", true)
+ExtraLeft:AddLabel("重生状态", true)
+local extraStatus = ExtraLeft:AddLabel("重生: 等待中…", true)
 
 task.spawn(function()
-    while sg.Parent do
+    while task.wait(0.5) do
+        local R = getResearch()
+        local E = getExtra()
         pcall(function()
-            local a = getgenv().__autoResearch or {}
-            local b = getgenv().__autoExtra or {}
-            local t = getgenv().__tick or {}
-            status.Text = string.format(
-                "研究: %s | lab=%s\n日=%s RP=%s 次数=%s\n搬家: %s dry=%s\n%s",
-                a.running and "运行中" or "关闭",
-                tostring(a.lab or "-"),
-                tostring(t.day or a.day or "-"),
-                tostring(t.rp or a.rp or "-"),
-                tostring(a.starts or 0),
-                b.running and "运行中" or "关闭",
-                tostring(b.dry),
-                tostring(a.lastEvent or b.lastEvent or "")
-            )
-            pcall(paintResearch)
-            pcall(paintExtra)
+            if R then
+                local lab = tostring(R.lab or "?")
+                local day = tostring(R.day or "?")
+                local rp = tostring(R.rp or "?")
+                local run = R.running and "运行中" or "关闭"
+                if researchStatus and researchStatus.SetText then
+                    researchStatus:SetText(string.format("[%s] day=%s rp=%s lab=%s", run, day, rp, lab))
+                elseif researchStatus then
+                    -- Obsidian Label 可能用不同 API
+                    pcall(function() researchStatus:SetText(string.format("[%s] day=%s rp=%s lab=%s", run, day, rp, lab)) end)
+                end
+            end
+            if E then
+                local run = E.running and "运行中" or "关闭"
+                local dry = E.dry and "试跑" or "实操"
+                local ev = tostring(E.lastEvent or "idle")
+                if extraStatus and extraStatus.SetText then
+                    extraStatus:SetText(string.format("[%s/%s] %s", run, dry, ev))
+                end
+            end
         end)
-        task.wait(0.6)
     end
 end)
 
-do
-    local dragging, start, origin
-    header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            start = input.Position
-            origin = panel.Position
+ExtraLeft:AddButton({
+    Text = "关闭全部功能",
+    Func = function()
+        local R, E = getResearch(), getExtra()
+        if R then
+            if type(R.stop) == "function" then pcall(R.stop) else R.running = false end
         end
-    end)
-    UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
+        if E then
+            if type(E.stop) == "function" then pcall(E.stop) else E.running = false end
         end
-    end)
-    UIS.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            local d = input.Position - start
-            panel.Position = UDim2.new(origin.X.Scale, origin.X.Offset + d.X, origin.Y.Scale, origin.Y.Offset + d.Y)
-        end
-    end)
-end
+        pcall(function()
+            if Toggles.AutoResearch then Toggles.AutoResearch:SetValue(false) end
+            if Toggles.AutoRelocate then Toggles.AutoRelocate:SetValue(false) end
+        end)
+        pcall(function() Library:Notify("已关闭全部", 2) end)
+    end,
+})
 
-btnClose.MouseButton1Click:Connect(function()
-    sg.Enabled = false
-end)
+ExtraLeft:AddLabel("Obsidian UI · 无音效", true)
 
+-- 标记已加载（兼容巫源码调用）
 getgenv().WuPhoneTycoonLoaded = true
-getgenv().WuPhoneBuildUI = sg
-print("[造一部手机] UI 已加载")
+getgenv().WuPhoneTycoonUI = Library.ScreenGui or Library.GUI
+getgenv().WuPhoneBuildUI = getgenv().WuPhoneTycoonUI
+
+print("[造一部手机] Obsidian UI 加载完成")
 pcall(function()
-    game:GetService("StarterGui"):SetCore("SendNotification", {
+    StarterGui:SetCore("SendNotification", {
         Title = "造一部手机",
-        Text = "已加载",
+        Text = "Obsidian UI 已加载",
         Duration = 3,
     })
 end)
