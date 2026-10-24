@@ -783,11 +783,13 @@ local okLib, Library = pcall(function()
         local before = {}
         for _, g in ipairs(wuHost:GetChildren()) do before[g] = true end
 
+        local savedScale = tonumber(getgenv().WuUIScale) or 1
+        local vwScale = math.clamp(0.9 + savedScale * 0.9, 1.2, 2.4)
         local rawWin = VisionWare:CreateWindow({
             Name = title,
             Subtitle = string.upper(subtitle),
             Footer = subtitle .. " · VisionWare",
-            Scale = tonumber(opts.Scale) or 1.35,
+            Scale = tonumber(opts.Scale) or vwScale,
             ToggleKey = keybind,
             ConfigFolder = "WuScript_VW",
             Backdrop = false,
@@ -826,9 +828,17 @@ local okLib, Library = pcall(function()
         function Window:Notify(o) notifyVW(o) end
         function Window:Notification(o) notifyVW(o) end
         function Window:SetScale(v)
+            v = tonumber(v) or 1
+            -- VisionWare 内置 UIScale（官方范围约 0.5~4，默认 1.7）
             pcall(function()
-                if rawWin.SetScale then rawWin:SetScale(tonumber(v) or 1) end
+                if rawWin.SetScale then
+                    -- 巫设置里 0.5~1.5 → 映射到 VisionWare 1.0~2.2
+                    local vw = 0.8 + v * 1.0
+                    rawWin:SetScale(math.clamp(vw, 0.8, 2.8))
+                end
             end)
+            getgenv().WuUIScale = v
+            pcall(function() if WuSaveUIConfig then WuSaveUIConfig() end end)
         end
         function Window:Toggle()
             pcall(function()
@@ -850,49 +860,71 @@ local okLib, Library = pcall(function()
             pcall(function() rawWin:CreateCategory("功能") end)
         end
 
-        -- 每个 Tab 内默认 Section 缓存，避免无 Section 时控件无处可挂
-        local function defaultSection(tab, name)
-            if not tab._wuDefaultSec then
-                local ok, sec = pcall(function()
-                    return tab:CreateSection({ Name = tostring(name or "主页"), Side = "Full" })
-                end)
-                tab._wuDefaultSec = (ok and sec) or nil
-            end
-            return tab._wuDefaultSec
-        end
-
+        -- 关键：巫源码大量写法是 Page:Section("标题") 后紧跟 Page:Slider(...)
+        -- 必须把控件挂到「最近一次 Section」，不能丢到空白默认区
         local function makePageFromTab(tab, name)
-            local Page = { Title = name, _tab = tab }
-            function Page:Section(secName)
-                local ok, sec = pcall(function()
-                    return tab:CreateSection({ Name = tostring(secName or "分组"), Side = "Full" })
-                end)
-                if ok and sec then return wrapSection(sec) end
-                local d = defaultSection(tab, secName)
-                return d and wrapSection(d) or wrapSection(tab)
-            end
-            function Page:AddSection(secName) return Page:Section(secName) end
+            local Page = { Title = name, _tab = tab, _lastSec = nil, _sideFlip = false }
 
-            -- 直接在 Page 上挂控件 → 落到默认 Section
-            local function withDef(method)
+            local function createSec(secName, side)
+                Page._sideFlip = not Page._sideFlip
+                side = side or (Page._sideFlip and "Left" or "Right")
+                local ok, sec = pcall(function()
+                    return tab:CreateSection({
+                        Name = tostring(secName or "分组"),
+                        Side = side,
+                    })
+                end)
+                if ok and sec then
+                    Page._lastSec = sec
+                    return sec
+                end
+                warn("[巫][VisionWare] CreateSection 失败:", secName, sec)
+                return nil
+            end
+
+            local function currentSec()
+                if Page._lastSec then return Page._lastSec end
+                return createSec("主页", "Full")
+            end
+
+            function Page:Section(secName)
+                local sec = createSec(secName)
+                return sec and wrapSection(sec) or wrapSection(tab)
+            end
+            function Page:AddSection(secName)
+                return Page:Section(secName)
+            end
+
+            local function withLast(method)
                 return function(_, t)
-                    local d = defaultSection(tab, "主页")
-                    local w = d and wrapSection(d) or wrapSection(tab)
-                    return w[method](w, t)
+                    local sec = currentSec()
+                    local w = sec and wrapSection(sec) or wrapSection(tab)
+                    local fn = w[method]
+                    if type(fn) ~= "function" then return w end
+                    local ok, res = pcall(fn, w, t)
+                    if not ok then
+                        warn("[巫][VisionWare]", method, res)
+                        return w
+                    end
+                    return res
                 end
             end
-            Page.AddButton = withDef("AddButton")
+            Page.AddButton = withLast("AddButton")
             Page.Button = Page.AddButton
-            Page.AddToggle = withDef("AddToggle")
+            Page.AddToggle = withLast("AddToggle")
             Page.Toggle = Page.AddToggle
-            Page.AddSlider = withDef("AddSlider")
+            Page.AddSlider = withLast("AddSlider")
             Page.Slider = Page.AddSlider
-            Page.AddDropdown = withDef("AddDropdown")
+            Page.AddDropdown = withLast("AddDropdown")
             Page.Dropdown = Page.AddDropdown
-            Page.AddTextbox = withDef("AddTextbox")
+            Page.AddTextbox = withLast("AddTextbox")
             Page.AddInput = Page.AddTextbox
-            Page.AddKeybind = withDef("AddKeybind")
-            Page.AddLabel = withDef("AddLabel")
+            Page.Textbox = Page.AddTextbox
+            Page.Input = Page.AddTextbox
+            Page.AddKeybind = withLast("AddKeybind")
+            Page.Keybind = Page.AddKeybind
+            Page.AddLabel = withLast("AddLabel")
+            Page.Label = Page.AddLabel
             return Page
         end
 
@@ -7197,23 +7229,33 @@ task.spawn(function()
         local function WuApplyScale(scale)
             scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
             getgenv().WuUIScale = scale
+            -- VisionWare 窗口缩放
+            pcall(function()
+                if Window and Window.SetScale then Window:SetScale(scale) end
+            end)
             local root = getgenv().WuScript_GUI
-            if not root or not root.Parent then return end
-            local main = root:FindFirstChildWhichIsA("Frame", false)
-            if not main then
-                for _, ch in ipairs(root:GetChildren()) do
-                    if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
+            if root and root.Parent then
+                local main = root:FindFirstChildWhichIsA("Frame", false)
+                if not main then
+                    for _, ch in ipairs(root:GetChildren()) do
+                        if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
+                    end
+                end
+                local target = main or root
+                local us = target:FindFirstChild("WuOnlyUIScale")
+                if not us then
+                    us = Instance.new("UIScale")
+                    us.Name = "WuOnlyUIScale"
+                    us.Parent = target
+                end
+                -- VisionWare 已有 UIScale 时不再叠乘，只记配置
+                if not target:FindFirstChildWhichIsA("UIScale") then
+                    us.Scale = scale
+                else
+                    us.Scale = 1
                 end
             end
-            local target = main or root
-            local us = target:FindFirstChild("WuOnlyUIScale")
-            if not us then
-                us = Instance.new("UIScale")
-                us.Name = "WuOnlyUIScale"
-                us.Parent = target
-            end
-            us.Scale = scale
-            WuRefreshScroll()
+            pcall(WuRefreshScroll)
             pcall(WuSaveUIConfig)
         end
         local WuApplyScaleDebounced = WuDebounce(0.25, WuApplyScale)
@@ -7243,10 +7285,12 @@ task.spawn(function()
             if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
                 local origin = inst:GetAttribute("WuBaseTextSize")
                 if not origin then
-                    origin = inst.TextSize
+                    origin = tonumber(inst.TextSize) or 8
+                    -- VisionWare 默认字极小(约6~9)，抬一个基础值再缩放
+                    if origin < 11 then origin = 12 end
                     inst:SetAttribute("WuBaseTextSize", origin)
                 end
-                inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 10, 40)
+                inst.TextSize = math.clamp(math.floor(origin * mul + 0.5), 11, 42)
                 pcall(function() inst.FontFace = face end)
             end
         end
