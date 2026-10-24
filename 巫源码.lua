@@ -74,17 +74,17 @@ local WU_UI_CFG_FILE = "WuScript_UIConfig.txt" -- 缩放/字体大小/粗细 记
 
 -- UI 配置记忆（与卡密同样用 writefile/readfile）
 local function WuLoadUIConfig()
-    -- 不再记忆/恢复 UI 缩放，每次启动固定为 1；仅保留字体配置
     local cfg = { scale = 1, fontScale = 1, fontWeight = "Bold" }
     pcall(function()
         if isfile and isfile(WU_UI_CFG_FILE) and readfile then
             local raw = tostring(readfile(WU_UI_CFG_FILE) or "")
             local a, b, c = raw:match("^([%d%.]+)|([%d%.]+)|([%w]+)")
+            if a then cfg.scale = math.clamp(tonumber(a) or 1, 0.5, 1.5) end
             if b then cfg.fontScale = math.clamp(tonumber(b) or 1, 0.8, 1.4) end
             if c and c ~= "" then cfg.fontWeight = c end
         end
     end)
-    getgenv().WuUIScale = 1
+    getgenv().WuUIScale = cfg.scale
     getgenv().WuFontScale = cfg.fontScale
     getgenv().WuFontWeight = cfg.fontWeight
     return cfg
@@ -93,10 +93,10 @@ end
 local function WuSaveUIConfig()
     pcall(function()
         if not writefile then return end
-        -- 缩放不持久化，固定写 1
+        local scale = tonumber(getgenv().WuUIScale) or 1
         local fs = tonumber(getgenv().WuFontScale) or 1
         local fw = tostring(getgenv().WuFontWeight or "Bold")
-        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", 1, fs, fw))
+        writefile(WU_UI_CFG_FILE, string.format("%.4f|%.4f|%s", scale, fs, fw))
     end)
 end
 
