@@ -75,13 +75,14 @@ end
 
 -- ========== 模块：自动研究 ==========
 runModule([===[
---== Auto Research v10：离屏开窗 + 只读节点文案 + 直接触发 ==--
--- 实测要点：
---   1. 面板关闭后游戏会清空内容；必须先 CW.Visible=true 才会重建（只点页签无效）
---   2. 面板一旦打开，游戏时间会完全冻结（0 天/秒），所以每轮做完必须关窗
---   3. 开窗会触发 UIBlur=12 并隐藏 HUD；离屏开窗期间把 UIBlur 压回 0，屏幕不会变模糊
---   4. ResearchStart 的 Activated 时灵时不灵，两种点击方式都试
--- 流程：离屏开窗 → 只读节点文案 → 选最便宜且 RP 够的 → 点节点 → 点开始 → 关窗 → 等 Tick 天数到达 → 下一轮
+--== Auto Research v11：优先 Remote 直发，失败再离屏 UI ==--
+-- 游戏机制限制（实测）：
+--   · 关窗会清空研究网格，仅 CW.Visible=true 才会重建
+--   · 开窗会冻结游戏日，所以 UI 路径仍须尽快关窗
+-- v11 策略：
+--   1) 若已缓存到 StartResearch 相关 Remote → 不打开面板，直接 Fire/Invoke
+--   2) 否则走离屏开窗（v10），并在点击 Start 时用 namecall 钩子记录 Remote
+--   3) 记录成功后下一轮自动走 Remote
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -94,16 +95,186 @@ local pane = CW.PanelContent
 local prev = getgenv().__autoResearch
 if prev and prev.running then pcall(function() prev.stop() end) end
 
+local CACHE_FILE = "WuPhone_ResearchRemote.json"
 local S = {
 	running = false, starts = 0, fails = 0,
 	lastEvent = "idle", lastCard = "", lastNode = "", lastCost = 0, lastStartText = "",
 	rp = 0, day = 0, targetDay = 0, daysLeft = 0,
+	progress = 0, -- 0~100 研究进度
 	busy = false, lab = "idle", panelOpen = false,
-	busyPoll = 4, retryWait = 10,
+	busyPoll = 5,
+	retryWait = 10,       -- 空闲轮询
+	failRetryWait = 45,   -- 点了但没成功：拉长间隔
+	rpWait = 120,         -- RP 不够时：长时间不打开研究页
+	rpWaitUntil = 0,      -- os.clock 时间戳
+	needRp = 0,           -- 下一档最便宜所需 RP
+	remoteMode = false,
 }
 getgenv().__autoResearch = S
 
--- 游戏一开窗就会把 UIBlur 调到 12；我们离屏开窗期间把它压回 0
+-- ---------- Remote 缓存 ----------
+local function loadCache()
+	local c = getgenv().__researchRemoteCache
+	if type(c) == "table" and c.remoteName then return c end
+	pcall(function()
+		if isfile and isfile(CACHE_FILE) and readfile then
+			local raw = readfile(CACHE_FILE)
+			-- 极简解析：name|pathHint|arg1
+			local name, hint, a1 = tostring(raw):match("^([^|]+)|([^|]*)|(.*)$")
+			if name and name ~= "" then
+				getgenv().__researchRemoteCache = {
+					remoteName = name,
+					pathHint = hint or "",
+					sampleArg = a1,
+				}
+			end
+		end
+	end)
+	return getgenv().__researchRemoteCache
+end
+
+local function saveCache(c)
+	getgenv().__researchRemoteCache = c
+	pcall(function()
+		if writefile then
+			writefile(CACHE_FILE, string.format("%s|%s|%s",
+				tostring(c.remoteName or ""),
+				tostring(c.pathHint or ""),
+				tostring(c.sampleArg or "")))
+		end
+	end)
+end
+
+local function findRemoteByName(name)
+	if not name or name == "" then return nil end
+	local lname = string.lower(name)
+	local best
+	for _, d in ipairs(RS:GetDescendants()) do
+		if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and string.lower(d.Name) == lname then
+			return d
+		end
+	end
+	-- 模糊
+	for _, d in ipairs(RS:GetDescendants()) do
+		if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+			local n = string.lower(d.Name)
+			if n:find("research", 1, true) and (n:find("start", 1, true) or n:find("begin", 1, true)) then
+				best = best or d
+			end
+		end
+	end
+	return best
+end
+
+-- 临时钩住 namecall，捕获一次 FireServer/InvokeServer
+local capture = { active = false, list = {} }
+local function beginCapture(sec)
+	capture.active = true
+	capture.list = {}
+	pcall(function()
+		if getgenv().__researchNamecallHooked then return end
+		local mt = getrawmetatable(game)
+		local old = mt.__namecall
+		setreadonly(mt, false)
+		mt.__namecall = newcclosure(function(self, ...)
+			local method = getnamecallmethod()
+			if capture.active and (method == "FireServer" or method == "InvokeServer") then
+				local sn = tostring(self and self.Name)
+				local low = string.lower(sn)
+				if low:find("research") or low:find("lab") or low:find("tech") or low:find("node") then
+					local args = {...}
+					table.insert(capture.list, {
+						name = sn,
+						method = method,
+						class = self.ClassName,
+						arg1 = args[1],
+						argCount = #args,
+					})
+				end
+			end
+			return old(self, ...)
+		end)
+		setreadonly(mt, true)
+		getgenv().__researchNamecallHooked = true
+	end)
+	task.delay(sec or 3, function() capture.active = false end)
+end
+
+local function finishCaptureAndSave(preferNodeName)
+	capture.active = false
+	if #capture.list == 0 then return false end
+	-- 优先名字最像 start research 的
+	local pick = capture.list[1]
+	for _, e in ipairs(capture.list) do
+		local n = string.lower(e.name)
+		if n:find("start") or n:find("begin") then pick = e break end
+	end
+	local arg1 = pick.arg1
+	if preferNodeName and (arg1 == nil or arg1 == "") then
+		arg1 = preferNodeName
+	end
+	saveCache({
+		remoteName = pick.name,
+		pathHint = pick.class,
+		sampleArg = arg1,
+		method = pick.method,
+	})
+	S.lastEvent = "cached remote: " .. tostring(pick.name)
+	print("[研究] 已缓存 Remote:", pick.name, "arg1=", tostring(arg1))
+	return true
+end
+
+local function tryRemoteStart(nodeName, cost)
+	local c = loadCache()
+	if not c or not c.remoteName then return false, "no cache" end
+	local remote = findRemoteByName(c.remoteName)
+	if not remote then return false, "remote missing: " .. tostring(c.remoteName) end
+
+	local arg = nodeName or c.sampleArg
+	-- 常见形态：节点名 / 纯数字 id / 表
+	local candidates = {}
+	if arg ~= nil then candidates[#candidates + 1] = arg end
+	if nodeName and nodeName ~= arg then candidates[#candidates + 1] = nodeName end
+	if type(arg) == "string" then
+		local num = tonumber(arg:match("(%d+)"))
+		if num then candidates[#candidates + 1] = num end
+	end
+	candidates[#candidates + 1] = nil -- 无参也试一次
+
+	local dayBefore = (getgenv().__tick and getgenv().__tick.day) or S.day or 0
+	for _, a in ipairs(candidates) do
+		local ok = false
+		if remote:IsA("RemoteEvent") then
+			if a == nil then ok = pcall(function() remote:FireServer() end)
+			else ok = pcall(function() remote:FireServer(a) end) end
+		else
+			if a == nil then ok = pcall(function() remote:InvokeServer() end)
+			else ok = pcall(function() remote:InvokeServer(a) end) end
+		end
+		if ok then
+			-- 等 Tick / 状态变化不够直接时，短等后认为可能成功，交由 UI 校验轮确认
+			task.wait(0.6)
+			S.remoteMode = true
+			S.lastNode = tostring(nodeName or a or c.remoteName)
+			S.lastCost = tonumber(cost) or S.lastCost
+			S.lastEvent = "remote fired: " .. c.remoteName .. " arg=" .. tostring(a)
+			-- 无面板时无法读 days left；用保守 busy：等一天或 retry 后再确认
+			S.busy = true
+			S.lab = "researching (remote)"
+			local base = tonumber(S.day) or 0
+			if base > 0 and (S.daysLeft or 0) > 0 then
+				S.targetDay = base + S.daysLeft + 1
+			elseif base > 0 then
+				S.targetDay = base + 2 -- 未知天数时先挡一小段，下一轮 UI 校准
+			end
+			S.starts = S.starts + 1
+			return true
+		end
+	end
+	return false, "fire failed"
+end
+
+-- 游戏一开窗就会把 UIBlur 调到 12；离屏开窗期间压回 0
 task.spawn(function()
 	while true do
 		if S.panelOpen then
@@ -114,7 +285,6 @@ task.spawn(function()
 	end
 end)
 
--- Tick 共享订阅
 if not getgenv().__tickInstalled then
 	getgenv().__tickInstalled = true
 	getgenv().__tick = { money = 0, rp = 0, day = 0 }
@@ -151,7 +321,24 @@ local function mouseClick(b)
 	pcall(firesignal, b.MouseButton1Up)
 end
 
--- 与其他模块（搬家/设计）共享 GameWindow，用同一把锁
+local function pressAction(b)
+	if not b then return false end
+	if getconnections then
+		local ok, conns = pcall(getconnections, b.Activated)
+		if ok and type(conns) == "table" then
+			local called = false
+			for _, c in ipairs(conns) do
+				if c.Enabled ~= false and c.Function then
+					if pcall(c.Function) then called = true end
+				end
+			end
+			if called then return true end
+		end
+	end
+	fire(b)
+	return true
+end
+
 local function acquireUI(timeout)
 	local t0 = os.clock()
 	while true do
@@ -183,7 +370,6 @@ function S.grid()
 	return nil
 end
 
--- 离屏打开并确保网格已重建
 local function openHidden()
 	local p = CW.Position
 	if p.X.Offset ~= -4000 and p.Y.Offset ~= -4000 then homePos = p end
@@ -194,7 +380,7 @@ local function openHidden()
 	if not S.grid() then
 		fire(CW.Tabs.WinTab_Research)
 		task.wait(0.7)
-		task.wait(0.3) -- 等列表稳定，避免扫到正在被替换的旧节点
+		task.wait(0.3)
 	end
 	if not S.grid() then
 		for _, d in ipairs(pane:GetDescendants()) do
@@ -203,7 +389,6 @@ local function openHidden()
 			end
 		end
 	end
-	-- 若依旧停在某个节点的详情页，先退回总列表（否则点卡片无效）
 	for _, d in ipairs(pane:GetDescendants()) do
 		if d:IsA("GuiButton") and d.Name == "ResearchStart" then
 			for _, e in ipairs(pane:GetDescendants()) do
@@ -227,23 +412,45 @@ local function closePanel()
 	end
 end
 
--- 读取顶部：RP / 剩余天数 / 实验室文案
 local function readTop()
 	local rp, days, lab, prevText = nil, nil, "", ""
+	local progress = nil
 	for _, d in ipairs(pane:GetDescendants()) do
 		if d:IsA("TextLabel") then
-			local t = (d.Text or ""):gsub("%s+", " ")
-			if prevText == "RESEARCH POINTS" then rp = tonumber(t) or rp end
-			if string.find(t, "The lab is", 1, true) then lab = t end
-			local n = t:match("^(%d+) days? left$")
+			local tx = (d.Text or ""):gsub("%s+", " ")
+			if prevText == "RESEARCH POINTS" then rp = tonumber(tx) or rp end
+			if string.find(tx, "The lab is", 1, true) then lab = tx end
+			local n = tx:match("^(%d+) days? left$")
 			if n then days = tonumber(n) end
-			prevText = t
+			-- 进度：100% / 100 % / Progress 100% 等
+			local p = tx:match("(%d+)%s*%%")
+			if p then
+				local pv = tonumber(p)
+				if pv and pv >= 0 and pv <= 100 then
+					progress = math.max(progress or 0, pv)
+				end
+			end
+			prevText = tx
+		elseif d:IsA("GuiObject") then
+			-- 部分进度条用 UI 属性或 NumberValue
+			pcall(function()
+				if d:IsA("NumberValue") and string.find(string.lower(d.Name), "progress", 1, true) then
+					local v = tonumber(d.Value)
+					if v then
+						if v <= 1 then v = v * 100 end
+						progress = math.max(progress or 0, math.clamp(v, 0, 100))
+					end
+				end
+			end)
 		end
 	end
-	return rp, days, lab
+	-- 实验室空闲文案视为 100% 完成
+	if lab and string.find(string.lower(lab), "idle", 1, true) then
+		progress = 100
+	end
+	return rp, days, lab, progress
 end
 
--- 只读扫描节点自身文本，不点任何节点
 local function scanNodes()
 	local g = S.grid()
 	local ready, invented = {}, {}
@@ -300,19 +507,18 @@ local function waitStarted(maxT)
 	while t < maxT do
 		task.wait(0.35)
 		t = t + 0.35
-		local _, days = readTop()
+		local _, days, _, prog = readTop()
 		if days and days > 0 then return days end
+		if prog and prog > 0 and prog < 100 then return days or 1 end
 	end
 	return nil
 end
 
--- 点节点并尝试开始研究（两种点击方式都试，实测时灵时不灵）
 local function tryNode(node, cost)
 	fire(node.btn)
 	task.wait(0.7)
 	local b = startBtn()
 	if not b then
-		-- 列表可能刚刷新导致旧按钮失效：按名字重新找一次再点
 		local g = S.grid()
 		local again = nil
 		if g then
@@ -346,11 +552,14 @@ local function tryNode(node, cost)
 	S.lastNode = node.name
 	S.lastCost = c
 
+	-- 点击前开始捕获 Remote
+	beginCapture(3.5)
 	for attempt = 1, 2 do
-		fire(b)
+		pressAction(b)
 		local days = waitStarted(1.4)
 		if days then
-			markStarted(node, c, days, "")
+			finishCaptureAndSave(node.name)
+			markStarted(node, c, days, ", capture")
 			return true
 		end
 		b = startBtn()
@@ -358,12 +567,14 @@ local function tryNode(node, cost)
 		mouseClick(b)
 		days = waitStarted(1.4)
 		if days then
-			markStarted(node, c, days, ", mouse")
+			finishCaptureAndSave(node.name)
+			markStarted(node, c, days, ", mouse+capture")
 			return true
 		end
 		b = startBtn()
 		if not b then break end
 	end
+	capture.active = false
 	S.lastEvent = "click not registered: " .. txt
 	return false
 end
@@ -376,41 +587,71 @@ local function backToList()
 	end
 end
 
--- 一轮：返回 true 表示已在研究中
-local function stepLocked()
+-- 仅 UI：离屏一轮
+local function stepUI()
 	syncTick()
+	-- RP 不足等待期：绝不打开研究页
+	if (S.rpWaitUntil or 0) > os.clock() then
+		local left = math.ceil(S.rpWaitUntil - os.clock())
+		S.lastEvent = ("RP 不足，%ds 后再检查（需≈%d，现有%d）")
+			:format(left, S.needRp or 0, S.rp or 0)
+		return false
+	end
+
 	if not openHidden() then
 		S.lastEvent = "panel not rebuilt"
 		return false
 	end
-	local rp, days, lab = readTop()
+	local rp, days, lab, prog = readTop()
 	if rp then S.rp = rp end
-	if days and days > 0 then
+	if prog then S.progress = prog end
+
+	-- 仍在研究中：记录进度后立刻关窗，等 100% 再来
+	if (days and days > 0) or (prog and prog > 0 and prog < 100) then
 		S.busy = true
-		S.daysLeft = days
-		S.lab = ("researching (%dd)"):format(days)
-		local base = ((S.day or 0) > 0) and (S.day or 0) or 0
-		S.targetDay = (base > 0) and (base + days + 1) or 0
-		S.lastEvent = ("researching (%d days left)"):format(days)
+		S.daysLeft = days or S.daysLeft or 0
+		S.progress = prog or S.progress or 0
+		S.lab = ("researching %d%%"):format(S.progress or 0)
+		S.lastEvent = ("研究中 %d%%（剩余约 %s 天）"):format(
+			S.progress or 0, tostring(days or "?"))
 		closePanel()
 		return true
 	end
+
+	-- 进度 100% 或 idle
+	if prog and prog >= 100 then
+		S.progress = 100
+		S.busy = false
+	end
+
 	S.busy = false
 	S.lab = (lab ~= "" and lab) or "idle"
 	local ready, invented, researched, locked = scanNodes()
 	S.lastEvent = ("idle · ready=%d invented=%d done=%d locked=%d rp=%d")
 		:format(#ready, #invented, researched, locked, S.rp or 0)
 
+	-- 最便宜一档都买不起：记下 needRp，长时间不再打开页面
+	if #ready > 0 then
+		local cheapest = ready[1]
+		S.needRp = cheapest.cost
+		if cheapest.cost > (S.rp or 0) then
+			S.rpWaitUntil = os.clock() + (S.rpWait or 120)
+			S.lastEvent = ("RP 不足：需 %d，现有 %d → %ds 内不打开研究页")
+				:format(cheapest.cost, S.rp or 0, S.rpWait or 120)
+			closePanel()
+			return false
+		end
+	end
+
 	for i = 1, math.min(#ready, 3) do
 		local n = ready[i]
 		if n.cost <= (S.rp or 0) then
 			if tryNode(n, n.cost) then
+				S.rpWaitUntil = 0
 				closePanel()
 				return true
 			end
 			backToList()
-		elseif i == 1 then
-			S.lastEvent = ("cheapest needs %d RP, have %d"):format(n.cost, S.rp or 0)
 		end
 	end
 
@@ -426,8 +667,36 @@ local function stepLocked()
 	return false
 end
 
+-- 有缓存时：先 Remote；失败再 UI，并校准状态
+local function stepLocked()
+	syncTick()
+	-- RP 等待期：连 Remote 也别狂发（避免乱点贵科技）
+	if (S.rpWaitUntil or 0) > os.clock() and not S.busy then
+		local left = math.ceil(S.rpWaitUntil - os.clock())
+		S.lastEvent = ("RP 不足冷却中 %ds"):format(left)
+		return false
+	end
+	local cache = loadCache()
+	if cache and cache.remoteName and not S.busy then
+		local okR = tryRemoteStart(S.lastNode ~= "" and S.lastNode or nil, S.lastCost)
+		if okR then
+			S.lastEvent = (S.lastEvent or "") .. " [no panel]"
+			return true
+		end
+		S.lastEvent = "remote fail → UI"
+	end
+	return stepUI()
+end
+
 local function step()
 	if not acquireUI(6) then
+		-- Remote 路径不需要锁面板时仍可试
+		local cache = loadCache()
+		if cache and cache.remoteName and not S.busy then
+			syncTick()
+			local okR = tryRemoteStart(S.lastNode ~= "" and S.lastNode or nil, S.lastCost)
+			if okR then return true end
+		end
 		S.lastEvent = "ui busy"
 		return false
 	end
@@ -441,12 +710,37 @@ local function step()
 	return res
 end
 
+local function peekProgressOnly()
+	-- 轻量校准：仅当 busy 且需要确认 100% 时偶发离屏读进度
+	if not acquireUI(3) then return nil end
+	local prog
+	local ok = pcall(function()
+		if openHidden() then
+			local rp, days, lab, p = readTop()
+			if rp then S.rp = rp end
+			prog = p
+			if days then S.daysLeft = days end
+			if lab and string.find(string.lower(lab), "idle", 1, true) then
+				prog = 100
+			end
+			if (not days or days == 0) and (not p or p >= 100) then
+				prog = prog or 100
+			end
+			closePanel()
+		end
+	end)
+	releaseUI()
+	if ok and prog then S.progress = prog end
+	return prog
+end
+
 local function loop()
-	-- 等 Tick 到达，避免 day=0 时算错目标天数
 	local guard = 0
 	while S.running and (getgenv().__tick.day or 0) == 0 and guard < 24 do
 		task.wait(0.25); guard = guard + 1; syncTick()
 	end
+	loadCache()
+	local lastPeek = 0
 	while S.running do
 		local ok = step()
 		if ok then
@@ -454,23 +748,46 @@ local function loop()
 		else
 			S.fails = S.fails + 1
 		end
-		if S.running then
-			syncTick()
-			if S.busy then
-				while S.running and S.busy do
-					task.wait(S.busyPoll)
-					syncTick()
-					if (S.day or 0) > 0 and (S.targetDay or 0) == 0 and (S.daysLeft or 0) > 0 then
-						S.targetDay = S.day + S.daysLeft + 1
-					end
-					if (S.day or 0) > 0 and (S.targetDay or 0) > 0 and S.day >= S.targetDay then
+		if not S.running then break end
+		syncTick()
+		if S.busy then
+			-- 等待进度到 100% 再进入下一轮（不再只靠天数）
+			while S.running and S.busy do
+				task.wait(S.busyPoll)
+				syncTick()
+				-- 每 ~25s 离屏读一次进度（避免天天开页）
+				if os.clock() - lastPeek > 25 then
+					lastPeek = os.clock()
+					local prog = peekProgressOnly()
+					if prog and prog >= 100 then
 						S.busy = false
-						S.lastEvent = "research finished"
+						S.progress = 100
+						S.lastEvent = "研究进度 100%，准备下一轮"
+						break
+					elseif prog then
+						S.progress = prog
+						S.lastEvent = ("研究中 %d%%"):format(prog)
 					end
 				end
-			else
-				task.wait(S.retryWait)
+				-- 兼容：天数耗尽也视为完成
+				if (S.day or 0) > 0 and (S.targetDay or 0) > 0 and S.day >= S.targetDay then
+					S.busy = false
+					S.progress = 100
+					S.lastEvent = "研究天数结束，视为完成"
+					break
+				end
 			end
+		else
+			-- 失败（点了没成功）拉长间隔；RP 不足已在 stepUI 里用 rpWaitUntil
+			local waitSec = S.retryWait or 10
+			if (S.fails or 0) > 0 and not ((S.rpWaitUntil or 0) > os.clock()) then
+				waitSec = S.failRetryWait or 45
+				S.lastEvent = (S.lastEvent or "fail") .. (" · %ds 后再试"):format(waitSec)
+			end
+			if (S.rpWaitUntil or 0) > os.clock() then
+				waitSec = math.min(waitSec, math.max(5, S.rpWaitUntil - os.clock()))
+			end
+			task.wait(waitSec)
 		end
 	end
 end
@@ -494,15 +811,28 @@ end
 
 function S.state()
 	syncTick()
+	local c = loadCache()
 	return {
 		running = S.running, starts = S.starts, fails = S.fails,
 		rp = math.floor(S.rp or 0), day = S.day,
 		lab = S.lab, lastCard = S.lastCard, daysLeft = S.daysLeft,
 		targetDay = S.targetDay, busy = S.busy, lastEvent = S.lastEvent,
+		progress = S.progress or 0,
+		needRp = S.needRp or 0,
+		rpWaitLeft = math.max(0, math.ceil((S.rpWaitUntil or 0) - os.clock())),
+		remote = c and c.remoteName or "",
 	}
 end
 
-return "autoResearch v10 loaded"
+function S.clearRemoteCache()
+	getgenv().__researchRemoteCache = nil
+	pcall(function()
+		if isfile and isfile(CACHE_FILE) and delfile then delfile(CACHE_FILE) end
+	end)
+	return "cleared"
+end
+
+return "autoResearch v11 loaded"
 
 ]===], "研究")
 
@@ -1441,7 +1771,7 @@ MainLeft:AddToggle("AutoResearch", {
     end,
 })
 
-MainLeft:AddLabel("空闲时自动开研究面板；依赖 Tick", true)
+MainLeft:AddLabel("优先 Remote 直发（首次会离屏学一次）；依赖 Tick", true)
 
 MainRight:AddToggle("AutoRelocate", {
     Text = "自动重生/搬家",
@@ -1612,11 +1942,12 @@ task.spawn(function()
                 local day = tostring(R.day or "?")
                 local rp = tostring(R.rp or "?")
                 local run = R.running and "运行中" or "关闭"
+                local st = R.state and R.state() or {}
+                local prog = st.progress or R.progress or 0
+                local ev = tostring(st.lastEvent or R.lastEvent or "")
+                local line = string.format("[%s] %s%% rp=%s · %s", run, tostring(prog), rp, ev:sub(1, 40))
                 if researchStatus and researchStatus.SetText then
-                    researchStatus:SetText(string.format("[%s] day=%s rp=%s lab=%s", run, day, rp, lab))
-                elseif researchStatus then
-                    -- Obsidian Label 可能用不同 API
-                    pcall(function() researchStatus:SetText(string.format("[%s] day=%s rp=%s lab=%s", run, day, rp, lab)) end)
+                    researchStatus:SetText(line)
                 end
             end
             if E then
