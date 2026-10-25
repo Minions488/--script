@@ -108,7 +108,8 @@ local S = {
     EnemyDetectRange = 140,
     StuckSuicide = false, -- 升高后仍卡住约 5 秒自杀
     AutoRespawn = false,
-    AutoEscape = false,
+    AutoEscape = false, -- 残血自动回主菜单
+    EscapeHP = 2800,    -- 血量 ≤ 此值触发回城
     DoubleSpeed = false,
     SpeedScale = 5,
     InfiniteRun = false,
@@ -247,6 +248,50 @@ local function pressKey(key)
             pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
         end)
     end)
+end
+
+-- ===================== 瞬间返回主菜单 =====================
+-- MENU 按钮 10 秒只是本地防手滑；真正生效是 ReturnMenu 标记 + CombatRemote "Death"
+local RS = game:GetService("ReplicatedStorage")
+local lastReturnMenuAt = 0
+
+local function returnToMainMenu(force)
+    local ch = localPlayer.Character
+    if not ch then
+        return false, "没有角色"
+    end
+    if not force then
+        local block = ch:GetAttribute("Attacking")
+            or (ch:FindFirstChild("Humanoid") and ch.Humanoid:FindFirstChild("InCombat"))
+            or workspace:GetAttribute("InBossRoom")
+        if block then
+            return false, "战斗/Boss 房中，无法返回（游戏机制）"
+        end
+    end
+    local now = tick()
+    if now - lastReturnMenuAt < 2.5 then
+        return false, "冷却中"
+    end
+    lastReturnMenuAt = now
+    local ok, err = pcall(function()
+        local remotes = RS:FindFirstChild("Remotes")
+        if not remotes then error("无 ReplicatedStorage.Remotes") end
+        local fire = remotes:FindFirstChild("FireServer")
+        local combat = remotes:FindFirstChild("CombatRemote")
+        if not fire or not combat then error("缺少 FireServer/CombatRemote") end
+        fire:FireServer("UpdateAttribute", "ReturnMenu", true)
+        task.wait(0.3)
+        fire:FireServer("UpdateAttribute", "ReturnMenu", false)
+        combat:FireServer("Death")
+    end)
+    if not ok then
+        return false, tostring(err)
+    end
+    return true, "已发送，等待回城"
+end
+
+getgenv()["瞬间回城"] = function(force)
+    return returnToMainMenu(force)
 end
 
 -- ===================== 选目标 =====================
@@ -1264,51 +1309,42 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ===================== 残血撤离（简化） =====================
+-- ===================== 残血自动回主菜单 =====================
 task.spawn(function()
-    while task.wait(0.5) do
+    while task.wait(0.35) do
         if not S.AutoEscape then
-            if escaping and escapeCF then
-                local char = localPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp then hrp.CFrame = escapeCF end
-                if escapeModel then escapeModel:Destroy() escapeModel = nil end
-                escapeCF = nil
+            -- 清理旧撤离残留
+            if escaping then
                 escaping = false
+                escapeCF = nil
+                if escapeModel then pcall(function() escapeModel:Destroy() end) escapeModel = nil end
             end
         else
-        local char = localPlayer.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hum and hrp then
-        if hum.Health > 0 and hum.Health < 2800 and not escaping then
-            escapeCF = hrp.CFrame
-            escaping = true
-            -- 很高的撤离点，减少被发现
-            local pos = hrp.Position + Vector3.new(0, 2800, 0)
-            local model = Instance.new("Model")
-            model.Name = "Acrocano_MegaSkyRoom"
-            model.Parent = workspace
-            local floor = Instance.new("Part")
-            floor.Anchored = true
-            floor.CanCollide = true
-            floor.Size = Vector3.new(60, 2, 60)
-            floor.Position = pos
-            floor.Transparency = 0.3
-            floor.Parent = model
-            escapeModel = model
-            hrp.CFrame = CFrame.new(pos + Vector3.new(0, 8, 0))
-            pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
-        elseif escaping and hum.Health >= 2800 then
-            if escapeCF then hrp.CFrame = escapeCF end
-            if escapeModel then escapeModel:Destroy() escapeModel = nil end
-            escapeCF = nil
-            escaping = false
-        end
-        end
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local thr = tonumber(S.EscapeHP) or 2800
+                if thr < 1 then thr = 1 end
+                if hum.Health <= thr then
+                    local ok, msg = returnToMainMenu(false)
+                    if ok then
+                        print("[巫 ka] 残血回城:", hum.Health, "<=", thr, msg)
+                        pcall(function()
+                            Library:Notify(string.format("残血回城（HP %.0f ≤ %d）", hum.Health, thr), 3)
+                        end)
+                        task.wait(3) -- 防止连发
+                    else
+                        -- 战斗中被拒时稍后再试
+                        if tostring(msg):find("战斗") then
+                            task.wait(1.2)
+                        end
+                    end
+                end
+            end
         end
     end
 end)
+
 
 
 -- ===================== Obsidian 控件绑定 =====================
@@ -1354,9 +1390,26 @@ FarmLeft:AddToggle("StuckSuicide", {
     end,
 })
 FarmLeft:AddToggle("AutoEscape", {
-    Text = "残血自动撤离",
+    Text = "残血自动回主菜单",
     Default = false,
-    Callback = function(v) S.AutoEscape = v end,
+    Tooltip = "血量≤设定值时瞬间回主菜单（战斗/Boss房中游戏会拒绝）",
+    Callback = function(v)
+        S.AutoEscape = v
+        print("[巫 ka] 残血回主菜单:", v, "阈值=", S.EscapeHP)
+    end,
+})
+FarmLeft:AddInput("EscapeHP", {
+    Text = "回城血量阈值 ≤",
+    Default = "2800",
+    Placeholder = "如 2800",
+    Numeric = true,
+    Callback = function(v)
+        local n = tonumber(v)
+        if n and n > 0 then
+            S.EscapeHP = n
+            print("[巫 ka] 回城血量阈值:", n)
+        end
+    end,
 })
 
 -- 技能设置（独立小板块，避免战斗栏塞不下）
@@ -1573,6 +1626,16 @@ FarmRight:AddToggle("AutoArchetype", {
     Callback = function(v)
         S.AutoArchetype = v
         print("[KaijuAlpha] 自动拾取原型:", v)
+    end,
+})
+FarmRight:AddButton({
+    Text = "立即返回主菜单",
+    Func = function()
+        local ok, msg = returnToMainMenu(true)
+        pcall(function()
+            Library:Notify(ok and ("回城：" .. tostring(msg)) or ("回城失败：" .. tostring(msg)), 3)
+        end)
+        print("[巫 ka] 立即回城:", ok, msg)
     end,
 })
 
