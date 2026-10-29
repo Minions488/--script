@@ -1,9 +1,4 @@
---[[
-  Kaiju Alpha · Obsidian UI
-  https://github.com/deividcomsono/Obsidian
-]]
-
-print("[KaijuAlpha] Obsidian 版加载中…")
+--[[ 巫 ka · Obsidian ]]
 
 -- 防重复加载
 if getgenv and getgenv().WuKaijuLoaded then
@@ -88,6 +83,7 @@ end)
 local Tabs = {
     Farm = Window:AddTab("挂机", "swords"),
     Player = Window:AddTab("玩家", "user"),
+    Stats = Window:AddTab("加点", "plus"),
     ESP = Window:AddTab("透视", "eye"),
     Extra = Window:AddTab("其他", "sparkles"),
 }
@@ -97,6 +93,9 @@ local FarmSkill = Tabs.Farm:AddLeftGroupbox("技能设置")
 local FarmSafe = Tabs.Farm:AddRightGroupbox("安全技能")
 local FarmRight = Tabs.Farm:AddRightGroupbox("复活 / 原型")
 local PlayerLeft = Tabs.Player:AddLeftGroupbox("移动")
+local StatsLeft = Tabs.Stats:AddLeftGroupbox("自动加点")
+local StatsRight = Tabs.Stats:AddRightGroupbox("状态")
+local StatsCells = Tabs.Stats:AddRightGroupbox("细胞显示")
 local ESPLeft = Tabs.ESP:AddLeftGroupbox("视觉")
 local ExtraLeft = Tabs.Extra:AddLeftGroupbox("杂项")
 local ExtraBoss = Tabs.Extra:AddRightGroupbox("Boss 传送")
@@ -140,7 +139,11 @@ local S = {
     -- Boss 传送
     BossTP = false,
     BossTPThreshold = 1080, -- 秒，对应单选（默认约 18min 档用 10min=600 可改）
-    AutoBoss = false, -- 自动刷 Shin Eva Godzilla
+    AutoBoss = false,
+    -- 自动加点
+    AutoSkillPts = false,
+    SkillPtsAllKaiju = false,
+    PreciseCells = false,
 }
 
 local farmTarget = nil
@@ -681,7 +684,6 @@ RunService.Heartbeat:Connect(function()
             if elapsed > 2 and not stuckSkillFired then
                 stuckSkillFired = true
                 castSkill(true)
-                print("[Kaiju] 卡住 2 秒，释放技能清障")
             end
             if elapsed > 11 and not stuckHopFired then
                 stuckHopFired = true
@@ -698,7 +700,6 @@ RunService.Heartbeat:Connect(function()
                 stuckPos = dest
                 stuckHopAt = tick()
                 stuckSkillFired = false
-                print("[Kaiju] 卡住 11 秒，小幅升高绕障")
             end
             -- 升高后水平位置几乎不变，再约 5 秒 → 自动自杀
             if S.StuckSuicide and stuckHopFired and stuckHopAt > 0 and not stuckSuicideFired then
@@ -718,7 +719,6 @@ RunService.Heartbeat:Connect(function()
                             local h = c and c:FindFirstChildOfClass("Humanoid")
                             if h and h.Health > 0 then
                                 h.Health = 0
-                                print("[Kaiju] 升高后仍卡住约 5 秒，自动自杀")
                             end
                         end)
                         stuckPos = nil
@@ -770,7 +770,6 @@ RunService.Heartbeat:Connect(function()
                 if lockTrackPos and dist2(tp, lockTrackPos) <= LOCK_MOVE_EPS then
                     if tick() - lockTrackSince >= LOCK_STUCK_TIME then
                         enemyBlacklist[tPlr.UserId] = true
-                        print("[巫 ka] 目标久未移动，已拉黑:", tPlr.Name, tPlr.UserId)
                         pcall(function()
                             StarterGui:SetCore("SendNotification", {
                                 Title = "巫 ka",
@@ -965,7 +964,6 @@ local function doRespawnClick()
     local playBtn = findByPath({"Menu", "Menu", "ButtonList", "Play"})
         or waitPath({"Menu", "Menu", "ButtonList", "Play"}, 1.5)
     if playBtn then
-        print("[KaijuAlpha] 点击 Play")
         clickBtn(playBtn)
         task.wait(0.6)
     end
@@ -973,10 +971,8 @@ local function doRespawnClick()
     local spawnBtn = findByPath({"Menu", "Map", "Spawn"})
         or waitPath({"Menu", "Map", "Spawn"}, 2)
     if spawnBtn then
-        print("[KaijuAlpha] 点击 Spawn")
         clickBtn(spawnBtn)
     else
-        print("[KaijuAlpha] 未找到 Spawn 按钮")
     end
 end
 
@@ -1003,7 +999,6 @@ task.spawn(function()
         elseif isAlive() then
             if wasDead then
                 kaijuNotify("已自动复活", 2.5)
-                print("[KaijuAlpha] 已自动复活")
             end
             wasDead = false
             inCountdown = false
@@ -1013,11 +1008,9 @@ task.spawn(function()
             if not inCountdown then
                 inCountdown = true
                 kaijuNotify("检测到死亡，自动触发复活", 2)
-                print("[KaijuAlpha] 检测到死亡，3 秒倒计时…")
                 for sec = 3, 1, -1 do
                     if not S.AutoRespawn or isAlive() then break end
                     kaijuNotify("距自动复活剩余 " .. sec .. " 秒", 1)
-                    print("[KaijuAlpha] 距自动复活剩余", sec, "秒")
                     task.wait(1)
                 end
                 if S.AutoRespawn and not isAlive() then
@@ -1164,10 +1157,8 @@ task.spawn(function()
                         if hrp0 then savedCF = hrp0.CFrame end
                         archetypeBusy = true
                         busySince = tick()
-                        print("[Kaiju] 原型独占开始，其它功能暂停")
                     elseif tick() - busySince > 20 then
                         -- 超时强制结束，防止永久卡死
-                        print("[Kaiju] 原型超时，强制恢复")
                         returnToSaved()
                         archetypeBusy = false
                         lastRef = nil
@@ -1197,7 +1188,6 @@ task.spawn(function()
             else
                 -- 原型没了：回原位，解除独占，其它功能恢复
                 if archetypeBusy or lastRef then
-                    print("[Kaiju] 原型完成，恢复其它功能")
                     returnToSaved()
                     archetypeBusy = false
                     lastRef = nil
@@ -1328,7 +1318,6 @@ task.spawn(function()
                 if hum.Health <= thr then
                     local ok, msg = returnToMainMenu(false)
                     if ok then
-                        print("[巫 ka] 残血回城:", hum.Health, "<=", thr, msg)
                         pcall(function()
                             Library:Notify(string.format("残血回城（HP %.0f ≤ %d）", hum.Health, thr), 3)
                         end)
@@ -1378,7 +1367,6 @@ FarmLeft:AddInput("EnemyDetectRange", {
         else
             S.EnemyDetectRange = 140
         end
-        print("[Kaiju] 敌人检测范围 =", S.EnemyDetectRange)
     end,
 })
 FarmLeft:AddToggle("StuckSuicide", {
@@ -1392,10 +1380,9 @@ FarmLeft:AddToggle("StuckSuicide", {
 FarmLeft:AddToggle("AutoEscape", {
     Text = "残血自动回主菜单",
     Default = false,
-    Tooltip = "血量≤设定值时瞬间回主菜单（战斗/Boss房中游戏会拒绝）",
+    Tooltip = "HP≤阈值时回主菜单",
     Callback = function(v)
         S.AutoEscape = v
-        print("[巫 ka] 残血回主菜单:", v, "阈值=", S.EscapeHP)
     end,
 })
 FarmLeft:AddInput("EscapeHP", {
@@ -1407,7 +1394,6 @@ FarmLeft:AddInput("EscapeHP", {
         local n = tonumber(v)
         if n and n > 0 then
             S.EscapeHP = n
-            print("[巫 ka] 回城血量阈值:", n)
         end
     end,
 })
@@ -1421,7 +1407,6 @@ FarmSkill:AddInput("PrioritizeHP", {
     Callback = function(v)
         local n = tonumber(v)
         S.PrioritizeHP = (n and n > 0) and n or 0
-        print("[Kaiju] 优先血量≤", S.PrioritizeHP == 0 and "不限制" or S.PrioritizeHP)
     end,
 })
 FarmSkill:AddInput("PrioritizeDist", {
@@ -1432,7 +1417,6 @@ FarmSkill:AddInput("PrioritizeDist", {
     Callback = function(v)
         local n = tonumber(v)
         S.PrioritizeDist = (n and n > 0) and n or 0
-        print("[Kaiju] 优先距离≤", S.PrioritizeDist == 0 and "不限制" or S.PrioritizeDist)
     end,
 })
 FarmSkill:AddInput("SkillCastRange", {
@@ -1447,7 +1431,6 @@ FarmSkill:AddInput("SkillCastRange", {
         else
             S.SkillCastRange = 18
         end
-        print("[Kaiju] 放技能距离:", S.SkillCastRange)
     end,
 })
 
@@ -1472,7 +1455,6 @@ FarmSkill:AddDropdown("SkillKeys", {
         end
         S.SkillKeys = map
         skillStep = 1
-        print("[Kaiju] 技能键位已更新")
     end,
 })
 
@@ -1484,7 +1466,6 @@ FarmSkill:AddDropdown("SkillOrder", {
     Callback = function(value)
         S.SkillOrder = tostring(value)
         skillStep = 1
-        print("[Kaiju] 技能顺序:", S.SkillOrder)
     end,
 })
 
@@ -1495,7 +1476,6 @@ FarmSkill:AddDropdown("SkillInterval", {
     Multi = false,
     Callback = function(value)
         S.SkillInterval = tostring(value)
-        print("[Kaiju] 技能间隔:", S.SkillInterval)
     end,
 })
 
@@ -1508,7 +1488,6 @@ FarmSafe:AddToggle("SafeSkill", {
     Tooltip = "检测范围内无敌人时，自动按下方勾选的技能键",
     Callback = function(v)
         S.SafeSkill = v
-        print("[巫 ka] 安全技能:", v)
     end,
 })
 FarmSafe:AddInput("SafeSkillRange", {
@@ -1523,7 +1502,6 @@ FarmSafe:AddInput("SafeSkillRange", {
         else
             S.SafeSkillRange = 40
         end
-        print("[巫 ka] 安全范围:", S.SafeSkillRange)
     end,
 })
 FarmSafe:AddDropdown("SafeSkillKeys", {
@@ -1546,7 +1524,6 @@ FarmSafe:AddDropdown("SafeSkillKeys", {
             end
         end
         S.SafeSkillKeys = map
-        print("[巫 ka] 安全技能键已更新")
     end,
 })
 FarmSafe:AddInput("SafeSkillInterval", {
@@ -1613,19 +1590,17 @@ end)
 FarmRight:AddToggle("AutoRespawn", {
     Text = "自动重生(死后倒计时)",
     Default = false,
-    Tooltip = "死后 3 秒倒计时通知并点击复活",
+    Tooltip = "死后自动点复活",
     Callback = function(v)
         S.AutoRespawn = v
-        print("[KaijuAlpha] 自动重生:", v)
     end,
 })
 FarmRight:AddToggle("AutoArchetype", {
     Text = "自动拾取原型",
     Default = false,
-    Tooltip = "常驻等待 Archetype 出现并传送交互",
+    Tooltip = "出现原型则传送拾取",
     Callback = function(v)
         S.AutoArchetype = v
-        print("[KaijuAlpha] 自动拾取原型:", v)
     end,
 })
 FarmRight:AddButton({
@@ -1635,7 +1610,6 @@ FarmRight:AddButton({
         pcall(function()
             Library:Notify(ok and ("回城：" .. tostring(msg)) or ("回城失败：" .. tostring(msg)), 3)
         end)
-        print("[巫 ka] 立即回城:", ok, msg)
     end,
 })
 
@@ -1655,9 +1629,7 @@ PlayerLeft:AddInput("SpeedScale", {
         local n = tonumber(text)
         if n and n > 0 then
             S.SpeedScale = math.clamp(n, 0.1, 100)
-            print("[Kaiju] 加速力度 =", S.SpeedScale)
         else
-            print("[Kaiju] 请输入有效数字")
         end
     end,
 })
@@ -1868,7 +1840,6 @@ ExtraLeft:AddToggle("AutoRadiation", {
     Tooltip = "按所选键释放射线；目标可选 Boss / 玩家 / 建筑",
     Callback = function(v)
         S.AutoRadiation = v
-        print("[巫 ka] 自动射光线:", v)
     end,
 })
 
@@ -1879,7 +1850,6 @@ ExtraLeft:AddDropdown("RadiationKey", {
     Multi = false,
     Callback = function(value)
         S.RadiationKey = tostring(value or "4")
-        print("[巫 ka] 射光线按键:", S.RadiationKey)
     end,
 })
 
@@ -1890,7 +1860,6 @@ ExtraLeft:AddDropdown("RadiationTarget", {
     Multi = false,
     Callback = function(value)
         S.RadiationTarget = tostring(value or "玩家")
-        print("[巫 ka] 射线目标:", S.RadiationTarget)
     end,
 })
 
@@ -2280,17 +2249,15 @@ local function teleportToBossFixed()
         setPos(BOSS_TARGET)
     end
 
-    print("[巫 ka] 已分段传送至 Boss:", BOSS_TARGET, "原距离≈", math.floor(total))
     return true
 end
 
 ExtraBoss:AddToggle("BossTP", {
     Text = "自动传送至 Boss",
     Default = false,
-    Tooltip = "倒计时≤所选时间传一次；打完Boss时间重置后，再计时到阈值再传一次",
+    Tooltip = "倒计时≤阈值传一次，重置后再传",
     Callback = function(v)
         S.BossTP = v
-        print("[巫 ka] Boss 传送:", v)
     end,
 })
 
@@ -2307,7 +2274,6 @@ ExtraBoss:AddDropdown("BossTPThreshold", {
         else
             S.BossTPThreshold = 600
         end
-        print("[巫 ka] Boss 阈值:", key, "=", S.BossTPThreshold, "秒")
         pcall(function()
             Library:Notify("Boss 阈值: " .. key .. "（≤传一次，重置后再传）", 2)
         end)
@@ -2325,12 +2291,12 @@ ExtraBoss:AddButton({
     end,
 })
 
-ExtraBoss:AddLabel("固定坐标；远距自动分段传送（防太远传不过去）", true)
+ExtraBoss:AddLabel("远距自动分段传送", true)
 
 ExtraBoss:AddToggle("AutoBoss", {
     Text = "自动刷 BOSS（Shin Eva）",
     Default = false,
-    Tooltip = "检测到 Boss 刷新即锁定；只打 Boss，不打玩家；安全技能自动让路",
+    Tooltip = "只打 Boss，安全技能让路",
     Callback = function(v)
         S.AutoBoss = v
         if v then
@@ -2340,11 +2306,10 @@ ExtraBoss:AddToggle("AutoBoss", {
         else
             setHoldW(false)
         end
-        print("[巫 ka] 自动刷 BOSS:", v)
     end,
 })
 
-ExtraBoss:AddLabel("团体战只锁 Boss；刷新即追；安全技能遇 Boss 让路", true)
+ExtraBoss:AddLabel("只锁 Boss", true)
 
 -- 查看 Boss 刷新剩余时间：点按弹出类系统提示窗
 local function formatBossRemain(secs)
@@ -2461,12 +2426,10 @@ ExtraBoss:AddButton({
         if secs and secs > 0 then
             local msg = formatBossRemain(secs)
             showBossTimerPrompt(msg)
-            print("[巫 ka] Boss 倒计时:", msg, "raw=", text)
         elseif secs == 0 then
             showBossTimerPrompt("剩余 0 分 00 秒（可能已刷新）")
         else
             showBossTimerPrompt("未读到倒计时（Boss 已刷新或界面未加载）")
-            print("[巫 ka] Boss 倒计时读取失败, label=", lbl ~= nil, "text=", tostring(text))
         end
     end,
 })
@@ -2547,7 +2510,6 @@ task.spawn(function()
                             pcall(function()
                                 Library:Notify(string.format("已锁定 Boss（距离 %.0f）", dist), 2)
                             end)
-                            print("[巫 ka] AutoBoss 锁定:", bname, "dist=", math.floor(dist))
                         end
 
                         -- 同自动刷建筑/敌人
@@ -2592,7 +2554,6 @@ task.spawn(function()
                 -- 时间重置检测：剩余秒数明显回升（Boss 打完后倒计时重新开始）
                 if bossTPLastSecs and secs > bossTPLastSecs + 30 then
                     bossTPOnceFired = false
-                    print("[巫 ka] Boss 倒计时已重置:", bossTPLastSecs, "->", secs, "，本轮可再传一次")
                     pcall(function()
                         Library:Notify("Boss 倒计时已重置，等待再次到达阈值后传送", 3)
                     end)
@@ -2610,7 +2571,6 @@ task.spawn(function()
                         pcall(function()
                             Library:Notify(string.format("已传送至 Boss（剩余 %d:%02d，本轮仅一次）", mm, ss), 3)
                         end)
-                        print("[巫 ka] BossTP 本轮已传送，secs=", secs, "th=", th)
                     end
                 end
             end
@@ -2636,15 +2596,291 @@ ExtraLeft:AddButton({
         S.SafeSkill = false
         S.BossTP = false
         S.AutoBoss = false
+        S.AutoSkillPts = false
+        S.PreciseCells = false
         pcall(function()
-            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","StuckSuicide","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","ESPLevel","ESPHP","AutoRadiation","SafeSkill","BossTP","AutoBoss"}) do
+            for _, name in ipairs({"AutoFarm","AutoFarmEnemy","StuckSuicide","AutoRespawn","AutoEscape","AutoArchetype","DoubleSpeed","ESP","ESPTracers","ESPLevel","ESPHP","AutoRadiation","SafeSkill","BossTP","AutoBoss","AutoSkillPts","SkillPtsAllKaiju","PreciseCells"}) do
                 if Toggles[name] then Toggles[name]:SetValue(false) end
             end
         end)
-        print("[KaijuAlpha] 已关闭主要功能")
     end,
 })
-ExtraLeft:AddLabel("Kaiju Alpha · Obsidian UI", true)
+ExtraLeft:AddLabel("巫 ka", true)
+
+
+-- ===================== 自动加点 =====================
+do
+    local FireRemote = nil
+    pcall(function()
+        FireRemote = game:GetService("ReplicatedStorage").Remotes.FireServer
+    end)
+
+    local SP = {
+        order = { "Strength", "Health", "Energy", "Regen", "Speed" },
+        wait = 0.35,
+        watch = 2,
+        skip = {},
+        last = "",
+    }
+    getgenv().__autoSkillPoints = SP
+
+    local function playerData()
+        local data = game:GetService("ReplicatedStorage"):FindFirstChild("Data")
+        return data and data:FindFirstChild(localPlayer.UserId .. "_Data")
+    end
+
+    local function currentKaiju()
+        local pd = playerData()
+        local v = pd and pd:FindFirstChild("CurrentKaiju")
+        return v and v.Value
+    end
+
+    local function fill(kaiju)
+        if not FireRemote then return 0, 0, "无 FireServer" end
+        local pd = playerData()
+        if not pd then return 0, 0, "无数据" end
+        local k = pd.KaijuInventory and pd.KaijuInventory:FindFirstChild(kaiju)
+        local stats = k and k:FindFirstChild("Stats")
+        if not stats then return 0, 0, "无 Stats" end
+        local sp = stats:FindFirstChild("Skill_Points")
+        if not sp or sp.Value <= 0 then return 0, sp and sp.Value or 0, "无点数" end
+        local added = 0
+        for _, statName in ipairs(SP.order) do
+            if sp.Value <= 0 then break end
+            local sv = stats:FindFirstChild(statName)
+            if sv then
+                local stale = 0
+                while sp.Value > 0 and stale < 2 do
+                    local before = sp.Value
+                    pcall(function()
+                        FireRemote:FireServer("UpdateStat", kaiju, statName, "Increase")
+                    end)
+                    task.wait(SP.wait)
+                    if sp.Value < before then
+                        added = added + 1
+                        stale = 0
+                    else
+                        stale = stale + 1
+                    end
+                end
+            end
+        end
+        return added, sp.Value, kaiju
+    end
+
+    local function runOnce()
+        local out = {}
+        if S.SkillPtsAllKaiju then
+            local pd = playerData()
+            if not pd or not pd.KaijuInventory then return "无库存" end
+            for _, k in ipairs(pd.KaijuInventory:GetChildren()) do
+                local st = k:FindFirstChild("Stats")
+                local sp = st and st:FindFirstChild("Skill_Points")
+                if sp and sp.Value > 0 then
+                    local n, left = fill(k.Name)
+                    out[#out + 1] = string.format("%s +%d 剩%s", k.Name, n, tostring(left))
+                end
+            end
+        else
+            local k = currentKaiju()
+            if not k then return "无当前怪兽" end
+            if SP.skip[k] and os.clock() < SP.skip[k] then return "冷却中" end
+            local n, left = fill(k)
+            if n == 0 and left and left > 0 then
+                SP.skip[k] = os.clock() + 60
+            end
+            out[#out + 1] = string.format("%s +%d 剩%s", k, n, tostring(left))
+        end
+        return #out > 0 and table.concat(out, " | ") or "无可用点数"
+    end
+
+    task.spawn(function()
+        while task.wait(SP.watch) do
+            if S.AutoSkillPts then
+                local ok, res = pcall(runOnce)
+                SP.last = ok and tostring(res) or ("err:" .. tostring(res))
+            end
+        end
+    end)
+
+    StatsLeft:AddToggle("AutoSkillPts", {
+        Text = "自动加技能点",
+        Default = false,
+        Callback = function(v)
+            S.AutoSkillPts = v
+        end,
+    })
+    StatsLeft:AddToggle("SkillPtsAllKaiju", {
+        Text = "处理全部怪兽",
+        Default = false,
+        Callback = function(v)
+            S.SkillPtsAllKaiju = v
+        end,
+    })
+    StatsLeft:AddLabel("顺序: 力→血→能→回复→速", true)
+    StatsLeft:AddButton({
+        Text = "立即加一轮",
+        Func = function()
+            local ok, res = pcall(runOnce)
+            local msg = ok and tostring(res) or tostring(res)
+            SP.last = msg
+            pcall(function() Library:Notify(msg, 3) end)
+        end,
+    })
+    local spStatus = StatsRight:AddLabel("状态: —", true)
+    task.spawn(function()
+        while task.wait(1) do
+            pcall(function()
+                local line = string.format("%s | %s",
+                    S.AutoSkillPts and "开" or "关",
+                    tostring(SP.last or "—"):sub(1, 48))
+                if spStatus and spStatus.SetText then
+                    spStatus:SetText(line)
+                end
+            end)
+        end
+    end)
+end
+
+
+-- ===================== 细胞数精确显示 =====================
+do
+    local patched = {} -- [TextLabel] = true
+    local conns = {}
+    local scanThread = nil
+    local running = false
+
+    local function getCells()
+        local data = game:GetService("ReplicatedStorage"):FindFirstChild("Data")
+        local pd = data and data:FindFirstChild(localPlayer.UserId .. "_Data")
+        local v = pd and pd:FindFirstChild("Cells")
+        if not v then return nil end
+        return math.floor(tonumber(v.Value) or 0)
+    end
+
+    local function comma(n)
+        local s = tostring(math.floor(n))
+        local rev = string.reverse(s):gsub("(%d%d%d)", "%1,")
+        return (string.reverse(rev):gsub("^,", ""))
+    end
+
+    local function exactText()
+        local n = getCells()
+        if not n then return nil end
+        return comma(n) .. " Cells"
+    end
+
+    local function isAbbrevCells(text)
+        if type(text) ~= "string" then return false end
+        -- 5.59M Cells / 12K Cells / 1.2B Cells
+        if text:match("^[%d%.]+[KMB] Cells$") then return true end
+        if text:match("^[%d,]+ Cells$") then return true end
+        return false
+    end
+
+    local function patch(label)
+        if not label or patched[label] then return end
+        patched[label] = true
+        local busy = false
+
+        local function apply()
+            if not running or not label.Parent then return end
+            local want = exactText()
+            if not want or label.Text == want then return end
+            busy = true
+            pcall(function() label.Text = want end)
+            busy = false
+        end
+
+        local c
+        pcall(function()
+            c = label:GetPropertyChangedSignal("Text"):Connect(function()
+                if busy or not running then return end
+                task.defer(apply)
+            end)
+        end)
+        if c then conns[#conns + 1] = c end
+        apply()
+    end
+
+    local function scan()
+        local pg = localPlayer:FindFirstChild("PlayerGui")
+        if not pg then return 0 end
+        local n = 0
+        -- 已知路径优先
+        local paths = {
+            {"Hud", "Right", "Cells", "TextLabel"},
+            {"Menu", "Menu", "Status", "Cells", "TextLabel"},
+        }
+        for _, path in ipairs(paths) do
+            local node = pg
+            for _, name in ipairs(path) do
+                node = node and node:FindFirstChild(name)
+            end
+            if node and node:IsA("TextLabel") then
+                patch(node)
+                n = n + 1
+            end
+        end
+        for _, sg in ipairs(pg:GetChildren()) do
+            if sg:IsA("ScreenGui") then
+                for _, d in ipairs(sg:GetDescendants()) do
+                    if d:IsA("TextLabel") and isAbbrevCells(d.Text) then
+                        patch(d)
+                        n = n + 1
+                    end
+                end
+            end
+        end
+        return n
+    end
+
+    local function stopPrecise()
+        running = false
+        for _, c in ipairs(conns) do
+            pcall(function() c:Disconnect() end)
+        end
+        for i = #conns, 1, -1 do conns[i] = nil end
+        for k in pairs(patched) do patched[k] = nil end
+        scanThread = nil
+    end
+
+    local function startPrecise()
+        if running then return end
+        running = true
+        scan()
+        scanThread = task.spawn(function()
+            while running do
+                scan()
+                -- 已 patch 的标签定期刷新数值
+                for label in pairs(patched) do
+                    if label.Parent then
+                        local want = exactText()
+                        if want and label.Text ~= want then
+                            pcall(function() label.Text = want end)
+                        end
+                    end
+                end
+                task.wait(0.5)
+            end
+        end)
+    end
+
+    StatsCells:AddToggle("PreciseCells", {
+        Text = "细胞数精确显示",
+        Default = false,
+        Tooltip = "把 5.59M 改成完整整数",
+        Callback = function(v)
+            S.PreciseCells = v
+            if v then
+                startPrecise()
+            else
+                stopPrecise()
+            end
+        end,
+    })
+    StatsCells:AddLabel("改写游戏自带 Cells 文本", true)
+end
 
 -- ===================== 配置保存 / 主题（中文，容错加载） =====================
 do
@@ -2759,11 +2995,9 @@ do
             task.wait(0.25)
             pcall(zhTranslateUI)
         end
-        print("[巫 ka] 配置/主题汉化完成")
     end)
 
     if okTM or okSM then
-        print("[巫 ka] 配置/主题模块已加载")
     end
 end
 
@@ -2812,7 +3046,6 @@ task.spawn(function()
             sound.Ended:Connect(function()
                 sound:Destroy()
             end)
-            print("[Kaiju] 启动音效已播放")
         else
             sound:Destroy()
             warn("[Kaiju] 启动音效加载失败（执行器可能不支持外链音频）")
