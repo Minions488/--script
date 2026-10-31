@@ -1,4 +1,4 @@
---[[ 巫 script · VeloraUI · 完整功能移植 ]]
+--[[ 巫 script · Mugi UI · 完整功能移植 ]]
 print("[巫 script] 启动")
 pcall(function()
     if getgenv().WuScript_GUI then getgenv().WuScript_GUI:Destroy() end
@@ -529,22 +529,30 @@ end)
 
 -- 加载动画已删除（保持极简）
 
-print("[巫 script] 加载 UI 库 (VeloraUI)...")
--- VeloraUI: https://github.com/kismile36/VeloraUI
+print("[巫 script] 加载 UI 库 (Mugi)...")
+-- Mugi UI: https://github.com/ftgless/Mugi  （黑白渐变紧凑风格，内置 SVG 图标）
 -- 通过兼容层保留本脚本现有的 AddTab/AddSection/AddToggle 等调用，尽量不改动功能回调。
+-- 想强制更新 UI 库：删除 workspace 里的 WuScript_Mugi_Cache.lua 后重新执行。
 local okLib, Library = pcall(function()
-    local CACHE = "WuScript_Velora_Cache.lua"
+    local CACHE = "WuScript_Mugi_Cache.lua"
     local urls = {
-        "https://raw.githubusercontent.com/kismile36/VeloraUI/main/Velora.lua",
-        "https://raw.githubusercontent.com/kismile36/VeloraUI/refs/heads/main/Velora.lua",
-        "https://cdn.jsdelivr.net/gh/kismile36/VeloraUI@main/Velora.lua",
+        "https://raw.githubusercontent.com/ftgless/Mugi/main/UI",
+        "https://raw.githubusercontent.com/ftgless/Mugi/refs/heads/main/UI",
+        "https://cdn.jsdelivr.net/gh/ftgless/Mugi@main/UI",
     }
+
+    local function validSource(src)
+        return type(src) == "string"
+            and #src > 10000
+            and src:find("CreateWindow", 1, true) ~= nil
+            and src:find("MugiHub", 1, true) ~= nil
+    end
 
     local function httpGet(url)
         local ok, res = pcall(function()
             return game:HttpGet(url)
         end)
-        if ok and type(res) == "string" and #res > 10000 then
+        if ok and validSource(res) then
             return res
         end
         ok, res = pcall(function()
@@ -558,130 +566,173 @@ local okLib, Library = pcall(function()
             end
             return nil
         end)
-        if ok and type(res) == "string" and #res > 10000 then
+        if ok and validSource(res) then
             return res
         end
         return nil
     end
 
-    local src
+    -- 编译并执行库源码，返回 { Library = ..., Webhook = ... }
+    local function loadMugi(src)
+        local chunk, compileError = loadstring(src)
+        if not chunk then return nil, "编译失败: " .. tostring(compileError) end
+        local runOk, result = pcall(chunk)
+        if not runOk then return nil, "执行失败: " .. tostring(result) end
+        if type(result) ~= "table"
+            or type(result.Library) ~= "table"
+            or type(result.Library.CreateWindow) ~= "function" then
+            return nil, "Mugi.Library 无效"
+        end
+        return result
+    end
+
+    local Mugi
     pcall(function()
         if isfile and isfile(CACHE) and readfile then
             local cached = readfile(CACHE)
-            if type(cached) == "string"
-                and #cached > 10000
-                and cached:find("function Velora.new", 1, true)
-            then
-                src = cached
-                print("[巫 script] 使用 VeloraUI 本地缓存")
+            if validSource(cached) then
+                local lib = loadMugi(cached)
+                if lib then
+                    Mugi = lib
+                    print("[巫 script] 使用 Mugi 本地缓存")
+                elseif delfile then
+                    pcall(delfile, CACHE) -- 缓存损坏，删掉后重新下载
+                end
             end
         end
     end)
 
-    if not src then
+    if not Mugi then
         local lastError = "无可用下载源"
         for _, url in ipairs(urls) do
-            print("[巫 script] 下载 VeloraUI:", tostring(url):sub(1, 78))
+            print("[巫 script] 下载 Mugi:", tostring(url):sub(1, 78))
             local body = httpGet(url)
-            if body and body:find("function Velora.new", 1, true) then
-                src = body
-                pcall(function()
-                    if writefile then writefile(CACHE, body) end
-                end)
-                print("[巫 script] VeloraUI 下载成功，字节:", #body)
-                break
+            if body then
+                local lib, err = loadMugi(body)
+                if lib then
+                    Mugi = lib
+                    pcall(function()
+                        if writefile then writefile(CACHE, body) end
+                    end)
+                    print("[巫 script] Mugi 下载成功，字节:", #body)
+                    break
+                end
+                lastError = tostring(err)
+            else
+                lastError = "下载失败或内容无效"
             end
-            lastError = "下载失败或内容无效"
             task.wait(0.12)
         end
-        if not src then error("VeloraUI " .. lastError) end
+        if not Mugi then error("Mugi " .. lastError) end
     end
 
-    local chunk, compileError = loadstring(src)
-    assert(chunk, "VeloraUI 编译失败: " .. tostring(compileError))
-    local runOk, Velora = pcall(chunk)
-    assert(runOk, "VeloraUI 执行失败: " .. tostring(Velora))
-    assert(type(Velora) == "table" and type(Velora.new) == "function",
-        "Velora.new 无效")
+    local MugiLib = Mugi.Library
 
-    local UI = Velora.new({
-        Name = "WuScript_Velora",
-        Parent = "Auto",
-        Theme = "Midnight",
-        Accent = Color3.fromRGB(105, 125, 255),
-        DestroyExisting = true,
-        IgnoreGuiInset = false,
-        ToggleKey = Enum.KeyCode.RightControl,
-        Mobile = true,
-        OpenButton = {
-            Title = "巫 script",
-            Icon = "巫",
-            Draggable = true,
-            OnlyIcon = false,
-            OnlyMobile = false,
-        },
-        Config = {
-            Folder = "WuScript_Velora",
-            File = "settings",
-            AutoSave = false,
-        },
-    })
+    -- Mugi 不暴露 ScreenGui：创建窗口前后对比各个 GUI 容器，找出新出现的 "MugiHub"
+    local function guiContainers()
+        local list = {}
+        pcall(function() if gethui then table.insert(list, gethui()) end end)
+        pcall(function() table.insert(list, game:GetService("CoreGui")) end)
+        pcall(function()
+            local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+            if pg then table.insert(list, pg) end
+        end)
+        return list
+    end
+    local guiBefore = {}
+    for _, container in ipairs(guiContainers()) do
+        pcall(function()
+            for _, child in ipairs(container:GetChildren()) do guiBefore[child] = true end
+        end)
+    end
 
-    local rawWindow = UI:CreateWindow({
+    local WINDOW_SIZE = UDim2.fromOffset(520, 320)
+    local rawWindow = MugiLib:CreateWindow({
         Title = "巫 script",
-        Subtitle = "by wu",
-        Icon = "巫",
-        Size = UDim2.fromOffset(760, 560),
-        Resizable = true,
-        Search = true,
-        ShowUser = false,
-        CloseBehavior = "Destroy",
-        ConfirmOnClose = true,
-        CloseConfirmTitle = "是否关闭巫 script？",
-        CloseConfirmContent = "关闭后会销毁当前界面；可重新执行脚本再次打开。",
-        CloseConfirmCancel = "取消",
-        CloseConfirmConfirm = "关闭",
+        Description = "by wu",
+        Icon = "hub",
+        SizeUi = WINDOW_SIZE,
+        ["Tab Width"] = 118,
+        Keybind = Enum.KeyCode.RightControl,
+        Scale = tonumber(getgenv().WuUIScale) or 1,
+        Bubble = { Type = "Draggable", Icon = "hub", Size = 44 },
     })
 
-    local Library = { _Velora = Velora, _UI = UI, _rawWindow = rawWindow }
+    local screenGui
+    for _, container in ipairs(guiContainers()) do
+        pcall(function()
+            for _, child in ipairs(container:GetChildren()) do
+                if not guiBefore[child] and child:IsA("ScreenGui") and child.Name == "MugiHub" then
+                    screenGui = child
+                end
+            end
+        end)
+    end
 
-    local function notifyVelora(opts)
+    local Library = { _Mugi = Mugi, _MugiLib = MugiLib, _rawWindow = rawWindow }
+
+    local function notifyMugi(opts)
         opts = opts or {}
         if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
         local title = tostring(opts.Title or "巫 script")
         local content = tostring(opts.Content or opts.Desc or opts.Text or opts.Message or "")
         local kind = opts.Type or opts.NotificationType
-        if not kind then
+        if kind then
+            kind = string.lower(tostring(kind))
+        else
             local low = string.lower(title .. " " .. content)
             if low:find("失败", 1, true) or low:find("error", 1, true) then
-                kind = "Error"
+                kind = "error"
             elseif low:find("成功", 1, true) or low:find("完成", 1, true) then
-                kind = "Success"
+                kind = "success"
             elseif low:find("警告", 1, true) or low:find("注意", 1, true) then
-                kind = "Warning"
+                kind = "warning"
             else
-                kind = "Info"
+                kind = "info"
             end
         end
-        return UI:Notify({
-            Title = title,
-            Content = content,
-            Type = kind,
-            Duration = tonumber(opts.Duration or opts.Delay) or 3,
-        })
+        local ok, res = pcall(function()
+            return MugiLib:SetNotification({
+                Title = title,
+                Content = content,
+                Type = kind,
+                Delay = tonumber(opts.Duration or opts.Delay) or 3,
+            })
+        end)
+        return ok and res or nil
     end
 
     function Library:Notify(opts)
-        return notifyVelora(opts)
+        return notifyMugi(opts)
     end
     Library.Notification = Library.Notify
+
+    -- Mugi 的控件句柄用点调用（handle.Set(v)），旧脚本里有 handle:Set(v) 的写法；
+    -- 代理一层，让两种写法都能用。
+    local function proxify(handle)
+        if type(handle) ~= "table" then return handle end
+        local P = {}
+        setmetatable(P, {
+            __index = function(_, key)
+                local value = handle[key]
+                if type(value) == "function" then
+                    return function(a, ...)
+                        if a == P then return value(...) end
+                        return value(a, ...)
+                    end
+                end
+                return value
+            end,
+        })
+        return P
+    end
 
     local function callControl(rawSection, method, options)
         local ok, control = pcall(function()
             return rawSection[method](rawSection, options)
         end)
-        if ok and control then return control end
-        warn("[巫][VeloraUI] 控件创建失败:", method, control)
+        if ok and control then return proxify(control) end
+        warn("[巫][Mugi] 控件创建失败:", method, control)
         return nil
     end
 
@@ -706,18 +757,20 @@ local okLib, Library = pcall(function()
         return result
     end
 
+    local function fnOrNoop(f)
+        return type(f) == "function" and f or function() end
+    end
+
     local function wrapSection(rawSection)
         local S = { _raw = rawSection, Options = {} }
 
         function S:AddButton(t)
             t = t or {}
             return callControl(rawSection, "AddButton", {
-                Title = tostring(t.Name or t.Title or "按钮"),
+                Name = tostring(t.Name or t.Title or "按钮"),
                 Description = tostring(t.Description or t.Desc or ""),
-                ActionText = tostring(t.Text or t.ActionText or "执行"),
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
-                Variant = t.Variant,
-                Danger = t.Danger == true,
+                Callback = fnOrNoop(t.Callback),
+                Icon = t.Icon,
             }) or S
         end
         S.Button = S.AddButton
@@ -725,11 +778,11 @@ local okLib, Library = pcall(function()
         function S:AddToggle(t)
             t = t or {}
             return callControl(rawSection, "AddToggle", {
-                Title = tostring(t.Name or t.Title or "开关"),
+                Name = tostring(t.Name or t.Title or "开关"),
                 Description = tostring(t.Description or t.Desc or ""),
                 Flag = t.Flag,
                 Default = t.Default == true or t.Value == true or t.State == true,
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Callback = fnOrNoop(t.Callback),
             }) or S
         end
         S.Toggle = S.AddToggle
@@ -756,15 +809,14 @@ local okLib, Library = pcall(function()
             end
             if step <= 0 then step = 1 end
             return callControl(rawSection, "AddSlider", {
-                Title = tostring(t.Name or t.Title or "滑条"),
-                Description = tostring(t.Description or t.Desc or ""),
+                Name = tostring(t.Name or t.Title or "滑条"),
                 Flag = t.Flag,
                 Min = minV,
                 Max = maxV,
                 Default = defaultV,
-                Step = step,
+                Increment = step,
                 Suffix = tostring(t.Suffix or ""),
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Callback = fnOrNoop(t.Callback),
             }) or S
         end
         S.Slider = S.AddSlider
@@ -773,8 +825,6 @@ local okLib, Library = pcall(function()
             t = t or {}
             local list = asList(t.Options or t.List or t.Values or {})
             local multi = t.Multi == true or t.MultipleOptions == true
-            local emptyList = #list == 0
-            if emptyList then list = { "（暂无选项）" } end
 
             local defaultValue = t.Default
             if defaultValue == nil then defaultValue = t.Value end
@@ -800,40 +850,45 @@ local okLib, Library = pcall(function()
                 if not found then defaultValue = nil end
             end
 
+            -- Mugi 回调给的是"已选项数组"；单选时还原成旧接口的单个字符串。
+            local userCallback = fnOrNoop(t.Callback)
             local api = callControl(rawSection, "AddDropdown", {
-                Title = tostring(t.Name or t.Title or "下拉选择"),
-                Description = tostring(t.Description or t.Desc or ""),
+                Name = tostring(t.Name or t.Title or "下拉选择"),
                 Flag = t.Flag,
                 Options = list,
                 Default = defaultValue,
                 Multi = multi,
-                AllowNone = true,
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Empty = "（暂无选项）",
+                Callback = function(selected)
+                    if multi then
+                        userCallback(selected)
+                    else
+                        userCallback(type(selected) == "table" and selected[1] or selected)
+                    end
+                end,
             })
             if not api then return S end
-            api.Options = asList(t.Options or t.List or t.Values or {})
-            if emptyList and type(api.SetDisabled) == "function" then
-                pcall(function() api:SetDisabled(true, "暂无可用选项") end)
-            end
+            api.Options = list
 
-            -- 兼容旧源码里的 SetOptions/Refresh 接口；空结果时用禁用占位项，避免误选。
-            local function setOptions(_, newValues)
+            -- 兼容旧源码里的 SetOptions/Refresh/SetValues 接口（冒号或点调用均可）
+            -- 先保存 Mugi 原生的 Refresh，再覆盖同名字段，避免递归调用自己。
+            local nativeRefresh = api.Refresh
+            local function setOptions(a, b)
+                local newValues = b
+                if a ~= api then newValues = a end
                 local values = asList(newValues or {})
                 api.Options = values
-                if #values == 0 then
-                    pcall(function()
-                        api:SetValues({ "（无匹配项）" }, false)
-                        api:SetDisabled(true, "没有匹配项")
-                    end)
-                    return true
-                end
                 local ok = pcall(function()
-                    api:SetDisabled(false)
-                    api:SetValues(values, true)
+                    if #values == 0 then
+                        nativeRefresh({}, false)
+                    else
+                        nativeRefresh(values, true)
+                    end
                 end)
                 return ok
             end
             api.SetOptions = setOptions
+            api.SetValues = setOptions
             api.Refresh = setOptions
             return api
         end
@@ -841,15 +896,23 @@ local okLib, Library = pcall(function()
 
         function S:AddTextbox(t)
             t = t or {}
-            return callControl(rawSection, "AddInput", {
-                Title = tostring(t.Name or t.Title or "输入"),
-                Description = tostring(t.Description or t.Desc or ""),
-                Placeholder = tostring(t.PlaceholderText or t.Placeholder or ""),
+            local clearAfter = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true
+            local userCallback = fnOrNoop(t.Callback)
+            local api
+            api = callControl(rawSection, "AddInput", {
+                Name = tostring(t.Name or t.Title or "输入"),
+                Placeholder = tostring(t.PlaceholderText or t.Placeholder or "输入…"),
                 Default = tostring(t.Default or t.Value or ""),
-                ClearOnSubmit = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
+                Numeric = t.Numeric == true,
                 Flag = t.Flag,
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
-            }) or { Set = function() end }
+                Callback = function(text)
+                    userCallback(text)
+                    if clearAfter and api then
+                        pcall(function() api.Set("") end)
+                    end
+                end,
+            })
+            return api or { Set = function() end, Get = function() return "" end }
         end
         S.AddInput = S.AddTextbox
         S.Input = S.AddTextbox
@@ -858,21 +921,20 @@ local okLib, Library = pcall(function()
         function S:AddKeybind(t)
             t = t or {}
             local key = t.Default or t.Value or Enum.KeyCode.RightControl
-            -- Velora 原生支持 EnumItem 与键名字符串，保留 EnumItem 可避免按键枚举丢失。
+            -- Callback：重新绑定按键时触发；OnPress：按下该键时触发（Mugi 原生行为）。
             return callControl(rawSection, "AddKeybind", {
-                Title = tostring(t.Name or t.Title or "快捷键"),
-                Description = tostring(t.Description or t.Desc or ""),
+                Name = tostring(t.Name or t.Title or "快捷键"),
                 Default = key,
-                Mode = t.HoldToInteract and "Hold" or (t.Mode or "Press"),
                 Flag = t.Flag,
-                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Callback = fnOrNoop(t.Callback),
+                OnPress = type(t.OnPress) == "function" and t.OnPress or nil,
             }) or S
         end
         S.Keybind = S.AddKeybind
 
         function S:AddLabel(t)
             local value = type(t) == "string" and t or tostring((t and (t.Text or t.Name or t.Title)) or "")
-            return callControl(rawSection, "AddLabel", { Text = value, Title = value }) or S
+            return callControl(rawSection, "AddLabel", { Text = value }) or S
         end
         S.Label = S.AddLabel
 
@@ -880,48 +942,64 @@ local okLib, Library = pcall(function()
             t = t or {}
             return callControl(rawSection, "AddParagraph", {
                 Title = tostring(t.Title or t.Name or "说明"),
-                Content = tostring(t.Content or t.Text or t.Description or ""),
+                Text = tostring(t.Content or t.Text or t.Description or ""),
             }) or S
         end
         function S:AddDivider(t)
-            return callControl(rawSection, "AddDivider", type(t) == "table" and t or {}) or S
+            local text = type(t) == "table" and (t.Title or t.Name or t.Text) or (type(t) == "string" and t or nil)
+            return callControl(rawSection, "AddSeparator", { text and tostring(text) or nil }) or S
         end
-        function S:AddSpacer(t)
-            return callControl(rawSection, "AddSpacer", t or 8) or S
+        function S:AddSpacer()
+            return S -- Mugi 自带统一间距，不需要额外占位
+        end
+
+        -- Mugi 原生控件直接透传
+        for _, method in ipairs({
+            "AddColorPicker", "AddProgress", "AddReadMe", "AddSeparator",
+            "AddLine", "AddSocial", "AddCopyGroup", "AddConfigManager",
+        }) do
+            S[method] = function(_, options)
+                return callControl(rawSection, method, options or {}) or S
+            end
         end
         return S
     end
 
     local Window = {
-        _ui = UI,
+        _ui = MugiLib,
         _raw = rawWindow,
-        ScreenGui = UI.ScreenGui,
+        ScreenGui = screenGui,
     }
 
     pcall(function()
-        if UI.ScreenGui and UI.ScreenGui:IsA("ScreenGui") then
-            UI.ScreenGui:SetAttribute("WuScriptUI", true)
-            getgenv().WuScript_GUI = UI.ScreenGui
+        if screenGui then
+            screenGui:SetAttribute("WuScriptUI", true)
+            getgenv().WuScript_GUI = screenGui
         end
     end)
+
+    local PASSTHROUGH = {
+        "AddButton", "AddToggle", "AddSlider", "AddDropdown", "AddTextbox", "AddKeybind",
+        "AddLabel", "AddParagraph", "AddDivider", "AddSpacer",
+        "AddColorPicker", "AddProgress", "AddReadMe", "AddSeparator",
+        "AddLine", "AddSocial", "AddCopyGroup", "AddConfigManager",
+    }
 
     local function makePage(rawTab, name)
         local Page = { Title = tostring(name or "页面"), _tab = rawTab, _lastSection = nil }
         local function createSection(sectionOptions, side)
-            local opts
+            local opts = {}
             if type(sectionOptions) == "table" then
-                opts = {}
                 for k, v in pairs(sectionOptions) do opts[k] = v end
             else
-                opts = { Title = tostring(sectionOptions or "分组"), Side = side }
+                opts.Title = tostring(sectionOptions or "分组")
             end
-            opts.Title = opts.Title or opts.Name or "分组"
-            opts.Description = opts.Description or opts.Desc or ""
+            local title = tostring(opts.Title or opts.Name or "分组")
             local ok, rawSectionOrError = pcall(function()
-                return rawTab:AddSection(opts)
+                return rawTab:AddSection({ Name = title, Collapsed = opts.Collapsed == true })
             end)
             if not ok or not rawSectionOrError then
-                warn("[巫][VeloraUI] 创建分组失败:", opts.Title, rawSectionOrError)
+                warn("[巫][Mugi] 创建分组失败:", title, rawSectionOrError)
                 return nil
             end
             local wrapped = wrapSection(rawSectionOrError)
@@ -944,101 +1022,101 @@ local okLib, Library = pcall(function()
                 return section or Page
             end
         end
-        Page.AddButton = withLast("AddButton")
+        for _, method in ipairs(PASSTHROUGH) do
+            Page[method] = withLast(method)
+        end
         Page.Button = Page.AddButton
-        Page.AddToggle = withLast("AddToggle")
         Page.Toggle = Page.AddToggle
-        Page.AddSlider = withLast("AddSlider")
         Page.Slider = Page.AddSlider
-        Page.AddDropdown = withLast("AddDropdown")
         Page.Dropdown = Page.AddDropdown
-        Page.AddTextbox = withLast("AddTextbox")
         Page.AddInput = Page.AddTextbox
         Page.Textbox = Page.AddTextbox
         Page.Input = Page.AddTextbox
-        Page.AddKeybind = withLast("AddKeybind")
         Page.Keybind = Page.AddKeybind
-        Page.AddLabel = withLast("AddLabel")
         Page.Label = Page.AddLabel
-        Page.AddParagraph = withLast("AddParagraph")
-        Page.AddDivider = withLast("AddDivider")
-        Page.AddSpacer = withLast("AddSpacer")
         return Page
     end
 
+    -- Mugi 内置 SVG 图标（按名称）；未知名称会被静默忽略
     local tabIcons = {
-        ["通用功能"] = "主", ["皮移植"] = "皮", ["服务器信息"] = "服",
-        ["通用1"] = "通", ["范围设置"] = "范", ["甩飞与传送"] = "传",
-        ["工具"] = "工", ["趣味"] = "趣", ["各类服务器脚本"] = "游",
-        ["ESP"] = "眼", ["额外功能"] = "加", ["自瞄"] = "瞄",
-        ["玩家管理"] = "人", ["更多脚本"] = "集", ["独立项目"] = "星",
-        ["设置"] = "设",
+        ["通用功能"] = "home", ["皮移植"] = "layers", ["服务器信息"] = "server",
+        ["通用1"] = "sliders", ["范围设置"] = "target", ["甩飞与传送"] = "navigation",
+        ["工具"] = "wrench", ["趣味"] = "smile", ["各类服务器脚本"] = "gamepad",
+        ["ESP"] = "eye", ["额外功能"] = "star", ["自瞄"] = "crosshair",
+        ["玩家管理"] = "users", ["更多脚本"] = "list", ["独立项目"] = "box",
+        ["设置"] = "settings",
     }
+    local iconAliases = { gear = "settings", home = "home", user = "user" }
 
     function Window:NewPage(pageOptions)
         pageOptions = pageOptions or {}
         local name = tostring(pageOptions.Title or pageOptions.Name or "页面")
-        local rawTab = rawWindow:AddTab({
-            Title = name,
-            Icon = pageOptions.Icon or tabIcons[name] or string.sub(name, 1, 1),
-            Description = pageOptions.Desc or pageOptions.Description or "",
-        })
+        local icon = tabIcons[name]
+        if not icon and type(pageOptions.Icon) == "string" then
+            icon = iconAliases[string.lower(pageOptions.Icon)] or pageOptions.Icon
+        end
+        local rawTab = rawWindow:AddTab({ Name = name, Icon = icon or "hub" })
         return makePage(rawTab, name)
     end
 
     function Window:AddTab(name, icon)
         name = tostring(name or "页面")
-        return self:NewPage({ Title = name, Icon = icon or tabIcons[name] or string.sub(name, 1, 1) })
+        return self:NewPage({ Title = name, Icon = icon })
     end
     Window.AddPage = Window.NewPage
 
     function Window:Notify(opts)
-        return notifyVelora(opts)
+        return notifyMugi(opts)
     end
     Window.Notification = Window.Notify
 
+    -- 缩放：Mugi 自己已按屏幕大小自动缩小，这里同样不让窗口超出屏幕
     function Window:SetScale(value)
         local scale = math.clamp(tonumber(value) or 1, 0.5, 1.5)
         getgenv().WuUIScale = scale
+        local applied = scale
         pcall(function()
-            if rawWindow then
-                rawWindow._manualScale = scale
-                if rawWindow._updateResponsive then rawWindow._updateResponsive() end
-                local root = rawWindow.Root
-                if root then
-                    local scaleObj = rawWindow.UIScale or root:FindFirstChildWhichIsA("UIScale")
-                    if scaleObj then scaleObj.Scale = scale end
-                end
+            local vp = screenGui and screenGui.AbsoluteSize
+            if not vp or vp.X <= 0 or vp.Y <= 0 then
+                vp = workspace.CurrentCamera.ViewportSize
             end
+            local fit = math.min(
+                vp.X * 0.92 / WINDOW_SIZE.X.Offset,
+                vp.Y * 0.88 / WINDOW_SIZE.Y.Offset
+            )
+            applied = math.clamp(math.min(scale, fit), 0.5, 1.5)
         end)
+        pcall(function() rawWindow:SetScale(applied) end)
         return scale
     end
 
     function Window:Toggle()
-        pcall(function() UI:Toggle() end)
+        pcall(function() rawWindow:Toggle() end)
     end
 
     function Window:Destroy()
-        pcall(function() if rawWindow and rawWindow.Destroy then rawWindow:Destroy() end end)
-        pcall(function() if UI and UI.Destroy then UI:Destroy() end end)
+        pcall(function() rawWindow:Destroy() end)
         pcall(function()
-            if getgenv().WuScript_GUI == UI.ScreenGui then getgenv().WuScript_GUI = nil end
+            if screenGui and screenGui.Parent then screenGui:Destroy() end
+        end)
+        pcall(function()
+            if getgenv().WuScript_GUI == screenGui then getgenv().WuScript_GUI = nil end
         end)
     end
 
     Library._activeWindow = Window
     Library.Window = function() return Window end
-    print("[巫 script] 使用 VeloraUI")
+    print("[巫 script] 使用 Mugi UI")
     return Library
 end)
 
 if not okLib or type(Library) ~= "table" then
     local errMsg = tostring(Library)
-    warn("[巫 script] VeloraUI 失败:", errMsg)
+    warn("[巫 script] Mugi UI 失败:", errMsg)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "巫 script",
-            Text = "VeloraUI 加载失败: " .. errMsg:sub(1, 100),
+            Text = "Mugi UI 加载失败: " .. errMsg:sub(1, 100),
             Duration = 10,
         })
     end)
@@ -4268,35 +4346,7 @@ UtilSection3:AddButton({
 })
 
 -------------------------------------------------
--- 让侧边栏可滚动
--------------------------------------------------
-task.defer(function()
-    local ScreenGui = (Window._raw and (Window._raw.ScreenGui or Window._raw.GUI or Window._raw.Gui)) or Window.ScreenGui
-    if not ScreenGui then return end
-    local Main = ScreenGui:FindFirstChild("Main")
-    if not Main then return end
-    local TabList = Main:FindFirstChild("TabList")
-    if not TabList then return end
-
-    local Scroll = Instance.new("ScrollingFrame")
-    Scroll.Name = "TabScroll"
-    Scroll.Size = UDim2.new(1, 0, 1, 0)
-    Scroll.Position = UDim2.new(0, 0, 0, 0)
-    Scroll.BackgroundTransparency = 1
-    Scroll.BorderSizePixel = 0
-    Scroll.ScrollBarThickness = 3
-    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
-    Scroll.Parent = TabList
-
-    for _, child in ipairs(TabList:GetChildren()) do
-        if child ~= Scroll then
-            child.Parent = Scroll
-        end
-    end
-end)
-
+-- 侧边栏：Mugi 的标签列表自带滚动，无需额外处理
 -------------------------------------------------
 -- ===== 穿墙持续循环 =====
 -------------------------------------------------
@@ -7079,17 +7129,14 @@ end)
 
 
 
--- 缩放后检查滚动区域：保留 VeloraUI 自己的 CanvasSize 计算
+-- 缩放后检查滚动区域：保留 Mugi 自己的 CanvasSize 计算
 local function WuIsWuScreenGui(sg)
     return sg ~= nil and sg == getgenv().WuScript_GUI
 end
 
 local function WuFixScroll(sf)
-    -- VeloraUI 自己维护标签页、弹层和下拉框的 CanvasSize；这里只确保滚动可用，
-    -- 不再覆盖 AutomaticCanvasSize / CanvasSize，避免打断库的布局计算。
-    pcall(function()
-        sf.ScrollingEnabled = true
-    end)
+    -- Mugi 自己维护标签页和下拉框的 CanvasSize，并在拖动滑条时临时锁定滚动；
+    -- 这里不再改动任何滚动属性，避免打断库的布局和滑条拖动。
 end
 
 local function WuRefreshScroll()
@@ -7102,12 +7149,12 @@ end
 
 getgenv().WuRefreshScroll = WuRefreshScroll
 
--- 独立板块：设置（VeloraUI 兼容接口，可改缩放/字体）
+-- 独立板块：设置（Mugi 兼容接口，可改缩放/字体）
 -------------------------------------------------
 task.spawn(function()
     task.wait(0.15)
     local ok, err = pcall(function()
-        -- 使用 VeloraUI 的兼容 NewPage 接口，保证缩放/字体设置可用
+        -- 使用兼容层的 NewPage 接口，保证缩放/字体设置可用
         local _NP = Window.NewPage
         local SettingsPage = _NP(Window, {
             Title = "设置",
@@ -7132,35 +7179,10 @@ task.spawn(function()
         local function WuApplyScale(scale)
             scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
             getgenv().WuUIScale = scale
-            -- VeloraUI 窗口缩放
+            -- Mugi 窗口缩放（兼容层里会按屏幕大小限制上限，避免窗口超出屏幕）
             pcall(function()
                 if Window and Window.SetScale then Window:SetScale(scale) end
             end)
-            local root = getgenv().WuScript_GUI
-            if root and root.Parent then
-                -- Velora 的根窗口直接暴露在 Window._raw.Root；优先缩放窗口本体，
-                -- 不要缩放全屏的 Windows 容器，否则会与库内 UIScale 叠乘。
-                local main = Window and Window._raw and Window._raw.Root
-                if not main then main = root:FindFirstChildWhichIsA("Frame", false) end
-                if not main then
-                    for _, ch in ipairs(root:GetChildren()) do
-                        if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
-                    end
-                end
-                local target = main or root
-                local us = target:FindFirstChild("WuOnlyUIScale")
-                if not us then
-                    us = Instance.new("UIScale")
-                    us.Name = "WuOnlyUIScale"
-                    us.Parent = target
-                end
-                -- VeloraUI 已有 UIScale 时不再叠乘，只记配置
-                if not target:FindFirstChildWhichIsA("UIScale") then
-                    us.Scale = scale
-                else
-                    us.Scale = 1
-                end
-            end
             pcall(WuRefreshScroll)
             pcall(WuSaveUIConfig)
         end
@@ -7192,7 +7214,7 @@ task.spawn(function()
                 local origin = inst:GetAttribute("WuBaseTextSize")
                 if not origin then
                     origin = tonumber(inst.TextSize) or 8
-                    -- 保留 VeloraUI 原始字号作基准，避免强行 12 撑破固定行高
+                    -- 保留 Mugi 原始字号作基准，避免强行放大撑破固定行高
                     inst:SetAttribute("WuBaseTextSize", origin)
                 end
                 -- 仅轻度放大；上限避免溢出 Section 行高
@@ -7206,6 +7228,11 @@ task.spawn(function()
             local root = getgenv().WuScript_GUI
             if not root or not root.Parent then return end
             local mul = tonumber(getgenv().WuFontScale) or 1
+            -- 默认设置（100% + Bold）且没动过滑条时，保留 Mugi 自带的字体样式
+            if mul == 1 and tostring(getgenv().WuFontWeight or "Bold") == "Bold"
+                and not getgenv().WuFontTouched then
+                return
+            end
             local weight = WU_WEIGHTS[tostring(getgenv().WuFontWeight or "Bold")] or Enum.FontWeight.Bold
             -- 原来是 Italic（斜体），中文斜体不好看；想要斜体改成 Enum.FontStyle.Italic
             local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Normal)
@@ -7240,6 +7267,7 @@ task.spawn(function()
             Suffix = "%",
             Callback = function(v)
                 getgenv().WuFontScale = (tonumber(v) or 100) / 100
+                getgenv().WuFontTouched = true
                 WuApplyFontDebounced()
             end
         })
@@ -7253,6 +7281,7 @@ task.spawn(function()
                     for k, on in pairs(v) do if on then v = k break end end
                 end
                 getgenv().WuFontWeight = tostring(v or "Bold")
+                getgenv().WuFontTouched = true
                 WuApplyFontDebounced()
             end
         })
