@@ -1094,6 +1094,13 @@ local okLib, Library = pcall(function()
         pcall(function() rawWindow:Toggle() end)
     end
 
+    -- Mugi 原生模态对话框；窗口被最小化时先展开，否则弹窗看不到
+    function Window:Dialog(opts)
+        pcall(function() rawWindow:SetOpen(true) end)
+        local ok, res = pcall(function() return rawWindow:Dialog(opts) end)
+        return ok and res or nil
+    end
+
     function Window:Destroy()
         pcall(function() rawWindow:Destroy() end)
         pcall(function()
@@ -6761,7 +6768,7 @@ SoloSection:AddButton({
 })
 
 SoloSection:AddButton({
-    Name = "3. 虫子进化（自动攻击 + 经验球）",
+    Name = "3. 虫子进化（自动攻击 + 经验球 + 无限耐力）",
     Callback = function()
         if getgenv().WuLoadBugEvolution then
             getgenv().WuLoadBugEvolution()
@@ -6817,7 +6824,7 @@ end
 getgenv().WuKaijuAlphaURL = getgenv().WuKaijuAlphaURL
     or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
 
-local function WuShowKaijuPrompt(onYes, onNo, text)
+local function WuShowLegacyPrompt(onYes, onNo, text)
     local parent = (gethui and gethui()) or game:GetService("CoreGui")
     local old = parent:FindFirstChild("WuKaijuPrompt")
     if old then old:Destroy() end
@@ -6914,6 +6921,24 @@ local function WuShowKaijuPrompt(onYes, onNo, text)
     end)
 end
 
+-- 「检测到支持服务器」提示：使用 Mugi 自带的对话框，和主界面风格一致；
+-- 对话框不可用（窗口已销毁等）时退回独立弹窗。
+local function WuShowKaijuPrompt(onYes, onNo, text)
+    local shown = false
+    pcall(function()
+        if Window and Window.Dialog then
+            shown = Window:Dialog({
+                Title = "检测到支持服务器",
+                Content = text or "是否执行服务器脚本：巫 kaiju alpha？",
+                Buttons = {
+                    { "是", function() if onYes then onYes() end end },
+                    { "滚", function() if onNo then onNo() end end },
+                },
+            }) ~= nil
+        end
+    end)
+    if not shown then WuShowLegacyPrompt(onYes, onNo, text) end
+end
 
 -------------------------------------------------
 -- 制作一部手机（内嵌，独立项目）
@@ -7069,7 +7094,7 @@ task.spawn(function()
     getgenv().WuBugPromptShown = true
     WuShowKaijuPrompt(function()
         if getgenv().WuLoadBugEvolution then getgenv().WuLoadBugEvolution() end
-    end, function() end, "是否执行独立项目：虫子进化（自动攻击 + 经验球）？")
+    end, function() end, "是否执行独立项目：虫子进化（自动攻击 + 经验球 + 无限耐力）？")
 end)
 
 task.spawn(function()
@@ -7108,101 +7133,9 @@ task.spawn(function()
     if getgenv().WuPhonePromptShown or getgenv().WuPhoneTycoonLoaded then return end
     getgenv().WuPhonePromptShown = true
 
-    local parent = (gethui and gethui()) or game:GetService("CoreGui")
-    local oldGui = parent:FindFirstChild("WuPhonePrompt")
-    if oldGui then oldGui:Destroy() end
-    local sg = Instance.new("ScreenGui")
-    sg.Name = "WuPhonePrompt"
-    sg.ResetOnSpawn = false
-    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    sg.DisplayOrder = 999
-    pcall(function() sg.Parent = parent end)
-    if not sg.Parent then
-        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-    end
-
-    local overlay = Instance.new("Frame")
-    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    overlay.BackgroundTransparency = 0.45
-    overlay.BorderSizePixel = 0
-    overlay.Size = UDim2.fromScale(1, 1)
-    overlay.Parent = sg
-
-    local card = Instance.new("Frame")
-    card.AnchorPoint = Vector2.new(0.5, 0.5)
-    card.Position = UDim2.fromScale(0.5, 0.5)
-    card.Size = UDim2.new(0, 320, 0, 168)
-    card.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
-    card.BackgroundTransparency = 0.12
-    card.BorderSizePixel = 0
-    card.Parent = overlay
-    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
-    local st = Instance.new("UIStroke")
-    st.Color = Color3.fromRGB(200, 220, 255)
-    st.Thickness = 1.2
-    st.Transparency = 0.4
-    st.Parent = card
-
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.Position = UDim2.new(0, 18, 0, 16)
-    title.Size = UDim2.new(1, -36, 0, 28)
-    title.Font = Enum.Font.GothamBold
-    title.Text = "检测到支持服务器"
-    title.TextColor3 = Color3.fromRGB(235, 240, 248)
-    title.TextSize = 18
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = card
-
-    local desc = Instance.new("TextLabel")
-    desc.BackgroundTransparency = 1
-    desc.Position = UDim2.new(0, 18, 0, 52)
-    desc.Size = UDim2.new(1, -36, 0, 48)
-    desc.Font = Enum.Font.Gotham
-    desc.Text = "是否执行独立项目：造一部手机？"
-    desc.TextColor3 = Color3.fromRGB(160, 170, 185)
-    desc.TextSize = 14
-    desc.TextWrapped = true
-    desc.TextXAlignment = Enum.TextXAlignment.Left
-    desc.Parent = card
-
-    local function mkBtn(text)
-        local b = Instance.new("TextButton")
-        b.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
-        b.BackgroundTransparency = 0.15
-        b.BorderSizePixel = 0
-        b.Size = UDim2.new(0, 120, 0, 34)
-        b.Font = Enum.Font.GothamBold
-        b.Text = text
-        b.TextColor3 = Color3.fromRGB(235, 240, 248)
-        b.TextSize = 15
-        b.AutoButtonColor = true
-        b.Parent = card
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
-        return b
-    end
-
-    local btnYes = mkBtn("是")
-    btnYes.Position = UDim2.new(0, 18, 1, -48)
-    local btnNo = mkBtn("滚")
-    btnNo.AnchorPoint = Vector2.new(1, 0)
-    btnNo.Position = UDim2.new(1, -18, 1, -48)
-
-    local closed = false
-    local function close()
-        if closed then return end
-        closed = true
-        pcall(function() sg:Destroy() end)
-    end
-    btnYes.MouseButton1Click:Connect(function()
-        close()
-        if getgenv().WuLoadPhoneTycoon then
-            getgenv().WuLoadPhoneTycoon()
-        end
-    end)
-    btnNo.MouseButton1Click:Connect(function()
-        close()
-    end)
+    WuShowKaijuPrompt(function()
+        if getgenv().WuLoadPhoneTycoon then getgenv().WuLoadPhoneTycoon() end
+    end, function() end, "是否执行独立项目：造一部手机？")
 end)
 
 
