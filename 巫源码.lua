@@ -6733,7 +6733,7 @@ game:GetService("Players").PlayerAdded:Connect(function()
 end)
 
 -------------------------------------------------
--- 标签页：独立项目（1. ka  2. 造一部手机 · GitHub loadstring）
+-- 标签页：独立项目（1. ka  2. 造一部手机  3. 虫子进化 · GitHub loadstring）
 -------------------------------------------------
 local SoloTab = Window:AddTab("独立项目")
 local SoloSection = SoloTab:AddSection("独立项目")
@@ -6756,6 +6756,17 @@ SoloSection:AddButton({
             getgenv().WuLoadPhoneTycoon()
         else
             Window:Notify({Title = "提示", Content = "造一部手机 模块未就绪", Duration = 2})
+        end
+    end
+})
+
+SoloSection:AddButton({
+    Name = "3. 虫子进化（自动攻击 + 经验球）",
+    Callback = function()
+        if getgenv().WuLoadBugEvolution then
+            getgenv().WuLoadBugEvolution()
+        else
+            Window:Notify({Title = "提示", Content = "虫子进化 模块未就绪", Duration = 2})
         end
     end
 })
@@ -6806,7 +6817,7 @@ end
 getgenv().WuKaijuAlphaURL = getgenv().WuKaijuAlphaURL
     or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
 
-local function WuShowKaijuPrompt(onYes, onNo)
+local function WuShowKaijuPrompt(onYes, onNo, text)
     local parent = (gethui and gethui()) or game:GetService("CoreGui")
     local old = parent:FindFirstChild("WuKaijuPrompt")
     if old then old:Destroy() end
@@ -6858,7 +6869,7 @@ local function WuShowKaijuPrompt(onYes, onNo)
     desc.Position = UDim2.new(0, 18, 0, 52)
     desc.Size = UDim2.new(1, -36, 0, 48)
     desc.Font = Enum.Font.Gotham
-    desc.Text = "是否执行服务器脚本：巫 kaiju alpha？"
+    desc.Text = text or "是否执行服务器脚本：巫 kaiju alpha？"
     desc.TextColor3 = Color3.fromRGB(160, 170, 185)
     desc.TextSize = 14
     desc.TextWrapped = true
@@ -6993,6 +7004,73 @@ getgenv().WuLoadKaijuAlpha = function(skipPrompt)
         WuShowKaijuPrompt(doLoad, function() end)
     end
 end
+
+-------------------------------------------------
+-- 虫子进化（独立项目）：GitHub 加载 + 服务器检测
+-- 脚本自带 Obsidian 窗口（自动攻击 + 经验球），重复加载会先停掉上一份
+-------------------------------------------------
+getgenv().WuBugEvolutionURL = getgenv().WuBugEvolutionURL
+    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E8%99%AB%E5%AD%90%E8%BF%9B%E5%8C%96%E6%BA%90%E7%A0%81.lua"
+
+getgenv().WuLoadBugEvolution = function()
+    -- 窗口还在（没点"停止并卸载"）就不重复加载；卸载后可以再次加载
+    if getgenv().__bugEvo then
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "虫子进化",
+                Text = "已经加载 请勿重复点击（右 Ctrl 显示/隐藏窗口）",
+                Duration = 4,
+            })
+        end)
+        return
+    end
+    local ok, err = pcall(function()
+        local raw = game:HttpGet(getgenv().WuBugEvolutionURL)
+        assert(type(raw) == "string" and #raw > 100, "HttpGet 失败或内容过短")
+        assert(not raw:find("<!DOCTYPE html>", 1, true), "拿到的是网页不是脚本，请检查 raw 链接")
+        local fn, compileErr = loadstring(raw)
+        assert(fn, compileErr)
+        fn()
+    end)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "虫子进化",
+            Text = ok and "已加载" or "加载失败",
+            Duration = ok and 3 or 5,
+        })
+    end)
+    if not ok then warn("[巫] 虫子进化 加载失败:", err) end
+end
+
+-- 服务器检测：已知 PlaceId，或游戏结构特征（Remotes.Attack + workspace.Bugs）
+-- 子场景 / 更新后 PlaceId 变化时靠结构特征兜底；也可在「服务器信息」点"复制当前 PlaceId"补进下面的表
+task.spawn(function()
+    local BUG_ALLOWED = {
+        [70650894743738] = true, -- Bug Evolution（虫子进化）root place
+    }
+    local function isBugServer()
+        if BUG_ALLOWED[game.PlaceId] then return true end
+        local ok, res = pcall(function()
+            local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+            return remotes ~= nil
+                and remotes:FindFirstChild("Attack") ~= nil
+                and workspace:FindFirstChild("Bugs") ~= nil
+        end)
+        return ok and res == true
+    end
+    -- 游戏资源可能晚于脚本加载，最多等 15 秒
+    local found = false
+    for _ = 1, 15 do
+        task.wait(1)
+        if isBugServer() then found = true break end
+    end
+    if not found then return end
+    if getgenv().WuBugPromptShown or getgenv().__bugEvo then return end
+    getgenv().WuBugPromptShown = true
+    WuShowKaijuPrompt(function()
+        if getgenv().WuLoadBugEvolution then getgenv().WuLoadBugEvolution() end
+    end, function() end, "是否执行独立项目：虫子进化（自动攻击 + 经验球）？")
+end)
 
 task.spawn(function()
     task.wait(1.0)
