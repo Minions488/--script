@@ -1,12 +1,12 @@
--- 虫子进化 · 合集（自动攻击 + 经验球拾取）· Obsidian UI
--- 一个窗口三个标签：自动攻击 / 经验球 / 设置。右 Ctrl 显示或隐藏。
+-- 虫子进化 · 合集（自动攻击 + 经验球拾取 + 无限耐力）· Obsidian UI
+-- 一个窗口四个标签：自动攻击 / 经验球 / 角色 / 设置。右 Ctrl 显示或隐藏。
 -- 停止并卸载：getgenv().__bugEvo.destroy()
 
 local RS = game:GetService("ReplicatedStorage")
 local LP = game:GetService("Players").LocalPlayer
 
 -- 重复执行：先彻底停掉上一份（合集、单独版、旧版都会处理），避免多个循环同时瞬移
-for _, key in ipairs({ "__bugEvo", "__autoAttackLow", "__orbPicker" }) do
+for _, key in ipairs({ "__bugEvo", "__autoAttackLow", "__orbPicker", "__infStamina" }) do
 	local prev = getgenv()[key]
 	if prev then
 		if type(prev.destroy) == "function" then pcall(prev.destroy)
@@ -263,6 +263,53 @@ end
 return S
 end)()
 
+local ST = (function()
+	-- 无限耐力：客户端每次渲染读 Player 的 Stamina / Exhausted 和角色的 FreeSprint 决定能否冲刺，
+	-- 这三个只是属性，本地覆写即可；服务端耐力照常消耗，不影响实际跑速。
+	local S = { running = false, alive = true, interval = 0.05, lastChar = nil, orig = nil }
+	getgenv().__infStamina = S
+
+	local function apply()
+		local max = LP:GetAttribute("MaxStamina") or 100
+		if LP:GetAttribute("Stamina") ~= max then LP:SetAttribute("Stamina", max) end
+		if LP:GetAttribute("Exhausted") ~= false then LP:SetAttribute("Exhausted", false) end
+		local ch = LP.Character
+		if ch then
+			if ch ~= S.lastChar then -- 新角色（重生）：记下原始 FreeSprint，停止时还原
+				S.lastChar = ch
+				S.orig = ch:GetAttribute("FreeSprint")
+			end
+			if ch:GetAttribute("FreeSprint") ~= true then ch:SetAttribute("FreeSprint", true) end
+		end
+	end
+
+	function S.start()
+		if S.running or not S.alive then return end
+		S.running = true
+		task.spawn(function()
+			while S.running and S.alive do
+				local ok, err = pcall(apply)
+				if not ok then warn("[无限耐力] " .. tostring(err)) end
+				task.wait(S.interval)
+			end
+		end)
+	end
+
+	function S.stop()
+		S.running = false
+		local ch = S.lastChar
+		if ch and ch.Parent then pcall(function() ch:SetAttribute("FreeSprint", S.orig) end) end
+	end
+
+	function S.state()
+		local ch = LP.Character
+		return ("run=%s stamina=%s max=%s free=%s"):format(
+			tostring(S.running), tostring(LP:GetAttribute("Stamina")),
+			tostring(LP:GetAttribute("MaxStamina")), tostring(ch and ch:GetAttribute("FreeSprint")))
+	end
+	return S
+end)()
+
 -- ===== Obsidian UI =====
 local Library
 do
@@ -273,32 +320,38 @@ do
 	else warn("[虫子进化] Obsidian 加载失败：" .. tostring(lib) .. "；可用 getgenv().__autoAttackLow / __orbPicker 的 start()/stop()") end
 end
 
-local ALL = { attack = S, orb = O }
+local ALL = { attack = S, orb = O, stamina = ST }
 getgenv().__bugEvo = ALL
 
 function ALL.destroy()
 	S.running, S.alive = false, false
 	O.running, O.alive = false, false
+	pcall(ST.stop)
+	ST.alive = false
 	if Library and not Library.Unloaded then pcall(function() Library:Unload() end) end
 	if getgenv().__autoAttackLow == S then getgenv().__autoAttackLow = nil end
 	if getgenv().__orbPicker == O then getgenv().__orbPicker = nil end
+	if getgenv().__infStamina == ST then getgenv().__infStamina = nil end
 	if getgenv().__bugEvo == ALL then getgenv().__bugEvo = nil end
 end
-S.destroy, O.destroy = ALL.destroy, ALL.destroy
+S.destroy, O.destroy, ST.destroy = ALL.destroy, ALL.destroy, ALL.destroy
 
 if Library then
 	pcall(function() Library:SetFont(Enum.Font.SourceSans) end)
 	Library:OnUnload(function()
 		S.running, S.alive = false, false
 		O.running, O.alive = false, false
+		pcall(ST.stop)
+		ST.alive = false
 	end)
 
 	local Window = Library:CreateWindow({
-		Title = "虫子进化", Footer = "自动攻击 + 经验球", NotifySide = "Right", ShowCustomCursor = false,
+		Title = "虫子进化", Footer = "自动攻击 + 经验球 + 无限耐力", NotifySide = "Right", ShowCustomCursor = false,
 	})
 	local Tabs = {
 		Attack = Window:AddTab("自动攻击", "swords"),
 		Orb = Window:AddTab("经验球", "boxes"),
+		Char = Window:AddTab("角色", "user"),
 		Misc = Window:AddTab("设置", "settings"),
 	}
 	local Toggles = Library.Toggles
@@ -356,6 +409,15 @@ if Library then
 	local OInfo = Tabs.Orb:AddGroupbox({ Side = "Right", Name = "状态", IconName = "activity" })
 	local oStatus = OInfo:AddLabel("已停止", true)
 
+	-- 角色
+	local CG = Tabs.Char:AddGroupbox({ Side = "Left", Name = "耐力", IconName = "zap" })
+	CG:AddToggle("ST_Run", {
+		Text = "无限耐力", Default = false, Tooltip = "按住 RUN 不掉耐力（本地覆写，关闭后还原冲刺属性）",
+		Callback = function(v) if v then ST.start() else ST.stop() end end,
+	})
+	local CInfo = Tabs.Char:AddGroupbox({ Side = "Right", Name = "状态", IconName = "activity" })
+	local sStatus = CInfo:AddLabel("已停止", true)
+
 	-- 设置
 	local M = Tabs.Misc:AddGroupbox({ Side = "Left", Name = "菜单", IconName = "settings" })
 	M:AddLabel("菜单快捷键"):AddKeyPicker("MenuKeybind", { Default = "RightControl", NoUI = true, Text = "菜单快捷键" })
@@ -369,6 +431,8 @@ if Library then
 					S.running and "运行中" or "已停止", S.kills,
 					tostring(LP:GetAttribute("TotalXP")), S.curName ~= "" and S.curName or "-"))
 				aErr:SetText(S.lastError ~= "" and ("最近错误：" .. S.lastError) or "")
+				sStatus:SetText(("%s  耐力 %s / %s"):format(ST.running and "运行中" or "已停止",
+					tostring(LP:GetAttribute("Stamina")), tostring(LP:GetAttribute("MaxStamina"))))
 				local f = workspace:FindFirstChild("Orbs")
 				oStatus:SetText(("%s\n已拾取 %d  未拾取到 %d  剩余 %d"):format(
 					O.running and "运行中" or "已停止", O.picked, O.failed, f and #f:GetChildren() or 0))
