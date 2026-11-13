@@ -1,4 +1,4 @@
---[[ 巫 script · Mugi UI · 完整功能移植 ]]
+--[[ 巫 script · VeloraUI · 完整功能移植 ]]
 print("[巫 script] 启动")
 pcall(function()
     if getgenv().WuScript_GUI then getgenv().WuScript_GUI:Destroy() end
@@ -529,30 +529,22 @@ end)
 
 -- 加载动画已删除（保持极简）
 
-print("[巫 script] 加载 UI 库 (Mugi)...")
--- Mugi UI: https://github.com/ftgless/Mugi  （黑白渐变紧凑风格，内置 SVG 图标）
+print("[巫 script] 加载 UI 库 (VeloraUI)...")
+-- VeloraUI: https://github.com/kismile36/VeloraUI
 -- 通过兼容层保留本脚本现有的 AddTab/AddSection/AddToggle 等调用，尽量不改动功能回调。
--- 想强制更新 UI 库：删除 workspace 里的 WuScript_Mugi_Cache.lua 后重新执行。
 local okLib, Library = pcall(function()
-    local CACHE = "WuScript_Mugi_Cache.lua"
+    local CACHE = "WuScript_Velora_Cache.lua"
     local urls = {
-        "https://raw.githubusercontent.com/ftgless/Mugi/main/UI",
-        "https://raw.githubusercontent.com/ftgless/Mugi/refs/heads/main/UI",
-        "https://cdn.jsdelivr.net/gh/ftgless/Mugi@main/UI",
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/main/Velora.lua",
+        "https://raw.githubusercontent.com/kismile36/VeloraUI/refs/heads/main/Velora.lua",
+        "https://cdn.jsdelivr.net/gh/kismile36/VeloraUI@main/Velora.lua",
     }
-
-    local function validSource(src)
-        return type(src) == "string"
-            and #src > 10000
-            and src:find("CreateWindow", 1, true) ~= nil
-            and src:find("MugiHub", 1, true) ~= nil
-    end
 
     local function httpGet(url)
         local ok, res = pcall(function()
             return game:HttpGet(url)
         end)
-        if ok and validSource(res) then
+        if ok and type(res) == "string" and #res > 10000 then
             return res
         end
         ok, res = pcall(function()
@@ -566,173 +558,130 @@ local okLib, Library = pcall(function()
             end
             return nil
         end)
-        if ok and validSource(res) then
+        if ok and type(res) == "string" and #res > 10000 then
             return res
         end
         return nil
     end
 
-    -- 编译并执行库源码，返回 { Library = ..., Webhook = ... }
-    local function loadMugi(src)
-        local chunk, compileError = loadstring(src)
-        if not chunk then return nil, "编译失败: " .. tostring(compileError) end
-        local runOk, result = pcall(chunk)
-        if not runOk then return nil, "执行失败: " .. tostring(result) end
-        if type(result) ~= "table"
-            or type(result.Library) ~= "table"
-            or type(result.Library.CreateWindow) ~= "function" then
-            return nil, "Mugi.Library 无效"
-        end
-        return result
-    end
-
-    local Mugi
+    local src
     pcall(function()
         if isfile and isfile(CACHE) and readfile then
             local cached = readfile(CACHE)
-            if validSource(cached) then
-                local lib = loadMugi(cached)
-                if lib then
-                    Mugi = lib
-                    print("[巫 script] 使用 Mugi 本地缓存")
-                elseif delfile then
-                    pcall(delfile, CACHE) -- 缓存损坏，删掉后重新下载
-                end
+            if type(cached) == "string"
+                and #cached > 10000
+                and cached:find("function Velora.new", 1, true)
+            then
+                src = cached
+                print("[巫 script] 使用 VeloraUI 本地缓存")
             end
         end
     end)
 
-    if not Mugi then
+    if not src then
         local lastError = "无可用下载源"
         for _, url in ipairs(urls) do
-            print("[巫 script] 下载 Mugi:", tostring(url):sub(1, 78))
+            print("[巫 script] 下载 VeloraUI:", tostring(url):sub(1, 78))
             local body = httpGet(url)
-            if body then
-                local lib, err = loadMugi(body)
-                if lib then
-                    Mugi = lib
-                    pcall(function()
-                        if writefile then writefile(CACHE, body) end
-                    end)
-                    print("[巫 script] Mugi 下载成功，字节:", #body)
-                    break
-                end
-                lastError = tostring(err)
-            else
-                lastError = "下载失败或内容无效"
+            if body and body:find("function Velora.new", 1, true) then
+                src = body
+                pcall(function()
+                    if writefile then writefile(CACHE, body) end
+                end)
+                print("[巫 script] VeloraUI 下载成功，字节:", #body)
+                break
             end
+            lastError = "下载失败或内容无效"
             task.wait(0.12)
         end
-        if not Mugi then error("Mugi " .. lastError) end
+        if not src then error("VeloraUI " .. lastError) end
     end
 
-    local MugiLib = Mugi.Library
+    local chunk, compileError = loadstring(src)
+    assert(chunk, "VeloraUI 编译失败: " .. tostring(compileError))
+    local runOk, Velora = pcall(chunk)
+    assert(runOk, "VeloraUI 执行失败: " .. tostring(Velora))
+    assert(type(Velora) == "table" and type(Velora.new) == "function",
+        "Velora.new 无效")
 
-    -- Mugi 不暴露 ScreenGui：创建窗口前后对比各个 GUI 容器，找出新出现的 "MugiHub"
-    local function guiContainers()
-        local list = {}
-        pcall(function() if gethui then table.insert(list, gethui()) end end)
-        pcall(function() table.insert(list, game:GetService("CoreGui")) end)
-        pcall(function()
-            local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
-            if pg then table.insert(list, pg) end
-        end)
-        return list
-    end
-    local guiBefore = {}
-    for _, container in ipairs(guiContainers()) do
-        pcall(function()
-            for _, child in ipairs(container:GetChildren()) do guiBefore[child] = true end
-        end)
-    end
-
-    local WINDOW_SIZE = UDim2.fromOffset(520, 320)
-    local rawWindow = MugiLib:CreateWindow({
-        Title = "巫 script",
-        Description = "by wu",
-        Icon = "hub",
-        SizeUi = WINDOW_SIZE,
-        ["Tab Width"] = 118,
-        Keybind = Enum.KeyCode.RightControl,
-        Scale = tonumber(getgenv().WuUIScale) or 1,
-        Bubble = { Type = "Draggable", Icon = "hub", Size = 44 },
+    local UI = Velora.new({
+        Name = "WuScript_Velora",
+        Parent = "Auto",
+        Theme = "Midnight",
+        Accent = Color3.fromRGB(105, 125, 255),
+        DestroyExisting = true,
+        IgnoreGuiInset = false,
+        ToggleKey = Enum.KeyCode.RightControl,
+        Mobile = true,
+        OpenButton = {
+            Title = "巫 script",
+            Icon = "巫",
+            Draggable = true,
+            OnlyIcon = false,
+            OnlyMobile = false,
+        },
+        Config = {
+            Folder = "WuScript_Velora",
+            File = "settings",
+            AutoSave = false,
+        },
     })
 
-    local screenGui
-    for _, container in ipairs(guiContainers()) do
-        pcall(function()
-            for _, child in ipairs(container:GetChildren()) do
-                if not guiBefore[child] and child:IsA("ScreenGui") and child.Name == "MugiHub" then
-                    screenGui = child
-                end
-            end
-        end)
-    end
+    local rawWindow = UI:CreateWindow({
+        Title = "巫 script",
+        Subtitle = "by wu",
+        Icon = "巫",
+        Size = UDim2.fromOffset(760, 560),
+        Resizable = true,
+        Search = true,
+        ShowUser = false,
+        CloseBehavior = "Destroy",
+        ConfirmOnClose = true,
+        CloseConfirmTitle = "是否关闭巫 script？",
+        CloseConfirmContent = "关闭后会销毁当前界面；可重新执行脚本再次打开。",
+        CloseConfirmCancel = "取消",
+        CloseConfirmConfirm = "关闭",
+    })
 
-    local Library = { _Mugi = Mugi, _MugiLib = MugiLib, _rawWindow = rawWindow }
+    local Library = { _Velora = Velora, _UI = UI, _rawWindow = rawWindow }
 
-    local function notifyMugi(opts)
+    local function notifyVelora(opts)
         opts = opts or {}
         if type(opts) ~= "table" then opts = { Content = tostring(opts) } end
         local title = tostring(opts.Title or "巫 script")
         local content = tostring(opts.Content or opts.Desc or opts.Text or opts.Message or "")
         local kind = opts.Type or opts.NotificationType
-        if kind then
-            kind = string.lower(tostring(kind))
-        else
+        if not kind then
             local low = string.lower(title .. " " .. content)
             if low:find("失败", 1, true) or low:find("error", 1, true) then
-                kind = "error"
+                kind = "Error"
             elseif low:find("成功", 1, true) or low:find("完成", 1, true) then
-                kind = "success"
+                kind = "Success"
             elseif low:find("警告", 1, true) or low:find("注意", 1, true) then
-                kind = "warning"
+                kind = "Warning"
             else
-                kind = "info"
+                kind = "Info"
             end
         end
-        local ok, res = pcall(function()
-            return MugiLib:SetNotification({
-                Title = title,
-                Content = content,
-                Type = kind,
-                Delay = tonumber(opts.Duration or opts.Delay) or 3,
-            })
-        end)
-        return ok and res or nil
+        return UI:Notify({
+            Title = title,
+            Content = content,
+            Type = kind,
+            Duration = tonumber(opts.Duration or opts.Delay) or 3,
+        })
     end
 
     function Library:Notify(opts)
-        return notifyMugi(opts)
+        return notifyVelora(opts)
     end
     Library.Notification = Library.Notify
-
-    -- Mugi 的控件句柄用点调用（handle.Set(v)），旧脚本里有 handle:Set(v) 的写法；
-    -- 代理一层，让两种写法都能用。
-    local function proxify(handle)
-        if type(handle) ~= "table" then return handle end
-        local P = {}
-        setmetatable(P, {
-            __index = function(_, key)
-                local value = handle[key]
-                if type(value) == "function" then
-                    return function(a, ...)
-                        if a == P then return value(...) end
-                        return value(a, ...)
-                    end
-                end
-                return value
-            end,
-        })
-        return P
-    end
 
     local function callControl(rawSection, method, options)
         local ok, control = pcall(function()
             return rawSection[method](rawSection, options)
         end)
-        if ok and control then return proxify(control) end
-        warn("[巫][Mugi] 控件创建失败:", method, control)
+        if ok and control then return control end
+        warn("[巫][VeloraUI] 控件创建失败:", method, control)
         return nil
     end
 
@@ -757,20 +706,18 @@ local okLib, Library = pcall(function()
         return result
     end
 
-    local function fnOrNoop(f)
-        return type(f) == "function" and f or function() end
-    end
-
     local function wrapSection(rawSection)
         local S = { _raw = rawSection, Options = {} }
 
         function S:AddButton(t)
             t = t or {}
             return callControl(rawSection, "AddButton", {
-                Name = tostring(t.Name or t.Title or "按钮"),
+                Title = tostring(t.Name or t.Title or "按钮"),
                 Description = tostring(t.Description or t.Desc or ""),
-                Callback = fnOrNoop(t.Callback),
-                Icon = t.Icon,
+                ActionText = tostring(t.Text or t.ActionText or "执行"),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+                Variant = t.Variant,
+                Danger = t.Danger == true,
             }) or S
         end
         S.Button = S.AddButton
@@ -778,11 +725,11 @@ local okLib, Library = pcall(function()
         function S:AddToggle(t)
             t = t or {}
             return callControl(rawSection, "AddToggle", {
-                Name = tostring(t.Name or t.Title or "开关"),
+                Title = tostring(t.Name or t.Title or "开关"),
                 Description = tostring(t.Description or t.Desc or ""),
                 Flag = t.Flag,
                 Default = t.Default == true or t.Value == true or t.State == true,
-                Callback = fnOrNoop(t.Callback),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
             }) or S
         end
         S.Toggle = S.AddToggle
@@ -809,14 +756,15 @@ local okLib, Library = pcall(function()
             end
             if step <= 0 then step = 1 end
             return callControl(rawSection, "AddSlider", {
-                Name = tostring(t.Name or t.Title or "滑条"),
+                Title = tostring(t.Name or t.Title or "滑条"),
+                Description = tostring(t.Description or t.Desc or ""),
                 Flag = t.Flag,
                 Min = minV,
                 Max = maxV,
                 Default = defaultV,
-                Increment = step,
+                Step = step,
                 Suffix = tostring(t.Suffix or ""),
-                Callback = fnOrNoop(t.Callback),
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
             }) or S
         end
         S.Slider = S.AddSlider
@@ -825,6 +773,8 @@ local okLib, Library = pcall(function()
             t = t or {}
             local list = asList(t.Options or t.List or t.Values or {})
             local multi = t.Multi == true or t.MultipleOptions == true
+            local emptyList = #list == 0
+            if emptyList then list = { "（暂无选项）" } end
 
             local defaultValue = t.Default
             if defaultValue == nil then defaultValue = t.Value end
@@ -850,45 +800,40 @@ local okLib, Library = pcall(function()
                 if not found then defaultValue = nil end
             end
 
-            -- Mugi 回调给的是"已选项数组"；单选时还原成旧接口的单个字符串。
-            local userCallback = fnOrNoop(t.Callback)
             local api = callControl(rawSection, "AddDropdown", {
-                Name = tostring(t.Name or t.Title or "下拉选择"),
+                Title = tostring(t.Name or t.Title or "下拉选择"),
+                Description = tostring(t.Description or t.Desc or ""),
                 Flag = t.Flag,
                 Options = list,
                 Default = defaultValue,
                 Multi = multi,
-                Empty = "（暂无选项）",
-                Callback = function(selected)
-                    if multi then
-                        userCallback(selected)
-                    else
-                        userCallback(type(selected) == "table" and selected[1] or selected)
-                    end
-                end,
+                AllowNone = true,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
             })
             if not api then return S end
-            api.Options = list
+            api.Options = asList(t.Options or t.List or t.Values or {})
+            if emptyList and type(api.SetDisabled) == "function" then
+                pcall(function() api:SetDisabled(true, "暂无可用选项") end)
+            end
 
-            -- 兼容旧源码里的 SetOptions/Refresh/SetValues 接口（冒号或点调用均可）
-            -- 先保存 Mugi 原生的 Refresh，再覆盖同名字段，避免递归调用自己。
-            local nativeRefresh = api.Refresh
-            local function setOptions(a, b)
-                local newValues = b
-                if a ~= api then newValues = a end
+            -- 兼容旧源码里的 SetOptions/Refresh 接口；空结果时用禁用占位项，避免误选。
+            local function setOptions(_, newValues)
                 local values = asList(newValues or {})
                 api.Options = values
+                if #values == 0 then
+                    pcall(function()
+                        api:SetValues({ "（无匹配项）" }, false)
+                        api:SetDisabled(true, "没有匹配项")
+                    end)
+                    return true
+                end
                 local ok = pcall(function()
-                    if #values == 0 then
-                        nativeRefresh({}, false)
-                    else
-                        nativeRefresh(values, true)
-                    end
+                    api:SetDisabled(false)
+                    api:SetValues(values, true)
                 end)
                 return ok
             end
             api.SetOptions = setOptions
-            api.SetValues = setOptions
             api.Refresh = setOptions
             return api
         end
@@ -896,23 +841,15 @@ local okLib, Library = pcall(function()
 
         function S:AddTextbox(t)
             t = t or {}
-            local clearAfter = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true
-            local userCallback = fnOrNoop(t.Callback)
-            local api
-            api = callControl(rawSection, "AddInput", {
-                Name = tostring(t.Name or t.Title or "输入"),
-                Placeholder = tostring(t.PlaceholderText or t.Placeholder or "输入…"),
+            return callControl(rawSection, "AddInput", {
+                Title = tostring(t.Name or t.Title or "输入"),
+                Description = tostring(t.Description or t.Desc or ""),
+                Placeholder = tostring(t.PlaceholderText or t.Placeholder or ""),
                 Default = tostring(t.Default or t.Value or ""),
-                Numeric = t.Numeric == true,
+                ClearOnSubmit = t.ClearOnSubmit == true or t.RemoveTextAfterFocusLost == true,
                 Flag = t.Flag,
-                Callback = function(text)
-                    userCallback(text)
-                    if clearAfter and api then
-                        pcall(function() api.Set("") end)
-                    end
-                end,
-            })
-            return api or { Set = function() end, Get = function() return "" end }
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
+            }) or { Set = function() end }
         end
         S.AddInput = S.AddTextbox
         S.Input = S.AddTextbox
@@ -921,20 +858,21 @@ local okLib, Library = pcall(function()
         function S:AddKeybind(t)
             t = t or {}
             local key = t.Default or t.Value or Enum.KeyCode.RightControl
-            -- Callback：重新绑定按键时触发；OnPress：按下该键时触发（Mugi 原生行为）。
+            -- Velora 原生支持 EnumItem 与键名字符串，保留 EnumItem 可避免按键枚举丢失。
             return callControl(rawSection, "AddKeybind", {
-                Name = tostring(t.Name or t.Title or "快捷键"),
+                Title = tostring(t.Name or t.Title or "快捷键"),
+                Description = tostring(t.Description or t.Desc or ""),
                 Default = key,
+                Mode = t.HoldToInteract and "Hold" or (t.Mode or "Press"),
                 Flag = t.Flag,
-                Callback = fnOrNoop(t.Callback),
-                OnPress = type(t.OnPress) == "function" and t.OnPress or nil,
+                Callback = type(t.Callback) == "function" and t.Callback or function() end,
             }) or S
         end
         S.Keybind = S.AddKeybind
 
         function S:AddLabel(t)
             local value = type(t) == "string" and t or tostring((t and (t.Text or t.Name or t.Title)) or "")
-            return callControl(rawSection, "AddLabel", { Text = value }) or S
+            return callControl(rawSection, "AddLabel", { Text = value, Title = value }) or S
         end
         S.Label = S.AddLabel
 
@@ -942,64 +880,48 @@ local okLib, Library = pcall(function()
             t = t or {}
             return callControl(rawSection, "AddParagraph", {
                 Title = tostring(t.Title or t.Name or "说明"),
-                Text = tostring(t.Content or t.Text or t.Description or ""),
+                Content = tostring(t.Content or t.Text or t.Description or ""),
             }) or S
         end
         function S:AddDivider(t)
-            local text = type(t) == "table" and (t.Title or t.Name or t.Text) or (type(t) == "string" and t or nil)
-            return callControl(rawSection, "AddSeparator", { text and tostring(text) or nil }) or S
+            return callControl(rawSection, "AddDivider", type(t) == "table" and t or {}) or S
         end
-        function S:AddSpacer()
-            return S -- Mugi 自带统一间距，不需要额外占位
-        end
-
-        -- Mugi 原生控件直接透传
-        for _, method in ipairs({
-            "AddColorPicker", "AddProgress", "AddReadMe", "AddSeparator",
-            "AddLine", "AddSocial", "AddCopyGroup", "AddConfigManager",
-        }) do
-            S[method] = function(_, options)
-                return callControl(rawSection, method, options or {}) or S
-            end
+        function S:AddSpacer(t)
+            return callControl(rawSection, "AddSpacer", t or 8) or S
         end
         return S
     end
 
     local Window = {
-        _ui = MugiLib,
+        _ui = UI,
         _raw = rawWindow,
-        ScreenGui = screenGui,
+        ScreenGui = UI.ScreenGui,
     }
 
     pcall(function()
-        if screenGui then
-            screenGui:SetAttribute("WuScriptUI", true)
-            getgenv().WuScript_GUI = screenGui
+        if UI.ScreenGui and UI.ScreenGui:IsA("ScreenGui") then
+            UI.ScreenGui:SetAttribute("WuScriptUI", true)
+            getgenv().WuScript_GUI = UI.ScreenGui
         end
     end)
-
-    local PASSTHROUGH = {
-        "AddButton", "AddToggle", "AddSlider", "AddDropdown", "AddTextbox", "AddKeybind",
-        "AddLabel", "AddParagraph", "AddDivider", "AddSpacer",
-        "AddColorPicker", "AddProgress", "AddReadMe", "AddSeparator",
-        "AddLine", "AddSocial", "AddCopyGroup", "AddConfigManager",
-    }
 
     local function makePage(rawTab, name)
         local Page = { Title = tostring(name or "页面"), _tab = rawTab, _lastSection = nil }
         local function createSection(sectionOptions, side)
-            local opts = {}
+            local opts
             if type(sectionOptions) == "table" then
+                opts = {}
                 for k, v in pairs(sectionOptions) do opts[k] = v end
             else
-                opts.Title = tostring(sectionOptions or "分组")
+                opts = { Title = tostring(sectionOptions or "分组"), Side = side }
             end
-            local title = tostring(opts.Title or opts.Name or "分组")
+            opts.Title = opts.Title or opts.Name or "分组"
+            opts.Description = opts.Description or opts.Desc or ""
             local ok, rawSectionOrError = pcall(function()
-                return rawTab:AddSection({ Name = title, Collapsed = opts.Collapsed == true })
+                return rawTab:AddSection(opts)
             end)
             if not ok or not rawSectionOrError then
-                warn("[巫][Mugi] 创建分组失败:", title, rawSectionOrError)
+                warn("[巫][VeloraUI] 创建分组失败:", opts.Title, rawSectionOrError)
                 return nil
             end
             local wrapped = wrapSection(rawSectionOrError)
@@ -1022,108 +944,101 @@ local okLib, Library = pcall(function()
                 return section or Page
             end
         end
-        for _, method in ipairs(PASSTHROUGH) do
-            Page[method] = withLast(method)
-        end
+        Page.AddButton = withLast("AddButton")
         Page.Button = Page.AddButton
+        Page.AddToggle = withLast("AddToggle")
         Page.Toggle = Page.AddToggle
+        Page.AddSlider = withLast("AddSlider")
         Page.Slider = Page.AddSlider
+        Page.AddDropdown = withLast("AddDropdown")
         Page.Dropdown = Page.AddDropdown
+        Page.AddTextbox = withLast("AddTextbox")
         Page.AddInput = Page.AddTextbox
         Page.Textbox = Page.AddTextbox
         Page.Input = Page.AddTextbox
+        Page.AddKeybind = withLast("AddKeybind")
         Page.Keybind = Page.AddKeybind
+        Page.AddLabel = withLast("AddLabel")
         Page.Label = Page.AddLabel
+        Page.AddParagraph = withLast("AddParagraph")
+        Page.AddDivider = withLast("AddDivider")
+        Page.AddSpacer = withLast("AddSpacer")
         return Page
     end
 
-    -- Mugi 内置 SVG 图标（按名称）；未知名称会被静默忽略
     local tabIcons = {
-        ["通用功能"] = "home", ["皮移植"] = "layers", ["服务器信息"] = "server",
-        ["通用1"] = "sliders", ["范围设置"] = "target", ["甩飞与传送"] = "navigation",
-        ["工具"] = "wrench", ["趣味"] = "smile", ["各类服务器脚本"] = "gamepad",
-        ["ESP"] = "eye", ["额外功能"] = "star", ["自瞄"] = "crosshair",
-        ["玩家管理"] = "users", ["更多脚本"] = "list", ["独立项目"] = "box",
-        ["设置"] = "settings",
+        ["通用功能"] = "主", ["皮移植"] = "皮", ["服务器信息"] = "服",
+        ["通用1"] = "通", ["范围设置"] = "范", ["甩飞与传送"] = "传",
+        ["工具"] = "工", ["趣味"] = "趣", ["各类服务器脚本"] = "游",
+        ["ESP"] = "眼", ["额外功能"] = "加", ["自瞄"] = "瞄",
+        ["玩家管理"] = "人", ["更多脚本"] = "集", ["独立项目"] = "星",
+        ["设置"] = "设",
     }
-    local iconAliases = { gear = "settings", home = "home", user = "user" }
 
     function Window:NewPage(pageOptions)
         pageOptions = pageOptions or {}
         local name = tostring(pageOptions.Title or pageOptions.Name or "页面")
-        local icon = tabIcons[name]
-        if not icon and type(pageOptions.Icon) == "string" then
-            icon = iconAliases[string.lower(pageOptions.Icon)] or pageOptions.Icon
-        end
-        local rawTab = rawWindow:AddTab({ Name = name, Icon = icon or "hub" })
+        local rawTab = rawWindow:AddTab({
+            Title = name,
+            Icon = pageOptions.Icon or tabIcons[name] or string.sub(name, 1, 1),
+            Description = pageOptions.Desc or pageOptions.Description or "",
+        })
         return makePage(rawTab, name)
     end
 
     function Window:AddTab(name, icon)
         name = tostring(name or "页面")
-        return self:NewPage({ Title = name, Icon = icon })
+        return self:NewPage({ Title = name, Icon = icon or tabIcons[name] or string.sub(name, 1, 1) })
     end
     Window.AddPage = Window.NewPage
 
     function Window:Notify(opts)
-        return notifyMugi(opts)
+        return notifyVelora(opts)
     end
     Window.Notification = Window.Notify
 
-    -- 缩放：Mugi 自己已按屏幕大小自动缩小，这里同样不让窗口超出屏幕
     function Window:SetScale(value)
         local scale = math.clamp(tonumber(value) or 1, 0.5, 1.5)
         getgenv().WuUIScale = scale
-        local applied = scale
         pcall(function()
-            local vp = screenGui and screenGui.AbsoluteSize
-            if not vp or vp.X <= 0 or vp.Y <= 0 then
-                vp = workspace.CurrentCamera.ViewportSize
+            if rawWindow then
+                rawWindow._manualScale = scale
+                if rawWindow._updateResponsive then rawWindow._updateResponsive() end
+                local root = rawWindow.Root
+                if root then
+                    local scaleObj = rawWindow.UIScale or root:FindFirstChildWhichIsA("UIScale")
+                    if scaleObj then scaleObj.Scale = scale end
+                end
             end
-            local fit = math.min(
-                vp.X * 0.92 / WINDOW_SIZE.X.Offset,
-                vp.Y * 0.88 / WINDOW_SIZE.Y.Offset
-            )
-            applied = math.clamp(math.min(scale, fit), 0.5, 1.5)
         end)
-        pcall(function() rawWindow:SetScale(applied) end)
         return scale
     end
 
     function Window:Toggle()
-        pcall(function() rawWindow:Toggle() end)
-    end
-
-    -- Mugi 原生模态对话框；窗口被最小化时先展开，否则弹窗看不到
-    function Window:Dialog(opts)
-        pcall(function() rawWindow:SetOpen(true) end)
-        local ok, res = pcall(function() return rawWindow:Dialog(opts) end)
-        return ok and res or nil
+        pcall(function() UI:Toggle() end)
     end
 
     function Window:Destroy()
-        pcall(function() rawWindow:Destroy() end)
+        pcall(function() if rawWindow and rawWindow.Destroy then rawWindow:Destroy() end end)
+        pcall(function() if UI and UI.Destroy then UI:Destroy() end end)
         pcall(function()
-            if screenGui and screenGui.Parent then screenGui:Destroy() end
-        end)
-        pcall(function()
-            if getgenv().WuScript_GUI == screenGui then getgenv().WuScript_GUI = nil end
+            if getgenv().WuScript_GUI == UI.ScreenGui then getgenv().WuScript_GUI = nil end
         end)
     end
 
     Library._activeWindow = Window
     Library.Window = function() return Window end
-    print("[巫 script] 使用 Mugi UI")
+    print("[巫 script] 使用 VeloraUI")
     return Library
 end)
 
 if not okLib or type(Library) ~= "table" then
     local errMsg = tostring(Library)
-    warn("[巫 script] Mugi UI 失败:", errMsg)
+    warn("[巫 script] VeloraUI 失败:", errMsg)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "巫 script",
-            Text = "Mugi UI 加载失败: " .. errMsg:sub(1, 100),
+            Text = "VeloraUI 加载失败: " .. errMsg:sub(1, 100),
             Duration = 10,
         })
     end)
@@ -4353,7 +4268,35 @@ UtilSection3:AddButton({
 })
 
 -------------------------------------------------
--- 侧边栏：Mugi 的标签列表自带滚动，无需额外处理
+-- 让侧边栏可滚动
+-------------------------------------------------
+task.defer(function()
+    local ScreenGui = (Window._raw and (Window._raw.ScreenGui or Window._raw.GUI or Window._raw.Gui)) or Window.ScreenGui
+    if not ScreenGui then return end
+    local Main = ScreenGui:FindFirstChild("Main")
+    if not Main then return end
+    local TabList = Main:FindFirstChild("TabList")
+    if not TabList then return end
+
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Name = "TabScroll"
+    Scroll.Size = UDim2.new(1, 0, 1, 0)
+    Scroll.Position = UDim2.new(0, 0, 0, 0)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    Scroll.Parent = TabList
+
+    for _, child in ipairs(TabList:GetChildren()) do
+        if child ~= Scroll then
+            child.Parent = Scroll
+        end
+    end
+end)
+
 -------------------------------------------------
 -- ===== 穿墙持续循环 =====
 -------------------------------------------------
@@ -6740,7 +6683,7 @@ game:GetService("Players").PlayerAdded:Connect(function()
 end)
 
 -------------------------------------------------
--- 标签页：独立项目（1. ka  2. 造一部手机  3. 虫子进化 · GitHub loadstring）
+-- 标签页：独立项目（1. ka  2. 造一部手机  3. 力量随机生成）
 -------------------------------------------------
 local SoloTab = Window:AddTab("独立项目")
 local SoloSection = SoloTab:AddSection("独立项目")
@@ -6768,12 +6711,12 @@ SoloSection:AddButton({
 })
 
 SoloSection:AddButton({
-    Name = "3. 虫子进化（自动攻击 + 经验球 + 无限耐力）",
+    Name = "3. 力量随机生成",
     Callback = function()
-        if getgenv().WuLoadBugEvolution then
-            getgenv().WuLoadBugEvolution()
+        if getgenv().WuLoadPowerFarm then
+            getgenv().WuLoadPowerFarm(true)
         else
-            Window:Notify({Title = "提示", Content = "虫子进化 模块未就绪", Duration = 2})
+            Window:Notify({Title = "提示", Content = "力量随机生成 模块未就绪", Duration = 2})
         end
     end
 })
@@ -6824,7 +6767,7 @@ end
 getgenv().WuKaijuAlphaURL = getgenv().WuKaijuAlphaURL
     or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
 
-local function WuShowLegacyPrompt(onYes, onNo, text)
+local function WuShowKaijuPrompt(onYes, onNo)
     local parent = (gethui and gethui()) or game:GetService("CoreGui")
     local old = parent:FindFirstChild("WuKaijuPrompt")
     if old then old:Destroy() end
@@ -6876,7 +6819,7 @@ local function WuShowLegacyPrompt(onYes, onNo, text)
     desc.Position = UDim2.new(0, 18, 0, 52)
     desc.Size = UDim2.new(1, -36, 0, 48)
     desc.Font = Enum.Font.Gotham
-    desc.Text = text or "是否执行服务器脚本：巫 kaiju alpha？"
+    desc.Text = "是否执行服务器脚本：巫 kaiju alpha？"
     desc.TextColor3 = Color3.fromRGB(160, 170, 185)
     desc.TextSize = 14
     desc.TextWrapped = true
@@ -6921,24 +6864,6 @@ local function WuShowLegacyPrompt(onYes, onNo, text)
     end)
 end
 
--- 「检测到支持服务器」提示：使用 Mugi 自带的对话框，和主界面风格一致；
--- 对话框不可用（窗口已销毁等）时退回独立弹窗。
-local function WuShowKaijuPrompt(onYes, onNo, text)
-    local shown = false
-    pcall(function()
-        if Window and Window.Dialog then
-            shown = Window:Dialog({
-                Title = "检测到支持服务器",
-                Content = text or "是否执行服务器脚本：巫 kaiju alpha？",
-                Buttons = {
-                    { "是", function() if onYes then onYes() end end },
-                    { "滚", function() if onNo then onNo() end end },
-                },
-            }) ~= nil
-        end
-    end)
-    if not shown then WuShowLegacyPrompt(onYes, onNo, text) end
-end
 
 -------------------------------------------------
 -- 制作一部手机（内嵌，独立项目）
@@ -7030,73 +6955,6 @@ getgenv().WuLoadKaijuAlpha = function(skipPrompt)
     end
 end
 
--------------------------------------------------
--- 虫子进化（独立项目）：GitHub 加载 + 服务器检测
--- 脚本自带 Obsidian 窗口（自动攻击 + 经验球），重复加载会先停掉上一份
--------------------------------------------------
-getgenv().WuBugEvolutionURL = getgenv().WuBugEvolutionURL
-    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E8%99%AB%E5%AD%90%E8%BF%9B%E5%8C%96%E6%BA%90%E7%A0%81.lua"
-
-getgenv().WuLoadBugEvolution = function()
-    -- 窗口还在（没点"停止并卸载"）就不重复加载；卸载后可以再次加载
-    if getgenv().__bugEvo then
-        pcall(function()
-            game:GetService("StarterGui"):SetCore("SendNotification", {
-                Title = "虫子进化",
-                Text = "已经加载 请勿重复点击（右 Ctrl 显示/隐藏窗口）",
-                Duration = 4,
-            })
-        end)
-        return
-    end
-    local ok, err = pcall(function()
-        local raw = game:HttpGet(getgenv().WuBugEvolutionURL)
-        assert(type(raw) == "string" and #raw > 100, "HttpGet 失败或内容过短")
-        assert(not raw:find("<!DOCTYPE html>", 1, true), "拿到的是网页不是脚本，请检查 raw 链接")
-        local fn, compileErr = loadstring(raw)
-        assert(fn, compileErr)
-        fn()
-    end)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "虫子进化",
-            Text = ok and "已加载" or "加载失败",
-            Duration = ok and 3 or 5,
-        })
-    end)
-    if not ok then warn("[巫] 虫子进化 加载失败:", err) end
-end
-
--- 服务器检测：已知 PlaceId，或游戏结构特征（Remotes.Attack + workspace.Bugs）
--- 子场景 / 更新后 PlaceId 变化时靠结构特征兜底；也可在「服务器信息」点"复制当前 PlaceId"补进下面的表
-task.spawn(function()
-    local BUG_ALLOWED = {
-        [70650894743738] = true, -- Bug Evolution（虫子进化）root place
-    }
-    local function isBugServer()
-        if BUG_ALLOWED[game.PlaceId] then return true end
-        local ok, res = pcall(function()
-            local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-            return remotes ~= nil
-                and remotes:FindFirstChild("Attack") ~= nil
-                and workspace:FindFirstChild("Bugs") ~= nil
-        end)
-        return ok and res == true
-    end
-    -- 游戏资源可能晚于脚本加载，最多等 15 秒
-    local found = false
-    for _ = 1, 15 do
-        task.wait(1)
-        if isBugServer() then found = true break end
-    end
-    if not found then return end
-    if getgenv().WuBugPromptShown or getgenv().__bugEvo then return end
-    getgenv().WuBugPromptShown = true
-    WuShowKaijuPrompt(function()
-        if getgenv().WuLoadBugEvolution then getgenv().WuLoadBugEvolution() end
-    end, function() end, "是否执行独立项目：虫子进化（自动攻击 + 经验球 + 无限耐力）？")
-end)
-
 task.spawn(function()
     task.wait(1.0)
     local ALLOWED = {
@@ -7112,6 +6970,193 @@ task.spawn(function()
         end
     end, function() end)
 end)
+
+--------------------------------------------------------------------------------------------
+-- 力量随机生成（Power RNG · 独立项目）
+-- raw: 力量随机生成部分源码.lua
+-- 分享链: https://www.roblox.com/share?code=fed1c1fc8ab9ab4d888e128cd0e78aa4&type=ExperienceDetails
+-- Place: https://www.roblox.com/games/128683354289764/Power-RNG
+-------------------------------------------------
+getgenv().WuPowerFarmURL = getgenv().WuPowerFarmURL
+    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%8A%9B%E9%87%8F%E9%9A%8F%E6%9C%BA%E7%94%9F%E6%88%90%E9%83%A8%E5%88%86%E6%BA%90%E7%A0%81.lua"
+
+local function WuShowPowerFarmPrompt(onYes, onNo)
+    local parent = (gethui and gethui()) or game:GetService("CoreGui")
+    local old = parent:FindFirstChild("WuPowerFarmPrompt")
+    if old then old:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "WuPowerFarmPrompt"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 999
+    pcall(function() sg.Parent = parent end)
+    if not sg.Parent then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local overlay = Instance.new("Frame")
+    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    overlay.BackgroundTransparency = 0.45
+    overlay.BorderSizePixel = 0
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.Parent = sg
+
+    local card = Instance.new("Frame")
+    card.AnchorPoint = Vector2.new(0.5, 0.5)
+    card.Position = UDim2.fromScale(0.5, 0.5)
+    card.Size = UDim2.new(0, 320, 0, 168)
+    card.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
+    card.BackgroundTransparency = 0.12
+    card.BorderSizePixel = 0
+    card.Parent = overlay
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(200, 220, 255)
+    st.Thickness = 1.2
+    st.Transparency = 0.4
+    st.Parent = card
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 18, 0, 16)
+    title.Size = UDim2.new(1, -36, 0, 28)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "检测到支持服务器"
+    title.TextColor3 = Color3.fromRGB(235, 240, 248)
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = card
+
+    local desc = Instance.new("TextLabel")
+    desc.BackgroundTransparency = 1
+    desc.Position = UDim2.new(0, 18, 0, 52)
+    desc.Size = UDim2.new(1, -36, 0, 48)
+    desc.Font = Enum.Font.Gotham
+    desc.Text = "是否执行独立项目：力量随机生成？"
+    desc.TextColor3 = Color3.fromRGB(160, 170, 185)
+    desc.TextSize = 14
+    desc.TextWrapped = true
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = card
+
+    local function mkBtn(text)
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
+        b.BackgroundTransparency = 0.15
+        b.BorderSizePixel = 0
+        b.Size = UDim2.new(0, 120, 0, 34)
+        b.Font = Enum.Font.GothamBold
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(235, 240, 248)
+        b.TextSize = 15
+        b.AutoButtonColor = true
+        b.Parent = card
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+        return b
+    end
+
+    local btnYes = mkBtn("是")
+    btnYes.Position = UDim2.new(0, 18, 1, -48)
+    local btnNo = mkBtn("滚")
+    btnNo.AnchorPoint = Vector2.new(1, 0)
+    btnNo.Position = UDim2.new(1, -18, 1, -48)
+
+    local function close()
+        pcall(function() sg:Destroy() end)
+    end
+    btnYes.MouseButton1Click:Connect(function()
+        close()
+        if onYes then onYes() end
+    end)
+    btnNo.MouseButton1Click:Connect(function()
+        close()
+        if onNo then onNo() end
+    end)
+end
+
+getgenv().WuLoadPowerFarm = function(skipPrompt)
+    -- 防二次：面板或全局标记
+    if getgenv().__PF_PANEL or getgenv().WuPowerFarmLoaded then
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "力量随机生成",
+                Text = "已经加载 请勿重复点击",
+                Duration = 4,
+            })
+        end)
+        return
+    end
+    local function doLoad()
+        local ok, err = pcall(function()
+            local url = getgenv().WuPowerFarmURL
+                or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%8A%9B%E9%87%8F%E9%9A%8F%E6%9C%BA%E7%94%9F%E6%88%90%E9%83%A8%E5%88%86%E6%BA%90%E7%A0%81.lua"
+            local raw = game:HttpGet(url)
+            assert(type(raw) == "string" and #raw > 100, "HttpGet 失败或内容过短")
+            assert(not raw:find("<!DOCTYPE html>", 1, true), "拿到的是网页不是脚本，请检查 raw 链接")
+            local fn, compileErr = loadstring(raw)
+            assert(fn, compileErr)
+            fn()
+        end)
+        if ok then
+            getgenv().WuPowerFarmLoaded = true
+            pcall(function()
+                game:GetService("StarterGui"):SetCore("SendNotification", {
+                    Title = "力量随机生成",
+                    Text = "已加载",
+                    Duration = 3,
+                })
+            end)
+        else
+            warn("[巫 script] 力量随机生成 加载失败:", err)
+            pcall(function()
+                game:GetService("StarterGui"):SetCore("SendNotification", {
+                    Title = "力量随机生成",
+                    Text = "加载失败",
+                    Duration = 5,
+                })
+            end)
+        end
+    end
+    if skipPrompt then
+        doLoad()
+    else
+        WuShowPowerFarmPrompt(doLoad, function() end)
+    end
+end
+
+task.spawn(function()
+    task.wait(1.2)
+    -- Power RNG
+    local PF_ALLOWED = {
+        [128683354289764] = true, -- Power RNG root
+    }
+    local function isPowerFarmServer()
+        if PF_ALLOWED[game.PlaceId] then return true end
+        -- 特征：大厅 UI / Shared.DataService / RollRequest
+        local ok, hit = pcall(function()
+            local lp = game:GetService("Players").LocalPlayer
+            local pg = lp and lp:FindFirstChild("PlayerGui")
+            if pg and pg:FindFirstChild("LobbyFramesPlayerGui") then return true end
+            local rs = game:GetService("ReplicatedStorage")
+            local sh = rs:FindFirstChild("Shared")
+            if sh and sh:FindFirstChild("DataService") then return true end
+            local ev = rs:FindFirstChild("Events")
+            local re = ev and ev:FindFirstChild("RemoteEvents")
+            if re and re:FindFirstChild("RollRequest") then return true end
+            return false
+        end)
+        return ok and hit == true
+    end
+    if not isPowerFarmServer() then return end
+    if getgenv().WuPowerFarmPromptShown or getgenv().WuPowerFarmLoaded or getgenv().__PF_PANEL then return end
+    getgenv().WuPowerFarmPromptShown = true
+    WuShowPowerFarmPrompt(function()
+        if getgenv().WuLoadPowerFarm then
+            getgenv().WuLoadPowerFarm(true)
+        end
+    end, function() end)
+end)
+
 
 task.spawn(function()
     task.wait(1.0)
@@ -7133,21 +7178,116 @@ task.spawn(function()
     if getgenv().WuPhonePromptShown or getgenv().WuPhoneTycoonLoaded then return end
     getgenv().WuPhonePromptShown = true
 
-    WuShowKaijuPrompt(function()
-        if getgenv().WuLoadPhoneTycoon then getgenv().WuLoadPhoneTycoon() end
-    end, function() end, "是否执行独立项目：造一部手机？")
+    local parent = (gethui and gethui()) or game:GetService("CoreGui")
+    local oldGui = parent:FindFirstChild("WuPhonePrompt")
+    if oldGui then oldGui:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "WuPhonePrompt"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 999
+    pcall(function() sg.Parent = parent end)
+    if not sg.Parent then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local overlay = Instance.new("Frame")
+    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    overlay.BackgroundTransparency = 0.45
+    overlay.BorderSizePixel = 0
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.Parent = sg
+
+    local card = Instance.new("Frame")
+    card.AnchorPoint = Vector2.new(0.5, 0.5)
+    card.Position = UDim2.fromScale(0.5, 0.5)
+    card.Size = UDim2.new(0, 320, 0, 168)
+    card.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
+    card.BackgroundTransparency = 0.12
+    card.BorderSizePixel = 0
+    card.Parent = overlay
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(200, 220, 255)
+    st.Thickness = 1.2
+    st.Transparency = 0.4
+    st.Parent = card
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 18, 0, 16)
+    title.Size = UDim2.new(1, -36, 0, 28)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "检测到支持服务器"
+    title.TextColor3 = Color3.fromRGB(235, 240, 248)
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = card
+
+    local desc = Instance.new("TextLabel")
+    desc.BackgroundTransparency = 1
+    desc.Position = UDim2.new(0, 18, 0, 52)
+    desc.Size = UDim2.new(1, -36, 0, 48)
+    desc.Font = Enum.Font.Gotham
+    desc.Text = "是否执行独立项目：造一部手机？"
+    desc.TextColor3 = Color3.fromRGB(160, 170, 185)
+    desc.TextSize = 14
+    desc.TextWrapped = true
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = card
+
+    local function mkBtn(text)
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(40, 48, 60)
+        b.BackgroundTransparency = 0.15
+        b.BorderSizePixel = 0
+        b.Size = UDim2.new(0, 120, 0, 34)
+        b.Font = Enum.Font.GothamBold
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(235, 240, 248)
+        b.TextSize = 15
+        b.AutoButtonColor = true
+        b.Parent = card
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+        return b
+    end
+
+    local btnYes = mkBtn("是")
+    btnYes.Position = UDim2.new(0, 18, 1, -48)
+    local btnNo = mkBtn("滚")
+    btnNo.AnchorPoint = Vector2.new(1, 0)
+    btnNo.Position = UDim2.new(1, -18, 1, -48)
+
+    local closed = false
+    local function close()
+        if closed then return end
+        closed = true
+        pcall(function() sg:Destroy() end)
+    end
+    btnYes.MouseButton1Click:Connect(function()
+        close()
+        if getgenv().WuLoadPhoneTycoon then
+            getgenv().WuLoadPhoneTycoon()
+        end
+    end)
+    btnNo.MouseButton1Click:Connect(function()
+        close()
+    end)
 end)
 
 
 
--- 缩放后检查滚动区域：保留 Mugi 自己的 CanvasSize 计算
+-- 缩放后检查滚动区域：保留 VeloraUI 自己的 CanvasSize 计算
 local function WuIsWuScreenGui(sg)
     return sg ~= nil and sg == getgenv().WuScript_GUI
 end
 
 local function WuFixScroll(sf)
-    -- Mugi 自己维护标签页和下拉框的 CanvasSize，并在拖动滑条时临时锁定滚动；
-    -- 这里不再改动任何滚动属性，避免打断库的布局和滑条拖动。
+    -- VeloraUI 自己维护标签页、弹层和下拉框的 CanvasSize；这里只确保滚动可用，
+    -- 不再覆盖 AutomaticCanvasSize / CanvasSize，避免打断库的布局计算。
+    pcall(function()
+        sf.ScrollingEnabled = true
+    end)
 end
 
 local function WuRefreshScroll()
@@ -7160,12 +7300,12 @@ end
 
 getgenv().WuRefreshScroll = WuRefreshScroll
 
--- 独立板块：设置（Mugi 兼容接口，可改缩放/字体）
+-- 独立板块：设置（VeloraUI 兼容接口，可改缩放/字体）
 -------------------------------------------------
 task.spawn(function()
     task.wait(0.15)
     local ok, err = pcall(function()
-        -- 使用兼容层的 NewPage 接口，保证缩放/字体设置可用
+        -- 使用 VeloraUI 的兼容 NewPage 接口，保证缩放/字体设置可用
         local _NP = Window.NewPage
         local SettingsPage = _NP(Window, {
             Title = "设置",
@@ -7190,10 +7330,35 @@ task.spawn(function()
         local function WuApplyScale(scale)
             scale = math.clamp(tonumber(scale) or 1, 0.5, 1.5)
             getgenv().WuUIScale = scale
-            -- Mugi 窗口缩放（兼容层里会按屏幕大小限制上限，避免窗口超出屏幕）
+            -- VeloraUI 窗口缩放
             pcall(function()
                 if Window and Window.SetScale then Window:SetScale(scale) end
             end)
+            local root = getgenv().WuScript_GUI
+            if root and root.Parent then
+                -- Velora 的根窗口直接暴露在 Window._raw.Root；优先缩放窗口本体，
+                -- 不要缩放全屏的 Windows 容器，否则会与库内 UIScale 叠乘。
+                local main = Window and Window._raw and Window._raw.Root
+                if not main then main = root:FindFirstChildWhichIsA("Frame", false) end
+                if not main then
+                    for _, ch in ipairs(root:GetChildren()) do
+                        if ch:IsA("Frame") and ch.AbsoluteSize.X > 150 then main = ch break end
+                    end
+                end
+                local target = main or root
+                local us = target:FindFirstChild("WuOnlyUIScale")
+                if not us then
+                    us = Instance.new("UIScale")
+                    us.Name = "WuOnlyUIScale"
+                    us.Parent = target
+                end
+                -- VeloraUI 已有 UIScale 时不再叠乘，只记配置
+                if not target:FindFirstChildWhichIsA("UIScale") then
+                    us.Scale = scale
+                else
+                    us.Scale = 1
+                end
+            end
             pcall(WuRefreshScroll)
             pcall(WuSaveUIConfig)
         end
@@ -7225,7 +7390,7 @@ task.spawn(function()
                 local origin = inst:GetAttribute("WuBaseTextSize")
                 if not origin then
                     origin = tonumber(inst.TextSize) or 8
-                    -- 保留 Mugi 原始字号作基准，避免强行放大撑破固定行高
+                    -- 保留 VeloraUI 原始字号作基准，避免强行 12 撑破固定行高
                     inst:SetAttribute("WuBaseTextSize", origin)
                 end
                 -- 仅轻度放大；上限避免溢出 Section 行高
@@ -7239,11 +7404,6 @@ task.spawn(function()
             local root = getgenv().WuScript_GUI
             if not root or not root.Parent then return end
             local mul = tonumber(getgenv().WuFontScale) or 1
-            -- 默认设置（100% + Bold）且没动过滑条时，保留 Mugi 自带的字体样式
-            if mul == 1 and tostring(getgenv().WuFontWeight or "Bold") == "Bold"
-                and not getgenv().WuFontTouched then
-                return
-            end
             local weight = WU_WEIGHTS[tostring(getgenv().WuFontWeight or "Bold")] or Enum.FontWeight.Bold
             -- 原来是 Italic（斜体），中文斜体不好看；想要斜体改成 Enum.FontStyle.Italic
             local face = Font.fromName("Montserrat", weight, Enum.FontStyle.Normal)
@@ -7278,7 +7438,6 @@ task.spawn(function()
             Suffix = "%",
             Callback = function(v)
                 getgenv().WuFontScale = (tonumber(v) or 100) / 100
-                getgenv().WuFontTouched = true
                 WuApplyFontDebounced()
             end
         })
@@ -7292,7 +7451,6 @@ task.spawn(function()
                     for k, on in pairs(v) do if on then v = k break end end
                 end
                 getgenv().WuFontWeight = tostring(v or "Bold")
-                getgenv().WuFontTouched = true
                 WuApplyFontDebounced()
             end
         })
