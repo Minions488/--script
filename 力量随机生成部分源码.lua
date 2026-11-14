@@ -149,6 +149,9 @@ function M.clearGuards()
 end
 
 -- 抽到好东西会播过场动画（BlackScreen / 电影界面），把 roll 卡住
+-- 注：电影界面体积大，GetDescendants 很贵，roll 20 次/秒时不能每轮都扫，节流到 0.5s 一次
+local CIN_NAMES = { "ExetiorCinematic", "DarklordCinematic", "HourglassCinematic", "EmeraldCinematic" }
+local cinNext = 0
 function M.clearAnim()
 	local hit = false
 	local mp = plr.PlayerGui:FindFirstChild("MainPlayerGuis")
@@ -161,7 +164,10 @@ function M.clearAnim()
 			end
 		end
 	end
-	for _, name in ipairs({ "ExetiorCinematic", "DarklordCinematic", "HourglassCinematic", "EmeraldCinematic" }) do
+	local now = os.clock()
+	if now < cinNext then return hit end
+	cinNext = now + 0.5
+	for _, name in ipairs(CIN_NAMES) do
 		local g = plr.PlayerGui:FindFirstChild(name)
 		if g then
 			for _, d in ipairs(g:GetDescendants()) do
@@ -240,18 +246,33 @@ function M.fxToggle()
 	return false, "特效已恢复"
 end
 
+-- 实测：RollCooldownQuery 每次往返约 250ms，旧逻辑「查询+挥手+等 0.45s」只有 1 次/秒。
+-- 服务端真实冷却约 0.19s，所以改成不查询、20 次/秒直接挥手踩点，实测 5.3 次/秒。
+local ROLL_GAP = 0.05
+local lastRollFire = 0
+local function rollsValue()
+	local ls = plr:FindFirstChild("leaderstats")
+	local v = ls and ls:FindFirstChild("Rolls")
+	return v and tonumber(v.Value) or nil
+end
+
 function M.rollOnce()
-	local cd = 0
-	local ok, v = pcall(function() return RF:FindFirstChild("RollCooldownQuery"):InvokeServer() end)
-	if ok and type(v) == "number" then cd = v end
-	if cd > 0 then return false, cd end
+	local now = os.clock()
+	if now - lastRollFire < ROLL_GAP then return false, ROLL_GAP end
+	-- 无敌/技能无敌帧期间服务端会吞掉 roll，先等一帧再打
+	if guardFlag("Invincible") or guardFlag("AbilityIFrames") then return false, 0.05 end
+	lastRollFire = now
 	M.clearGuards()
 	M.clearAnim()
-	if guardFlag("Invincible") or guardFlag("AbilityIFrames") then
-		return false, 1
-	end
-	pcall(function() RE:FindFirstChild("RollRequest"):FireServer() end)
-	rollStats.n = rollStats.n + 1
+	local rem = RE:FindFirstChild("RollRequest")
+	if not rem then return false, 0.5 end
+	local R = getgenv().__PF_RAGE_REF
+	if R then R.mine = true end
+	pcall(function() rem:FireServer() end)
+	if R then R.mine = false end
+	-- 用 leaderstats.Rolls 作为真实计数（请求会被服务端按冷却丢弃，不能拿请求数当抽数）
+	local n = rollsValue()
+	if n then rollStats.n = n else rollStats.n = rollStats.n + 1 end
 	local c = char()
 	if c then
 		local cp = c:FindFirstChild("CurrentPower")
@@ -262,15 +283,13 @@ end
 
 function M.startRoll()
 	if getgenv().__PF_ROLL_ON then return false, "已在运行" end
+	local n = rollsValue()
+	if n and rollStats.n == 0 then rollStats.n = n end
 	getgenv().__PF_ROLL_ON = true
 	getgenv().__PF_ROLL = task.spawn(function()
 		while getgenv().__PF_ROLL_ON do
-			local ok, cd = M.rollOnce()
-			if not ok then
-				task.wait(math.clamp(cd or 1, 0.35, 2))
-			else
-				task.wait(0.45)
-			end
+			M.rollOnce()
+			task.wait(ROLL_GAP)
 		end
 		getgenv().__PF_ROLL = nil
 	end)
@@ -281,6 +300,92 @@ function M.stopRoll()
 	getgenv().__PF_ROLL_ON = nil
 	getgenv().__PF_ROLL = nil
 	return true, "已停止"
+end
+
+-- ══════════ 暴力：飞速旋钮 ══════════
+-- 纯手动：脚本自己不抽。你自己点游戏里的 ROLL，点一次后在 2.5 秒内以 20 次/秒补发请求，
+-- 抓住冷却刚结束的那一刻（配恶魔药水的长冷却也能占便宜）。
+local RAGE_RATE = 20
+local RAGE_BURST = 2.5
+local rage = { on = false, rate = RAGE_RATE, sent = 0, burstUntil = 0, mine = false }
+M.rage = rage
+getgenv().__PF_RAGE_REF = rage
+
+-- 只装一次：拦「游戏自己发的 RollRequest」（= 你点 ROLL）来开启加速窗口
+getgenv().__PF_ROLL_REM = RE:FindFirstChild("RollRequest")
+pcall(function()
+	if getgenv().__PF_RAGE_MT_HOOK then return end
+	local mt = getrawmetatable and getrawmetatable(game)
+	if not mt or not mt.__namecall or not newcclosure then return end
+	local old = mt.__namecall
+	pcall(setreadonly, mt, false)
+	mt.__namecall = newcclosure(function(self, ...)
+		local R = getgenv().__PF_RAGE_REF
+		if R and R.on and not R.mine and self == getgenv().__PF_ROLL_REM then
+			local m = getnamecallmethod and getnamecallmethod()
+			if m == "FireServer" then
+				R.burstUntil = os.clock() + RAGE_BURST
+			end
+		end
+		return old(self, ...)
+	end)
+	pcall(setreadonly, mt, true)
+	getgenv().__PF_RAGE_MT_HOOK = true
+end)
+
+-- 备用触发：直接监听界面上的 ROLL 按钮（拦不到 namecall 时也能用）
+pcall(function()
+	if getgenv().__PF_RAGE_BTN_CONN then pcall(function() getgenv().__PF_RAGE_BTN_CONN:Disconnect() end) end
+	local pg = plr.PlayerGui
+	local function bind(d)
+		if d:IsA("GuiButton") and (d.Name == "RollButton" or d.Name == "RollsButton") then
+			d.Activated:Connect(function()
+				if rage.on then rage.burstUntil = os.clock() + RAGE_BURST end
+			end)
+		end
+	end
+	for _, d in ipairs(pg:GetDescendants()) do bind(d) end
+	getgenv().__PF_RAGE_BTN_CONN = pg.DescendantAdded:Connect(bind)
+end)
+
+function M.setRagePower(on)
+	on = on == true
+	rage.on = on
+	rage.burstUntil = 0
+	if getgenv().__PF_RAGE_CONN then
+		pcall(function() getgenv().__PF_RAGE_CONN:Disconnect() end)
+		getgenv().__PF_RAGE_CONN = nil
+	end
+	if not on then return false end
+	local rem = getgenv().__PF_ROLL_REM or RE:FindFirstChild("RollRequest")
+	if not rem then return false end
+	local acc = 0
+	local lastAnim = 0
+	getgenv().__PF_RAGE_CONN = RunService.Heartbeat:Connect(function(dt)
+		if not rage.on or os.clock() >= rage.burstUntil then
+			acc = 0
+			return
+		end
+		acc = acc + dt
+		if acc < 1 / rage.rate then return end
+		acc = 0
+		local c, h = char()
+		if c and h and h.Health <= 0 then return end
+		if guardFlag("Invincible") or guardFlag("AbilityIFrames") then return end
+		M.clearGuards()
+		local now = os.clock()
+		if now - lastAnim > 0.35 then
+			lastAnim = now
+			M.clearAnim()
+		end
+		rage.mine = true
+		pcall(function() rem:FireServer() end)
+		rage.mine = false
+		rage.sent = rage.sent + 1
+		local n = rollsValue()
+		if n then rollStats.n = n end
+	end)
+	return true
 end
 
 function M.claimAll()
@@ -1747,6 +1852,8 @@ local TabMove = Window:AddTab("移动", "wind")
 local TabFarm = Window:AddTab("农场", "coins")
 local TabPot = Window:AddTab("药水", "flask-conical")
 local TabFun = Window:AddTab("趣味", "gamepad")
+local TabKing = Window:AddTab("国王", "crown")
+local TabRage = Window:AddTab("暴力功能", "zap")
 
 local function notify(msg)
 	pcall(function() Library:Notify(tostring(msg), 2) end)
@@ -1767,6 +1874,35 @@ local function confirm(title, desc, onYes)
 	if not ok then notify("确认框失败，请开「免确认」") end
 end
 
+-- 自定义文案的双按钮弹窗（按钮文字与回调都可指定）
+local dlgN = 0
+local function ask(title, desc, yesText, noText, onYes, onNo)
+	dlgN = dlgN + 1
+	local ok = pcall(function()
+		Window:AddDialog("pf_ask_" .. tostring(dlgN), {
+			Title = title,
+			Description = desc,
+			FooterButtons = {
+				{
+					Title = yesText or "确认",
+					Variant = "Primary",
+					Callback = function()
+						task.spawn(function() if onYes then onYes() end end)
+					end,
+				},
+				{
+					Title = noText or "取消",
+					Variant = "Secondary",
+					Callback = function()
+						task.spawn(function() if onNo then onNo() end end)
+					end,
+				},
+			},
+		})
+	end)
+	if not ok then notify("弹窗失败，请重试") end
+end
+
 -- ───── 主页 ─────
 local GCode = TabHome:AddLeftGroupbox("兑换 / 抽卡")
 local GSkill = TabHome:AddRightGroupbox("技能点")
@@ -1785,6 +1921,368 @@ local lblAfk = GAfk:AddLabel("-", true)
 local lblFps = GFps:AddLabel("-", true)
 
 local function setLbl(l, t) pcall(function() l:SetText(tostring(t)) end) end
+
+-- ───── 暴力功能 ─────
+local GRage = TabRage:AddLeftGroupbox("飞速旋钮")
+local lblRage = GRage:AddLabel("未开启", true)
+
+local rageToggle
+local rageSync = false
+
+local function rageTicker()
+	task.spawn(function()
+		while M.rage.on do
+			if os.clock() < M.rage.burstUntil then
+				setLbl(lblRage, "加速中…")
+			else
+				setLbl(lblRage, "手动：点 ROLL 触发")
+			end
+			task.wait(0.3)
+		end
+		setLbl(lblRage, "未开启")
+	end)
+end
+
+local function rageTurnOn()
+	M.setRagePower(true)
+	rageTicker()
+end
+
+local function rageTurnOff()
+	M.setRagePower(false)
+	setLbl(lblRage, "未开启")
+end
+
+rageToggle = GRage:AddToggle("RageSpin", {
+	Text = "飞速旋钮",
+	Default = false,
+	Callback = function(v)
+		if rageSync then return end
+		if not v then
+			rageTurnOff()
+			return
+		end
+		-- 二次确认：先风险提示，再免责，都同意才真正开启
+		ask("风险提示", "此功能未经实际测试，可能造成你账户风险", "确定开启", "我再想想",
+			function()
+				ask("好吧", "我不负责任哦", "开启", "取消",
+					function()
+						rageTurnOn()
+					end,
+					function()
+						rageSync = true
+						pcall(function() rageToggle:SetValue(false) end)
+						rageSync = false
+					end)
+			end,
+			function()
+				rageSync = true
+				pcall(function() rageToggle:SetValue(false) end)
+				rageSync = false
+			end)
+	end,
+})
+
+GRage:AddLabel("手动：自己点 ROLL 才会加速", true)
+
+-- ───── 国王 ─────
+local GKing = TabKing:AddLeftGroupbox("自动抢王")
+local lbKing = GKing:AddLabel("检测中…", true)
+
+local kingc = { on = false, conn = nil, last = "", tries = 0, cd = 0, holdPos = nil, noclip = false, depth = 12, insideDepth = 0, thick = 0, homePos = nil, avoid = 26 }
+
+local function crownPart()
+	local kc = workspace:FindFirstChild("KingCrown")
+	local dome = kc and kc:FindFirstChild("Forcefield Dome")
+	if dome and dome:IsA("BasePart") then return dome end
+	local map = workspace:FindFirstChild("Map")
+	local ak = map and map:FindFirstChild("AttachmentKing")
+	if ak and ak:IsA("BasePart") then return ak end
+	return nil
+end
+
+local function kingValue()
+	local ck = RS:FindFirstChild("CurrentKing")
+	return ck and tostring(ck.Value) or ""
+end
+
+-- 无碰撞体积（自己）：所有部件 CanCollide=false，并丢进独立碰撞组（与所有组都不碰撞）
+-- 原来的 CanCollide / 碰撞组记在属性上，退出时原样还原
+local PhysicsService = game:GetService("PhysicsService")
+local CG = "PF_NoClip"
+local function ensureCG()
+	pcall(function() PhysicsService:RegisterCollisionGroup(CG) end)
+	pcall(function()
+		for _, g in ipairs(PhysicsService:GetCollisionGroups()) do
+			local name = type(g) == "string" and g or (g.Name or "")
+			if name ~= "" and name ~= CG then
+				PhysicsService:CollisionGroupSetCollidable(CG, name, false)
+			end
+		end
+	end)
+end
+
+local function partNoClip(d)
+	if d:GetAttribute("PF_CG") == nil then d:SetAttribute("PF_CG", d.CollisionGroup) end
+	if not d:GetAttribute("PF_CC") and d.CanCollide then d:SetAttribute("PF_CC", true) end
+	d.CanCollide = false
+	pcall(function() d.CollisionGroup = CG end)
+end
+
+local function setNoClip(on)
+	local c = plr.Character
+	if getgenv().__PF_KING_NC_CONN then
+		pcall(function() getgenv().__PF_KING_NC_CONN:Disconnect() end)
+		getgenv().__PF_KING_NC_CONN = nil
+	end
+	kingc.noclip = on
+	if not c then return end
+	if on then
+		ensureCG()
+		for _, d in ipairs(c:GetDescendants()) do
+			if d:IsA("BasePart") then partNoClip(d) end
+		end
+		-- 占位期间新加的部件（变身/换装/配件）也一起无碰撞
+		getgenv().__PF_KING_NC_CONN = c.DescendantAdded:Connect(function(d)
+			if kingc.noclip and d:IsA("BasePart") then partNoClip(d) end
+		end)
+	else
+		for _, d in ipairs(c:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local cg = d:GetAttribute("PF_CG")
+				if cg ~= nil then
+					pcall(function() d.CollisionGroup = cg end)
+					d:SetAttribute("PF_CG", nil)
+				end
+				if d:GetAttribute("PF_CC") then
+					d.CanCollide = true
+					d:SetAttribute("PF_CC", nil)
+				end
+			end
+		end
+	end
+end
+
+local function stopHold()
+	local wasHolding = kingc.holdPos ~= nil
+	kingc.holdPos = nil
+	local c = plr.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	-- 只要是我们把它设成 PlatformStand 的，就必须还原，否则站着不动/悬空
+	if h and kingc.psChanged then h.PlatformStand = false end
+	kingc.psChanged = nil
+	if getgenv().__PF_KINGHOLD then
+		pcall(function() getgenv().__PF_KINGHOLD:Disconnect() end)
+		getgenv().__PF_KINGHOLD = nil
+	end
+	local function restoreCollide()
+		if not kingc.holdPos and kingc.noclip then setNoClip(false) end
+	end
+	-- 先把人送出来，再恢复碰撞：先恢复碰撞会被方块挤开、弹进虚空
+	local backPos = kingc.homePos or kingc.groundPos
+	if wasHolding and backPos then
+		local gp = backPos
+		local function back()
+			if kingc.holdPos then return end  -- 已经开始新的占位，别把人拽回去
+			local _, _, hrp2 = char()
+			if not hrp2 then return end
+			hrp2.AssemblyLinearVelocity = Vector3.zero
+			hrp2.AssemblyAngularVelocity = Vector3.zero
+			hrp2.CFrame = CFrame.new(gp)
+		end
+		back()
+		task.delay(0.06, back)
+		task.delay(0.2, back)
+		task.delay(0.35, restoreCollide)
+	else
+		restoreCollide()
+	end
+end
+
+local function startHold(pos)
+	stopHold()
+	kingc.holdPos = pos
+	setNoClip(true)
+	local c = plr.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	if h then
+		kingc.psChanged = true
+		h.PlatformStand = true
+	end
+	-- 先瞬移过去，否则下一帧的「离目标太远」判定会把刚设好的位置当成被弹开
+	local _, _, hrp0 = char()
+	if hrp0 then
+		hrp0.AssemblyLinearVelocity = Vector3.zero
+		hrp0.CFrame = CFrame.new(pos)
+	end
+	-- 用 Stepped（物理步进前）钉位：RenderStepped 钉会被这一步的物理再推一次，表现为抽搐/被弹飞
+	getgenv().__PF_KINGHOLD = RunService.Stepped:Connect(function()
+		if not kingc.holdPos then return end
+		local c2, h2, hrp = char()
+		if not hrp then return end
+		-- 死了/复活了就别再把人往地底拽
+		if h2 and h2.Health <= 0 then
+			stopHold()
+			return
+		end
+		-- 被服务器弹开或已经穿进虚空（离目标太远）→ 放弃占位并回地面
+		if (hrp.Position - kingc.holdPos).Magnitude > 30 then
+			stopHold()
+			return
+		end
+		-- 游戏会自己把部件的 CanCollide 改回来，一改回来人就被地面顶出去，所以每帧强制无碰撞
+		for _, d in ipairs(c2:GetDescendants()) do
+			if d:IsA("BasePart") and (d.CanCollide or d.CollisionGroup ~= CG) then partNoClip(d) end
+		end
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+		hrp.CFrame = CFrame.new(kingc.holdPos)
+	end)
+end
+
+-- 直接钻进王冠正下方的实心方块里（穿墙隐身），不再浮在地面上
+local function seizeKing(reason)
+	local _, _, hrp = char()
+	local part = crownPart()
+	if not (hrp and part) then return false, "没找到王冠或角色" end
+	local p = part.Position
+	local target
+	local rp = RaycastParams.new()
+	local exclude = {}
+	local kc = workspace:FindFirstChild("KingCrown")
+	if kc then exclude[#exclude + 1] = kc end
+	for _, pl in ipairs(Players:GetPlayers()) do
+		if pl.Character then exclude[#exclude + 1] = pl.Character end
+	end
+	rp.FilterDescendantsInstances = exclude
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	local op = OverlapParams.new()
+	op.FilterDescendantsInstances = exclude
+	op.FilterType = Enum.RaycastFilterType.Exclude
+	-- 判断某个点是不是在实心方块里（用命中盒近似，够用）
+	local function solidAt(pos)
+		local parts = workspace:GetPartBoundsInBox(CFrame.new(pos), Vector3.new(1.5, 1.5, 1.5), op)
+		for _, q in ipairs(parts) do
+			if q.CanCollide then return true end
+		end
+		return false
+	end
+	local ray = workspace:Raycast(p - Vector3.new(0, 2, 0), Vector3.new(0, -300, 0), rp)
+	-- 跳过非碰撞体（特效/判定框/装饰），只认真正能站人的地面
+	local guard = 0
+	while ray and not ray.Instance.CanCollide and guard < 8 do
+		guard = guard + 1
+		ray = workspace:Raycast(ray.Position - Vector3.new(0, 0.2, 0), Vector3.new(0, -300, 0), rp)
+	end
+	if ray then
+		local top = ray.Position
+		-- 逐格往下量这层实心方块有多厚，人不能钻穿它掉进虚空
+		local thick = 0
+		for d = 1, math.min(kingc.depth + 10, 80) do
+			if solidAt(top - Vector3.new(0, d, 0)) then thick = d else break end
+		end
+		kingc.thick = thick
+		if thick < 4 then return false, "这里地板太薄，钻下去会掉虚空，等国王换个位置再试" end
+		-- 实测 45 格以下会瞬间死亡（地图有秒杀区），30 格稳定，所以卡 30
+		kingc.insideDepth = math.min(kingc.depth, thick - 2, 30)
+		target = top - Vector3.new(0, kingc.insideDepth, 0)
+		kingc.groundPos = top + Vector3.new(0, 4, 0)
+	else
+		return false, "王冠下方没有地面"
+	end
+	if not kingc.holdPos then kingc.homePos = hrp.Position end
+	startHold(target)
+	kingc.tries = kingc.tries + 1
+	return true, reason or "已钻进王冠下方"
+end
+getgenv().__PF_KING_SEIZE = seizeKing
+getgenv().__PF_KING_STOP = function() stopHold() end
+getgenv().__PF_KINGC = kingc
+
+function M.setKingAuto(on)
+	kingc.on = on == true
+	if not on then
+		if kingc.conn then pcall(task.cancel, kingc.conn) end
+		kingc.conn = nil
+		stopHold()
+		return false
+	end
+	if kingc.conn then return true end
+	kingc.last = kingValue()
+	kingc.conn = task.spawn(function()
+		local function someoneNear(pos, radius)
+			for _, pl in ipairs(Players:GetPlayers()) do
+				if pl ~= plr and pl.Character then
+					local hrp = pl.Character:FindFirstChild("HumanoidRootPart")
+					if hrp and (hrp.Position - pos).Magnitude <= radius then return true end
+				end
+			end
+			return false
+		end
+		while kingc.on do
+			local now = kingValue()
+			local cp = crownPart()
+			local cpPos = cp and cp.Position
+			local intruder = cpPos and someoneNear(cpPos, kingc.avoid) or false
+			if kingc.holdPos and intruder then
+				-- 有人也来抢：先回原位，等人走了再继续
+				stopHold()
+				kingc.cd = os.clock() + 3
+			elseif now == tostring(plr.Name) then
+				if kingc.holdPos or kingc.noclip then
+					stopHold()
+				end
+			else
+				local free = (now == "" or Players:FindFirstChild(now) == nil)
+				if free and not intruder and os.clock() >= kingc.cd then
+					local ok, msg = seizeKing("国王空位")
+					if ok then
+						kingc.cd = os.clock() + 4
+					else
+						kingc.cd = os.clock() + 3
+					end
+				end
+			end
+			kingc.last = now
+			task.wait(0.5)
+		end
+	end)
+	return true
+end
+
+GKing:AddToggle("KingAuto", {
+	Text = "自动抢王",
+	Default = false,
+	Callback = function(v) M.setKingAuto(v) end,
+})
+
+GKing:AddSlider("KingDepth", {
+	Text = "潜入深度",
+	Min = 3,
+	Max = 30,
+	Default = 12,
+	Rounding = 0,
+	Suffix = " 格",
+	Callback = function(v) kingc.depth = math.floor(tonumber(v) or 12) end,
+})
+
+GKing:AddButton({
+	Text = "钻进去（穿墙占位）",
+	Func = function()
+		local ok, msg = seizeKing("手动")
+		notify(msg or "完成")
+	end,
+})
+
+GKing:AddButton({
+	Text = "取消占位 / 还原碰撞",
+	Func = function()
+		stopHold()
+		notify("已退出占位")
+	end,
+})
+
+GKing:AddLabel("穿墙：自己全部无碰撞 + 独立碰撞组，钉在王冠正下方、地面以下的方块里，外面看不到。\n深度上限 30 格（实测 45 格以下会瞬间死亡），地板太薄会拒绝。关开关或点「取消占位」还原碰撞。", true)
 
 local busy = false
 
@@ -2342,13 +2840,20 @@ local function farmTick(st)
 		if ok then st.status = "悬浮中" end
 	end
 
+	-- 3 个药水栏：恶魔+急速+加速；2 栏：急速+加速（飞速旋钮只手动开，脚本不接管）
+	local slots = effectSlotLimit() or 0
+	-- 飞速旋钮是手动模式，不接管自动刷：自动刷始终走自己的常规抽卡循环
 	local th = getgenv().__PF_ROLL
 	if not getgenv().__PF_ROLL_ON or not th or coroutine.status(th) == "dead" then
 		getgenv().__PF_ROLL_ON = nil
-		if M.startRoll() then st.status = "抽卡中" end
+		M.startRoll()
 	end
+	st.status = "抽卡中"
 
-	for _, nm in ipairs({ "Speedy Potion", "Haste Potion" }) do
+	local potList = { "Speedy Potion", "Haste Potion" }
+	if slots >= 3 then potList[#potList + 1] = "Demonic Potion" end
+
+	for _, nm in ipairs(potList) do
 		if getgenv().__PF_FARM ~= st then return end
 		if not M.effectActive(nm) then
 			st.potWait = st.potWait or {}
@@ -2367,12 +2872,15 @@ local function farmTick(st)
 
 	local elapsed = os.clock() - st.t0
 	local cur = tonumber((data("Currency") or {})[def.cur]) or 0
+	local buffs = (M.effectActive("Speedy Potion") and "加速✓" or "加速×")
+		.. (M.effectActive("Haste Potion") and " 急速✓" or " 急速×")
+	if slots >= 3 then
+		buffs = buffs .. (M.effectActive("Demonic Potion") and " 恶魔✓" or " 恶魔×")
+	end
 	local text = string.format(
-		"刷%s %s\n抽 %d · +%s\n药水 买%d 喝%d\n%s · %s",
+		"刷%s %s\n抽 %d · +%s\n药水 买%d 喝%d\n%s",
 		def.name, hms(elapsed), rollStats.n - st.baseRolls, fmt(math.max(0, cur - st.base)),
-		st.bought, st.drunk,
-		M.effectActive("Speedy Potion") and "加速✓" or "加速×",
-		M.effectActive("Haste Potion") and "急速✓" or "急速×"
+		st.bought, st.drunk, buffs
 	)
 	if hudLabel then pcall(function() hudLabel:SetText(text) end) end
 	setLbl(lblFarm, text .. "\n" .. (st.status or ""))
@@ -2424,6 +2932,7 @@ pcall(refreshSkill)
 Library:OnUnload(function()
 	pcall(stopFarm)
 	M.stopRoll()
+	pcall(M.setRagePower, false)
 	pcall(M.floatDown)
 	pcall(M.setCombat, false)
 	pcall(M.setRagdollFix, false)
@@ -2431,6 +2940,7 @@ Library:OnUnload(function()
 	pcall(M.restoreHitbox)
 	pcall(M.setChest, false)
 	pcall(M.setAntiVoid, false)
+	pcall(M.setKingAuto, false)
 	if getgenv().__PF_AFK_CONN then pcall(function() getgenv().__PF_AFK_CONN:Disconnect() end) getgenv().__PF_AFK_CONN = nil end
 	if getgenv().__PF_FPS_CONN_MAIN then pcall(function() getgenv().__PF_FPS_CONN_MAIN:Disconnect() end) getgenv().__PF_FPS_CONN_MAIN = nil end
 	getgenv().__PF_HOLD = nil
@@ -2484,6 +2994,14 @@ getgenv().__PF_LOOP = task.spawn(function()
 			.. (swing.on and string.format(" · 自动挥击 %d 格 · 已触发 %d", swing.range, swing.n) or ""))
 		setLbl(lbChest, string.format("%s · 已开 %d · 跳过动画 %d", chest.state, chest.opened, loot.skipped))
 		setLbl(lbMove, string.format("解除 %d · 速度 %d\n反虚空 %s · 救回 %d", rag.fixed, move.speed, voidc.on and voidc.msg or "关", voidc.back))
+
+		local kv = kingValue()
+		local cp = crownPart()
+		local dist = (cp and hrp) and math.floor((cp.Position - hrp.Position).Magnitude) or -1
+		setLbl(lbKing, string.format("国王：%s%s\n监控 %s · 尝试 %d · 距离 %d · 地下 %d 格",
+			kv == "" and "空位" or kv,
+			(kv ~= "" and Players:FindFirstChild(kv) == nil) and "（已离线）" or "",
+			kingc.on and "开" or "关", kingc.tries, dist, kingc.insideDepth))
 
 		if CFG.autoClaim and os.clock() - lastClaim > 90 then
 			lastClaim = os.clock()
