@@ -388,6 +388,8 @@ function M.setRagePower(on)
 	return true
 end
 
+getgenv().__PF_API = M
+
 function M.claimAll()
 	pcall(function() RE:FindFirstChild("ClaimDailyReward"):FireServer() end)
 	task.wait(0.3)
@@ -887,7 +889,7 @@ end
 
 
 -- ══════════ ⑧ 战斗 / 防护 / 移动 ══════════
-local combat = { on = false, hitbox = 0, target = nil, swings = 0, hits = 0, range = 12, lead = 200, autoLead = true, ping = 0 }
+local combat = { on = false, hitbox = 0, target = nil, swings = 0, hits = 0, range = 12, lead = 200, autoLead = true, ping = 0, lock = "", attackMove = "teleport", tpAt = 0 }
 -- 自动挥击：只做「范围内有敌人 → 触发攻击」，不移动、不转向、不选目标
 local swing = { on = false, range = 8, last = 0, n = 0 }
 local rag = { on = false, fixed = 0 }
@@ -1159,6 +1161,50 @@ getgenv().__PF_SWING_CONN = RunService.Heartbeat:Connect(function()
 	end
 end)
 
+-- 锁定目标：按用户名（支持部分匹配 / 显示名）找人
+local function findPlayer(name)
+	name = string.lower(tostring(name or ""))
+	if name == "" then return nil end
+	local exact, partial
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= plr then
+			local ln = string.lower(p.Name)
+			local dn = string.lower(p.DisplayName or "")
+			if ln == name or dn == name then
+				exact = p
+				break
+			end
+			if not partial and (string.find(ln, name, 1, true) or string.find(dn, name, 1, true)) then
+				partial = p
+			end
+		end
+	end
+	return exact or partial
+end
+
+local function enemyOf(p)
+	local pc = p and p.Character
+	local ph = pc and pc:FindFirstChildOfClass("Humanoid")
+	if not ph or ph.Health <= 0 then return nil end
+	-- 刚出生/正在加载的角色可能还没有 HumanoidRootPart，退到 RootPart / 任意部件
+	local pr = pc:FindFirstChild("HumanoidRootPart") or ph.RootPart or pc.PrimaryPart or pc:FindFirstChildWhichIsA("BasePart")
+	if not pr then return nil end
+	return { plr = p, root = pr, hum = ph }
+end
+
+-- 传送式接近：直接挪到目标身边（脚下先探地面，避免掉进虚空）
+local function teleportNear(hrp, aim, range)
+	local flat = Vector3.new(aim.X - hrp.Position.X, 0, aim.Z - hrp.Position.Z)
+	if flat.Magnitude < 0.5 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
+	local spot = aim - flat * math.max(2.5, range * 0.6)
+	local g = groundBelowAt(spot + Vector3.new(0, 14, 0), 46)
+	local dest = g and (g + Vector3.new(0, 3, 0)) or spot
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	hrp.CFrame = CFrame.lookAt(dest, Vector3.new(aim.X, dest.Y, aim.Z))
+end
+
+
 local function combatTick()
 	local c, h, hrp = char()
 	if not (h and hrp) then return end
@@ -1167,8 +1213,20 @@ local function combatTick()
 		combat.pingAt = os.clock()
 	end
 	applyHitbox()
-	-- 每帧重新选最近的敌人（不再死锁在第一个目标上）
-	local tgt = nearestEnemy(300)
+	-- 锁定用户名后只打他（不限距离），人没加载/不在线就原地等；没锁才打最近的
+	local tgt
+	local lockName = tostring(combat.lock or "")
+	if lockName ~= "" then
+		tgt = enemyOf(findPlayer(lockName))
+		if not tgt then
+			combat.target, lastTargetHp = nil, nil
+			walk.wps, walk.goal = nil, nil
+			h:MoveTo(hrp.Position)
+			return
+		end
+	else
+		tgt = nearestEnemy(300)
+	end
 	if not tgt then
 		combat.target, lastTargetHp = nil, nil
 		walk.wps, walk.goal = nil, nil
@@ -1182,8 +1240,14 @@ local function combatTick()
 	local dist = (aim - hrp.Position).Magnitude
 	local range = tonumber(combat.range) or 12
 	if dist > range then
+		if combat.attackMove == "teleport" then
+			-- 传送过去：每 0.2 秒贴一次，进范围后自动停
+			if os.clock() - (combat.tpAt or 0) > 0.2 then
+				combat.tpAt = os.clock()
+				teleportNear(hrp, aim, range)
+			end
 		-- 还没进范围：寻路/探路过去（绝不直线冲进虚空）
-		if dist > range + 1.5 then
+		elseif dist > range + 1.5 then
 			if h.WalkSpeed < 1 then h.WalkSpeed = 24 end
 			-- 10Hz 决策就够，避免每帧大量射线
 			if os.clock() - (walk.last or 0) > 0.1 then
@@ -1228,7 +1292,10 @@ function M.setCombat(on)
 			compatLoop = task.spawn(function()
 				while getgenv().__PF_HOLD do
 					task.wait(0.05)
-					if combat.on then pcall(combatTick) end
+					if combat.on then
+						local ok, e = pcall(combatTick)
+						if not ok then combat.err = tostring(e) end
+					end
 				end
 				compatLoop = nil
 			end)
@@ -1270,6 +1337,20 @@ end
 function M.setAutoLead(v)
 	combat.autoLead = v == true
 	return combat.autoLead
+end
+
+function M.setCombatLock(name)
+	combat.lock = tostring(name or "")
+	combat.target, lastTargetHp = nil, nil
+	return combat.lock
+end
+
+function M.setCombatMove(mode)
+	mode = tostring(mode or "")
+	local tele = (mode == "teleport" or mode == "传送")
+	combat.attackMove = tele and "teleport" or "walk"
+	walk.wps, walk.goal = nil, nil
+	return combat.attackMove
 end
 
 
@@ -1391,7 +1472,7 @@ function M.setChest(on)
 end
 
 function M.setChestMode(m)
-	chest.mode = (m == "teleport") and "teleport" or "walk"
+	chest.mode = ((m == "teleport" or m == "直接传送")) and "teleport" or "walk"
 	return chest.mode
 end
 
@@ -2501,6 +2582,21 @@ GFight:AddSlider("AtkLead", {
 	Callback = function(v) M.setCombatLead(v) end,
 })
 
+GFight:AddInput("LockTarget", {
+	Text = "锁定目标（用户名，留空=最近敌人）",
+	Default = "",
+	Finished = true,
+	ClearTextOnFocus = false,
+	Callback = function(v) M.setCombatLock(v) end,
+})
+
+GFight:AddDropdown("AtkMove", {
+	Text = "攻击方式",
+	Default = "传送",
+	Values = { ["传送"] = "teleport", ["行走"] = "walk" },
+	Callback = function(v) M.setCombatMove(v) end,
+})
+
 GFight:AddToggle("AutoSwing", {
 	Text = "自动挥击（范围内有敌人就触发，不移动）",
 	Default = false,
@@ -2840,7 +2936,7 @@ local function farmTick(st)
 		if ok then st.status = "悬浮中" end
 	end
 
-	-- 3 个药水栏：恶魔+急速+加速；2 栏：急速+加速（飞速旋钮只手动开，脚本不接管）
+	-- 3 个药水栏：财富+急速+加速；2 栏：急速+加速（飞速旋钮只手动开，脚本不接管）
 	local slots = effectSlotLimit() or 0
 	-- 飞速旋钮是手动模式，不接管自动刷：自动刷始终走自己的常规抽卡循环
 	local th = getgenv().__PF_ROLL
@@ -2851,7 +2947,7 @@ local function farmTick(st)
 	st.status = "抽卡中"
 
 	local potList = { "Speedy Potion", "Haste Potion" }
-	if slots >= 3 then potList[#potList + 1] = "Demonic Potion" end
+	if slots >= 3 then potList[#potList + 1] = "Fortune Potion" end
 
 	for _, nm in ipairs(potList) do
 		if getgenv().__PF_FARM ~= st then return end
@@ -2875,7 +2971,7 @@ local function farmTick(st)
 	local buffs = (M.effectActive("Speedy Potion") and "加速✓" or "加速×")
 		.. (M.effectActive("Haste Potion") and " 急速✓" or " 急速×")
 	if slots >= 3 then
-		buffs = buffs .. (M.effectActive("Demonic Potion") and " 恶魔✓" or " 恶魔×")
+		buffs = buffs .. (M.effectActive("Fortune Potion") and " 财富✓" or " 财富×")
 	end
 	local text = string.format(
 		"刷%s %s\n抽 %d · +%s\n药水 买%d 喝%d\n%s",
