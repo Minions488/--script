@@ -27,6 +27,8 @@ end)
 if getgenv().__PF_LIB then pcall(function() getgenv().__PF_LIB:Unload() end) end
 if getgenv().__PF_LOOP then pcall(function() task.cancel(getgenv().__PF_LOOP) end) end
 if getgenv().__PF_ROLL then pcall(function() task.cancel(getgenv().__PF_ROLL) end) end
+if getgenv().__PF_KEEP_WATCH then pcall(function() task.cancel(getgenv().__PF_KEEP_WATCH) end); getgenv().__PF_KEEP_WATCH = nil end
+if getgenv().__PF_RAGE_CONN then pcall(function() getgenv().__PF_RAGE_CONN:Disconnect() end); getgenv().__PF_RAGE_CONN = nil end
 if getgenv().__PF_FARM_HUD then pcall(function() getgenv().__PF_FARM_HUD:Destroy() end) end
 getgenv().__PF_FARM = nil
 
@@ -259,8 +261,9 @@ end
 function M.rollOnce()
 	local now = os.clock()
 	if now - lastRollFire < ROLL_GAP then return false, ROLL_GAP end
-	-- 无敌/技能无敌帧期间服务端会吞掉 roll，先等一帧再打
-	if guardFlag("Invincible") or guardFlag("AbilityIFrames") then return false, 0.05 end
+	-- 技能无敌帧期间服务端会吞掉 roll，先等一帧再打
+	-- 注意：永久无敌（Invincible）不会吞 roll，实测照样能抽，不能拦
+	if guardFlag("AbilityIFrames") then return false, 0.05 end
 	lastRollFire = now
 	M.clearGuards()
 	M.clearAnim()
@@ -281,15 +284,76 @@ function M.rollOnce()
 	return true, 0
 end
 
+-- 抽到指定力量就自动停下，保留结果（默认关闭，由面板勾选）
+CFG.keepSel = CFG.keepSel or {}
+for _, k in ipairs({ "Iron", "Gold", "Diamond" }) do
+	if CFG.keepSel[k] == nil then CFG.keepSel[k] = false end
+end
+M.keepPowers = CFG.keepSel
+M.keepHit = nil
+
+function M.keptPower(before)
+	local c = char()
+	local cp = c and c:FindFirstChild("CurrentPower")
+	if not cp then return nil end
+	local p = tostring(cp.Value)
+	if p == before then return nil end
+	if M.keepPowers[p] then return p end
+	return nil
+end
+
+-- 当前力量是否命中保留（不看是否变化，重复抽到同一个也要停）
+function M.currentKeep()
+	local c = char()
+	local cp = c and c:FindFirstChild("CurrentPower")
+	if not cp then return nil end
+	local p = tostring(cp.Value)
+	if M.keepPowers[p] then return p end
+	return nil
+end
+
 function M.startRoll()
 	if getgenv().__PF_ROLL_ON then return false, "已在运行" end
+	M.keepHit = nil
 	local n = rollsValue()
 	if n and rollStats.n == 0 then rollStats.n = n end
 	getgenv().__PF_ROLL_ON = true
 	getgenv().__PF_ROLL = task.spawn(function()
+		local function curPower()
+			local c = char()
+			local cp = c and c:FindFirstChild("CurrentPower")
+			return cp and tostring(cp.Value) or nil
+		end
 		while getgenv().__PF_ROLL_ON do
+			local before = curPower() or ""
+			local r0 = rollsValue()
+			local accepted = false
+			-- 自动旋转 = 自动点一次 ROLL：一次一轮，没到账才补点，不连发
 			M.rollOnce()
-			task.wait(ROLL_GAP)
+			local t1 = os.clock()
+			while getgenv().__PF_ROLL_ON and os.clock() - t1 < 1.7 do
+				if curPower() ~= before then
+					accepted = true
+					break
+				end
+				local r = rollsValue()
+				if r ~= nil and r0 ~= nil and r ~= r0 then
+					accepted = true
+					break
+				end
+				M.clearAnim()
+				task.wait(0.05)
+			end
+			if accepted then
+				task.wait(0.1)
+				-- 不再排除“和上次相同”：重复抽到同一个保留力量也要停
+				local keep = M.currentKeep()
+				if keep then
+					M.onKeepHit(keep)
+					break
+				end
+				task.wait(0.1)
+			end
 		end
 		getgenv().__PF_ROLL = nil
 	end)
@@ -310,6 +374,45 @@ local RAGE_BURST = 2.5
 local rage = { on = false, rate = RAGE_RATE, sent = 0, burstUntil = 0, mine = false }
 M.rage = rage
 getgenv().__PF_RAGE_REF = rage
+
+-- 保留命中：自动抽卡和飞速旋钮的补发都要立刻停
+function M.onKeepHit(name)
+	if not name then return end
+	M.keepHit = name
+	getgenv().__PF_ROLL_ON = nil
+	rage.burstUntil = 0
+	if getgenv().__PF_KEEP_STOP then pcall(getgenv().__PF_KEEP_STOP, name) end
+end
+
+-- CurrentPower 一变就检查，比 0.05s 轮询快得多，飞速旋钮补发也不会漏
+local keepLast, keepInst, keepConn
+local function keepCheck(p)
+	if p == nil or p == keepLast then return end
+	keepLast = p
+	if not M.keepPowers[p] then return end
+	if getgenv().__PF_ROLL_ON or (rage.on and os.clock() < rage.burstUntil) then
+		M.onKeepHit(p)
+	end
+end
+getgenv().__PF_KEEP_WATCH = task.spawn(function()
+	while true do
+		local c = char()
+		local cp = c and c:FindFirstChild("CurrentPower")
+		if cp ~= keepInst then
+			if keepConn then pcall(function() keepConn:Disconnect() end) end
+			keepInst = cp
+			keepLast = cp and tostring(cp.Value) or nil
+			if cp then
+				keepConn = cp:GetPropertyChangedSignal("Value"):Connect(function()
+					keepCheck(tostring(cp.Value))
+				end)
+			else
+				keepConn = nil
+			end
+		end
+		task.wait(0.2)
+	end
+end)
 
 -- 只装一次：拦「游戏自己发的 RollRequest」（= 你点 ROLL）来开启加速窗口
 getgenv().__PF_ROLL_REM = RE:FindFirstChild("RollRequest")
@@ -391,11 +494,17 @@ end
 getgenv().__PF_API = M
 
 function M.claimAll()
-	pcall(function() RE:FindFirstChild("ClaimDailyReward"):FireServer() end)
-	task.wait(0.3)
-	for i = 1, 7 do
-		pcall(function() RE:FindFirstChild("RewardGiftPlayedEvent"):FireServer(i) end)
-		task.wait(0.22)
+	local daily = RE:FindFirstChild("ClaimDailyReward") or RE:WaitForChild("ClaimDailyReward", 5)
+	if not daily then return false, "找不到 ClaimDailyReward" end
+	pcall(function() daily:FireServer() end)
+	M.claimLast = os.clock()
+	local gift = RE:FindFirstChild("RewardGiftPlayedEvent") or RE:WaitForChild("RewardGiftPlayedEvent", 3)
+	if gift then
+		task.wait(0.3)
+		for i = 1, 7 do
+			pcall(function() gift:FireServer(i) end)
+			task.wait(0.22)
+		end
 	end
 	return true, "已领取每日 + 在线奖励"
 end
@@ -1353,7 +1462,6 @@ function M.setCombatMove(mode)
 	return combat.attackMove
 end
 
-
 -- ══════════ ⑨ 自动开宝箱 ══════════
 -- 宝箱 = Workspace.ChestsStuffFolder.ActiveMapChests 下的 MapLootChest_*
 -- 交互 = 箱内 ProximityPrompt（距离上限 5 格、需视线），用 fireproximityprompt 直接触发
@@ -2043,18 +2151,15 @@ rageToggle = GRage:AddToggle("RageSpin", {
 			rageTurnOff()
 			return
 		end
-		-- 二次确认：先风险提示，再免责，都同意才真正开启
+		-- 风险提示只弹一次
+		if getgenv().__PF_RAGE_AGREED then
+			rageTurnOn()
+			return
+		end
 		ask("风险提示", "此功能未经实际测试，可能造成你账户风险", "确定开启", "我再想想",
 			function()
-				ask("好吧", "我不负责任哦", "开启", "取消",
-					function()
-						rageTurnOn()
-					end,
-					function()
-						rageSync = true
-						pcall(function() rageToggle:SetValue(false) end)
-						rageSync = false
-					end)
+				getgenv().__PF_RAGE_AGREED = true
+				rageTurnOn()
 			end,
 			function()
 				rageSync = true
@@ -2392,7 +2497,7 @@ GCode:AddButton({
 	end,
 })
 
-GCode:AddToggle("AutoRoll", {
+local tgAutoRoll = GCode:AddToggle("AutoRoll", {
 	Text = "自动抽卡",
 	Default = false,
 	Callback = function(v)
@@ -2405,6 +2510,30 @@ GCode:AddToggle("AutoRoll", {
 		end
 	end,
 })
+
+local lblKeep = GCode:AddLabel("保留：未选择", true)
+for _, k in ipairs({
+	{ key = "Iron", text = "Iron（银）" },
+	{ key = "Gold", text = "Gold（黄金）" },
+	{ key = "Diamond", text = "Diamond（钻石）" },
+}) do
+	GCode:AddToggle("Keep" .. k.key, {
+		Text = "抽到 " .. k.text .. " 就停",
+		Default = CFG.keepSel[k.key] == true,
+		Callback = function(v)
+			CFG.keepSel[k.key] = v
+			local sel = {}
+			for _, kk in ipairs({ "Iron", "Gold", "Diamond" }) do
+				if CFG.keepSel[kk] then sel[#sel + 1] = kk end
+			end
+			setLbl(lblKeep, #sel > 0 and ("保留：" .. table.concat(sel, " / ")) or "保留：未选择")
+		end,
+	})
+end
+getgenv().__PF_KEEP_STOP = function(name)
+	setLbl(lblKeep, "已保留 " .. tostring(name))
+	pcall(function() tgAutoRoll:SetValue(false) end)
+end
 
 GCode:AddToggle("AutoClaim", {
 	Text = "自动领奖",
@@ -2908,6 +3037,11 @@ stopFarm = function()
 end
 
 local function farmTick(st)
+	if M.keepHit then
+		st.status = "已保留 " .. tostring(M.keepHit)
+		stopFarm()
+		return
+	end
 	local def = FARM_DEF[st.mode]
 	if M.clearAnim() then st.anim = (st.anim or 0) + 1 end
 	st.glove = st.glove or bestGlove()
@@ -2986,6 +3120,7 @@ local function startFarm(mode)
 	local def = FARM_DEF[mode]
 	if not def then return end
 	if getgenv().__PF_FARM then stopFarm() end
+	M.keepHit = nil
 	CFG.timed = false
 	CFG.autoDrink = false
 	pcall(function() Toggles.TimedBuy:SetValue(false) end)
@@ -3046,9 +3181,20 @@ end)
 getgenv().__PF_PANEL = Library.ScreenGui
 getgenv().__PF_HOLD = true
 
+-- 面板一加载就按配置领一次，不用再手动关掉/打开
+if CFG.autoClaim then
+	task.spawn(function()
+		task.wait(5)
+		if CFG.autoClaim then
+			local ok, msg = M.claimAll()
+			setLbl(lblRoll, msg)
+		end
+	end)
+end
+
 -- ══════════ 主循环 ══════════
 getgenv().__PF_LOOP = task.spawn(function()
-	local lastHp, lastClaim = nil, 0
+	local lastHp = nil
 	local lastRoll, lastRewards = 0, -60
 	local lastDrink = 0
 	while not Library.Unloaded do
@@ -3099,9 +3245,12 @@ getgenv().__PF_LOOP = task.spawn(function()
 			(kv ~= "" and Players:FindFirstChild(kv) == nil) and "（已离线）" or "",
 			kingc.on and "开" or "关", kingc.tries, dist, kingc.insideDepth))
 
-		if CFG.autoClaim and os.clock() - lastClaim > 90 then
-			lastClaim = os.clock()
-			pcall(function() RE:FindFirstChild("ClaimDailyReward"):FireServer() end)
+		if CFG.autoClaim and os.clock() - (M.claimLast or 0) > 90 then
+			local rem = RE:FindFirstChild("ClaimDailyReward")
+			if rem then
+				M.claimLast = os.clock()
+				pcall(function() rem:FireServer() end)
+			end
 		end
 
 		if CFG.autoRewards and os.clock() - lastRewards > 60 then
