@@ -1,17 +1,5 @@
---[[
-  一键脚本 v22（含全部最新改动 · 自包含单文件）
-  ============================================================
-  六标签 UI「巫（不要停下）」：驾驶 / 透视 / 画面 / 杂项 / 传送 / 趣味
-  · 自动驾驶：路径跟踪 + 复活 + 避障 + 穿墙 + 平移归中(越偏离越快的平滑回中)
-  · 速度控制：固定速度巡航 + 自主调速(油门/刹车)
-  · 透视：怪物 / 障碍 / 建筑高亮 + 小箭头
-  · 画面：夜视 / 超远视距 / 无雾 / 锁白天 / 关阴影 / FPS 等 14 项
-  · 传送：直达 / 间歇 / 一键通关(保守分段)
-  · 趣味：倒着开车 / 车旋转 / 车弹跳(默认关,可还原)
-  · QTE：特殊怪精确 tap 触发
-  用法：直接把本文件整段贴进执行器 loadstring 运行即可，无需 Bridge / 守护。
-  ============================================================
-]]
+-- 不要停下
+
 
 getgenv().__SRC_TUNE = [=[
 --[[
@@ -1335,12 +1323,18 @@ local obsOkay, obsErr = pcall(function()
     getgenv().__AUTO_OBSIDIAN = Obsidian
     Obsidian.ForceCheckbox = false
     local Window = Obsidian:CreateWindow({
-        Title = "巫（不要停下）",
+        Title = "不要停下",
         Footer = "驾驶 / 透视 / 画面 / 杂项 / 传送 / 趣味",
         NotifySide = "Right",
         ShowCustomCursor = false,
         AlwaysOnTop = true,
     })
+
+    -- Obsidian 官方提供的全局圆角接口：会统一调整窗口、分组框和各类控件。
+    -- 放在创建 Tab/Groupbox 之前，确保后续新建的组件也继承该圆角值。
+    pcall(function()
+        Window:SetCornerRadius(16)
+    end)
 
     local function gstat(name)
         local f = getgenv()[name]
@@ -1355,7 +1349,7 @@ local obsOkay, obsErr = pcall(function()
 
     ---------- 标签页 1：驾驶 ----------
     local tabDrive = Window:AddTab("驾驶", "car")
-    local gd = tabDrive:AddGroupbox({ Side = "Left", Name = "实时状态" })
+    local gd = tabDrive:AddGroupbox({ Side = "Left", Name = "状态" })
     -- 【v19修复】Label 不进 Options：保存 AddLabel 返回对象，直接 :SetText()
     local LB = {}
     LB.Status = gd:AddLabel("AP_Status", { Text = "状态：待机", DoesWrap = false })
@@ -1364,42 +1358,40 @@ local obsOkay, obsErr = pcall(function()
     LB.Lat    = gd:AddLabel("AP_Lat",    { Text = "偏离中线：0 m", DoesWrap = false })
     LB.Curve  = gd:AddLabel("AP_Curve",  { Text = "曲率：0.00   安全速度：0", DoesWrap = false })
     gd:AddDivider()
-    gd:AddButton({ Text = "▶  启动 / 停止自动驾驶", Func = toggleAuto })
-    local gd2 = tabDrive:AddGroupbox({ Side = "Right", Name = "功能开关" })
+    gd:AddButton({ Text = "自动驾驶 开 / 关", Func = toggleAuto })
+    local gd2 = tabDrive:AddGroupbox({ Side = "Right", Name = "开关" })
     -- 自动复活独立成项：状态显示 + 独立开关 + 计数
     LB.Revive    = gd2:AddLabel("AP_Revive", { Text = "自动复活：关闭", DoesWrap = false })
-    LB.ReviveCnt = gd2:AddLabel("AP_ReviveCnt", { Text = "已复活次数：0", DoesWrap = false })
-    gd2:AddToggle("AP_ReviveTog", { Text = "死亡后自动点 RESTART", Default = false, Callback = function(v)
+    LB.ReviveCnt = gd2:AddLabel("AP_ReviveCnt", { Text = "复活次数：0", DoesWrap = false })
+    gd2:AddToggle("AP_ReviveTog", { Text = "自动复活", Default = false, Callback = function(v)
         local f = getgenv()._AUTO_REVIVE_SET; if type(f)=="function" then pcall(f, v) end
     end })
     gd2:AddDivider()
-    gd2:AddToggle("AP_GlideAssist", { Text = "★ 平移辅助转弯(平滑归中/免调)", Default = false, Callback = function(v)
+    gd2:AddToggle("AP_GlideAssist", { Text = "平移辅助转弯", Default = false, Callback = function(v)
         local f = getgenv()._GLIDE_CENTER_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    LB.Guard = gd2:AddLabel("AP_Guard", { Text = "平移归中：0 帧", DoesWrap = false })
+    LB.Guard = gd2:AddLabel("AP_Guard", { Text = "归中：0 帧", DoesWrap = false })
     gd2:AddDivider()
-    gd2:AddLabel("AP_Help", { Text = "平移辅助转弯：偏离中心线就平滑把车拉回并稳定在中心(帧率无关)，参数内置最安全值：不抛飞/不掉速/不瞬移，无需手动调。已删除出界瞬移拉回。", DoesWrap = true })
     gd2:AddDivider()
     -- 【v30】速度控制：固定速度巡航 + 自主调速（两模式互斥）
     gd2:AddLabel("AP_SpdTitle", { Text = "── 速度控制 ──", DoesWrap = false })
-    gd2:AddToggle("AP_CruiseOn", { Text = "① 固定速度巡航(忽略弯道限速)", Default = false, Callback = function(v)
+    gd2:AddToggle("AP_CruiseOn", { Text = "固定速度巡航", Default = false, Callback = function(v)
         local f = getgenv()._CRUISE_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    gd2:AddSlider("AP_CruiseSpd", { Text = "固定速度值(studs/s)", Default = 90, Min = 10, Max = 200, Rounding = 0, Compact = true,
+    gd2:AddSlider("AP_CruiseSpd", { Text = "巡航速度", Default = 90, Min = 10, Max = 200, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._CRUISE_SPEED_SET; if type(f)=="function" then pcall(f, v) end end })
-    gd2:AddToggle("AP_ManualOn", { Text = "② 自主调速(手动油门/刹车)", Default = false, Callback = function(v)
+    gd2:AddToggle("AP_ManualOn", { Text = "手动调速", Default = false, Callback = function(v)
         local f = getgenv()._MANUAL_SPD_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    gd2:AddSlider("AP_Throttle", { Text = "手动油门(%)", Default = 60, Min = 0, Max = 100, Rounding = 0, Compact = true,
+    gd2:AddSlider("AP_Throttle", { Text = "油门 (%)", Default = 60, Min = 0, Max = 100, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._MANUAL_THROTTLE_SET; if type(f)=="function" then pcall(f, v/100) end end })
-    gd2:AddSlider("AP_Brake", { Text = "手动刹车(%)", Default = 0, Min = 0, Max = 100, Rounding = 0, Compact = true,
+    gd2:AddSlider("AP_Brake", { Text = "刹车 (%)", Default = 0, Min = 0, Max = 100, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._MANUAL_BRAKE_SET; if type(f)=="function" then pcall(f, v/100) end end })
     LB.SpeedMode = gd2:AddLabel("AP_SpeedMode", { Text = "速度模式：自动", DoesWrap = false })
-    gd2:AddLabel("AP_SpdHelp", { Text = "固定速度=滑到哪就一直跑哪(低了给油/高了点刹)。自主调速=油门刹车你自己给，转向仍自动。两者互斥，脱困/穿墙时安全逻辑会临时接管。", DoesWrap = true })
 
     ---------- 标签页 2：透视 ----------
     local tabEsp = Window:AddTab("透视", "eye")
-    local ge = tabEsp:AddGroupbox({ Side = "Left", Name = "显示开关" })
+    local ge = tabEsp:AddGroupbox({ Side = "Left", Name = "透视" })
     ge:AddToggle("AP_Monster", { Text = "怪物透视", Default = false, Callback = function(v)
         local f = getgenv()._ESP_MONSTER_SET; if type(f)=="function" then pcall(f, v) end
     end })
@@ -1413,7 +1405,7 @@ local obsOkay, obsErr = pcall(function()
         local f = v and getgenv()._TP_START or getgenv()._TP_STOP
         if type(f) == "function" then pcall(f) end
     end })
-    ge:AddToggle("AP_ARROW", { Text = "追击者小箭头 + 距离", Default = false, Callback = function(v)
+    ge:AddToggle("AP_ARROW", { Text = "追击者箭头", Default = false, Callback = function(v)
         local f = v and getgenv()._ARROW_START or getgenv()._ARROW_STOP
         if type(f) == "function" then pcall(f) end
     end })
@@ -1444,93 +1436,89 @@ local obsOkay, obsErr = pcall(function()
         end })
     end
     local tabFx = Window:AddTab("画面", "sun")
-    local gfx = tabFx:AddGroupbox({ Side = "Left", Name = "夜视 / 视距" })
-    EXTOG(gfx, "FX_Night",   "★ 夜视模式(提亮环境)", "nightvision", false)
-    EXTOG(gfx, "FX_Far",     "★ 超远视距(拉远雾)", "farview", false)
-    EXTOG(gfx, "FX_NoFog",   "无雾模式(极限视距)", "nofog", false)
-    EXTOG(gfx, "FX_Day",     "锁定白天(正午)", "day", false)
-    EXTOG(gfx, "FX_Dusk",    "锁定黄昏(暖光)", "dusk", false)
-    EXTOG(gfx, "FX_NoShade", "关闭阴影(更亮)", "noshadow", false)
-    EXTOG(gfx, "FX_HQ",      "高清渲染(未来画质)", "hq", false)
-    EXTOG(gfx, "FX_Fov",     "广角视野(FOV110)", "fov", false)
-    local gfx2 = tabFx:AddGroupbox({ Side = "Right", Name = "屏幕叠加" })
-    EXTOG(gfx2, "FX_FpsCnt",  "FPS 实时显示", "fpscounter", false)
-    EXTOG(gfx2, "FX_Coord",   "坐标实时显示", "coord", false)
+    local gfx = tabFx:AddGroupbox({ Side = "Left", Name = "画面" })
+    EXTOG(gfx, "FX_Night",   "夜视", "nightvision", false)
+    EXTOG(gfx, "FX_Far",     "超远视距", "farview", false)
+    EXTOG(gfx, "FX_NoFog",   "无雾", "nofog", false)
+    EXTOG(gfx, "FX_Day",     "白天", "day", false)
+    EXTOG(gfx, "FX_Dusk",    "黄昏", "dusk", false)
+    EXTOG(gfx, "FX_NoShade", "关闭阴影", "noshadow", false)
+    EXTOG(gfx, "FX_HQ",      "高清画质", "hq", false)
+    EXTOG(gfx, "FX_Fov",     "广角视野", "fov", false)
+    local gfx2 = tabFx:AddGroupbox({ Side = "Right", Name = "其它效果" })
+    EXTOG(gfx2, "FX_FpsCnt",  "FPS 显示", "fpscounter", false)
+    EXTOG(gfx2, "FX_Coord",   "坐标显示", "coord", false)
     EXTOG(gfx2, "FX_Cross",   "屏幕准星", "crosshair", false)
-    EXTOG(gfx2, "FX_HideHud", "隐藏叠加HUD", "hidehud", false)
+    EXTOG(gfx2, "FX_HideHud", "隐藏 HUD", "hidehud", false)
     EXTOG(gfx2, "FX_FpsUnlock", "解除帧率限制", "fpsunlock", false)
-    EXTOG(gfx2, "FX_Mute",      "全局静音", "mute", false)
+    EXTOG(gfx2, "FX_Mute",      "静音", "mute", false)
     gfx2:AddDivider()
-    gfx2:AddLabel("FX_Info", { Text = "夜视/视距类同时只生效安全叠加；全部功能默认关闭，随时可切回游戏原样。已移除无效的角色能力功能(本游戏为驾驶游戏，角色不可控)。", DoesWrap = true })
 
     ---------- 标签页 4：杂项 ----------
     local tabMisc = Window:AddTab("杂项", "settings")
     local gm = tabMisc:AddGroupbox({ Side = "Left", Name = "系统" })
-    gm:AddButton({ Text = "重置全部附加功能", Func = function()
+    gm:AddButton({ Text = "重置功能", Func = function()
         local f = getgenv()._EX_ALL_OFF; if type(f)=="function" then pcall(f) end
     end })
-    gm:AddButton({ Text = "⚠ 离开游戏(关闭程序)", Func = function()
+    gm:AddButton({ Text = "离开游戏", Func = function()
         local f = getgenv()._EX_LEAVE; if type(f)=="function" then pcall(f) end
     end })
     gm:AddDivider()
     local gm2 = tabMisc:AddGroupbox({ Side = "Right", Name = "状态" })
-    LB.ExStat = gm2:AddLabel("EX_Stat", { Text = "附加功能：全部关闭", DoesWrap = true })
-    gm2:AddLabel("EX_Info", { Text = "全部为可选功能，关掉即还原游戏默认，不影响自动驾驶。", DoesWrap = true })
+    LB.ExStat = gm2:AddLabel("EX_Stat", { Text = "其它功能：关闭", DoesWrap = true })
 
     ---------- 标签页 5：传送 ----------
     local tabTp = Window:AddTab("传送", "rocket")
     local gtp = tabTp:AddGroupbox({ Side = "Left", Name = "直达 / 间歇传送" })
     LB.TpStat = gtp:AddLabel("AP_TPStat", { Text = "终点坐标：未探测", DoesWrap = true })
-    gtp:AddButton({ Text = "① 探测终点坐标", Func = function()
+    gtp:AddButton({ Text = "探测终点", Func = function()
         local f = getgenv()._TP_PROBE; if type(f)=="function" then
             local ok, v = pcall(f); if ok and LB.TpStat then pcall(function() LB.TpStat:SetText(v) end) end
         end
     end })
-    gtp:AddButton({ Text = "★ 一键通关(推荐:自动分段冲线)", Func = function()
+    gtp:AddButton({ Text = "一键通关", Func = function()
         local f = getgenv()._TP_AUTO_FINISH; if type(f)=="function" then
             local ok, v = pcall(f); if ok and LB.TpStat then pcall(function() LB.TpStat:SetText(v) end) end
         end
     end })
-    gtp:AddButton({ Text = "② 间歇传送(分段推进)", Func = function()
+    gtp:AddButton({ Text = "间歇传送", Func = function()
         local f = getgenv()._TP_INTERMITTENT; if type(f)=="function" then pcall(f) end
     end })
-    gtp:AddButton({ Text = "③ 直达终点(易被复位,不推荐)", Func = function()
+    gtp:AddButton({ Text = "直达终点", Func = function()
         local f = getgenv()._TP_FINISH; if type(f)=="function" then pcall(f) end
     end })
     gtp:AddButton({ Text = "■ 停止传送", Func = function()
         local f = getgenv()._TP_STOP; if type(f)=="function" then pcall(f) end
     end })
     gtp:AddDivider()
-    local gtps = tabTp:AddGroupbox({ Side = "Right", Name = "传送参数(保守)" })
-    gtps:AddSlider("AP_TPStep", { Text = "每段步长(米)", Default = 55, Min = 15, Max = 150, Rounding = 0, Compact = true,
+    local gtps = tabTp:AddGroupbox({ Side = "Right", Name = "传送参数" })
+    gtps:AddSlider("AP_TPStep", { Text = "步长", Default = 55, Min = 15, Max = 150, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._TP_SET; if type(f)=="function" then pcall(f, v, nil, nil) end end })
-    gtps:AddSlider("AP_TPDelay", { Text = "每段间隔(秒)", Default = 0.35, Min = 0.1, Max = 1.5, Rounding = 2, Compact = true,
+    gtps:AddSlider("AP_TPDelay", { Text = "间隔", Default = 0.35, Min = 0.1, Max = 1.5, Rounding = 2, Compact = true,
         Callback = function(v) local f=getgenv()._TP_SET; if type(f)=="function" then pcall(f, nil, v, nil) end end })
-    gtps:AddSlider("AP_TPSpeed", { Text = "落点速度", Default = 105, Min = 0, Max = 180, Rounding = 0, Compact = true,
+    gtps:AddSlider("AP_TPSpeed", { Text = "传送速度", Default = 105, Min = 0, Max = 180, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._TP_SET; if type(f)=="function" then pcall(f, nil, nil, v) end end })
     LB.TpLive = gtps:AddLabel("AP_TPLive", { Text = "传送状态：待机", DoesWrap = true })
-    gtps:AddLabel("AP_TPHelp", { Text = "一键通关=小步分段+落点带速度冲线，最像真实行驶、最不易被反作弊复位。步长越小越稳但越慢。", DoesWrap = true })
 
     ---------- 标签页 6：趣味 ----------
     local tabFun = Window:AddTab("趣味", "star")
-    local gfun = tabFun:AddGroupbox({ Side = "Left", Name = "趣味玩法(默认关,可还原)" })
-    gfun:AddToggle("FUN_Reverse", { Text = "倒着开车(车头朝后)", Default = false, Callback = function(v)
+    local gfun = tabFun:AddGroupbox({ Side = "Left", Name = "趣味玩法" })
+    gfun:AddToggle("FUN_Reverse", { Text = "倒车", Default = false, Callback = function(v)
         local f = getgenv()._FUN_REVERSE_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    gfun:AddToggle("FUN_Spin", { Text = "车旋转(原地打转)", Default = false, Callback = function(v)
+    gfun:AddToggle("FUN_Spin", { Text = "车旋转", Default = false, Callback = function(v)
         local f = getgenv()._FUN_SPIN_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    gfun:AddToggle("FUN_Bounce", { Text = "车弹跳(一路蹦跶)", Default = false, Callback = function(v)
+    gfun:AddToggle("FUN_Bounce", { Text = "车弹跳", Default = false, Callback = function(v)
         local f = getgenv()._FUN_BOUNCE_SET; if type(f)=="function" then pcall(f, v) end
     end })
     gfun:AddDivider()
-    local gfun2 = tabFun:AddGroupbox({ Side = "Right", Name = "参数与说明" })
+    local gfun2 = tabFun:AddGroupbox({ Side = "Right", Name = "参数" })
     gfun2:AddSlider("FUN_SpinSpd", { Text = "旋转速度", Default = 6, Min = 1, Max = 20, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._FUN_SPIN_SPEED; if type(f)=="function" then pcall(f, v) end end })
     gfun2:AddSlider("FUN_BouncePow", { Text = "弹跳力度", Default = 35, Min = 10, Max = 80, Rounding = 0, Compact = true,
         Callback = function(v) local f=getgenv()._FUN_BOUNCE_POWER; if type(f)=="function" then pcall(f, v) end end })
-    LB.FunStat = gfun2:AddLabel("FUN_Stat", { Text = "状态：全部关闭", DoesWrap = true })
-    gfun2:AddLabel("FUN_Help", { Text = "趣味功能只做视觉/物理叠加，不影响自动驾驶的转向与路径。关掉立即还原游戏原样。弹跳/旋转幅度大时可能翻车或掉出赛道，属正常娱乐效果。", DoesWrap = true })
+    LB.FunStat = gfun2:AddLabel("FUN_Stat", { Text = "全部关闭", DoesWrap = true })
 
     -- UI 刷新（8Hz 节流）
     local lastUi = 0
@@ -2476,6 +2464,9 @@ local function ensureHUD()
         fpsLbl.TextSize = 16
         fpsLbl.Text = "FPS 0"
         fpsLbl.Parent = hud
+        local fpsCorner = Instance.new("UICorner")
+        fpsCorner.CornerRadius = UDim.new(0, 9)
+        fpsCorner.Parent = fpsLbl
         coordLbl = Instance.new("TextLabel")
         coordLbl.Size = UDim2.new(0, 260, 0, 28)
         coordLbl.Position = UDim2.new(0, 12, 0, 92)
@@ -2486,6 +2477,9 @@ local function ensureHUD()
         coordLbl.TextSize = 16
         coordLbl.Text = "X 0  Y 0  Z 0"
         coordLbl.Parent = hud
+        local coordCorner = Instance.new("UICorner")
+        coordCorner.CornerRadius = UDim.new(0, 9)
+        coordCorner.Parent = coordLbl
         cross = Instance.new("TextLabel")
         cross.Size = UDim2.new(0, 30, 0, 30)
         cross.Position = UDim2.new(0.5, -15, 0.5, -15)
