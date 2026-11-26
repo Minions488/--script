@@ -1,5 +1,5 @@
 --[[
-  一键脚本 v24（圆角 UI + 传送/QTE/状态修复 · 自包含单文件）
+  一键脚本 v22（含全部最新改动 · 自包含单文件）
   ============================================================
   六标签 UI「巫（不要停下）」：驾驶 / 透视 / 画面 / 杂项 / 传送 / 趣味
   · 自动驾驶：路径跟踪 + 复活 + 避障 + 穿墙 + 平移归中(越偏离越快的平滑回中)
@@ -9,7 +9,6 @@
   · 传送：直达 / 间歇 / 一键通关(保守分段)
   · 趣味：倒着开车 / 车旋转 / 车弹跳(默认关,可还原)
   · QTE：特殊怪精确 tap 触发
-  · UI：Obsidian 原生圆角统一为柔和圆润风格；修复多处状态冲突与连接清理
   用法：直接把本文件整段贴进执行器 loadstring 运行即可，无需 Bridge / 守护。
   ============================================================
 ]]
@@ -48,11 +47,9 @@ end
 
 -- 收集所有"车型"配置：Rally 下带 Engine 表的子项
 local MODELS = {}
-local modelCount = 0
 for k, v in pairs(Rally) do
     if type(v) == "table" and type(v.Engine) == "table" then
         MODELS[tostring(k)] = v
-        modelCount = modelCount + 1
     end
 end
 
@@ -144,7 +141,7 @@ getgenv()._TUNE_DIAG = function()
 end
 
 apply()
-print("[VehicleTune v3 全车型] 已注入，" .. modelCount .. " 种车型。" .. getgenv()._TUNE_DIAG())
+print("[VehicleTune v3 全车型] 已注入，" .. #MODELS .. " 种车型。" .. getgenv()._TUNE_DIAG())
 ]=]
 
 getgenv().__SRC_TP = [=[
@@ -171,9 +168,7 @@ local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 local ws = game:GetService("Workspace")
 
-if type(getgenv().__TP_CLEANUP) == "function" then
-    pcall(getgenv().__TP_CLEANUP)
-end
+if getgenv()._TP_STOP then pcall(getgenv()._TP_STOP) end
 
 local RoadPath, World, route, FinishS = nil, nil, nil, nil
 local targetPos = nil
@@ -188,21 +183,6 @@ local TP_STEP  = 55    -- 每段步长(米)：越小越像真实行驶
 local TP_DELAY = 0.35  -- 每段间隔(秒)
 local TP_SPEED = 105   -- 落点沿路径方向的初速度(studs/s)，接近正常车速
 local driveWasOn = false  -- 推进前自动驾驶是否开着，结束后恢复
-local resumeDriveOnStop = true -- 手动停止分段传送时，按启动前状态决定是否恢复驾驶
-local resumeToken = 0 -- 防止旧的延迟恢复在新一轮传送期间误启动驾驶
-local function resumePausedDrive(delaySeconds)
-    if not driveWasOn or not resumeDriveOnStop then return end
-    resumeToken = resumeToken + 1
-    local token = resumeToken
-    task.delay(delaySeconds or 0.25, function()
-        if token ~= resumeToken then return end
-        local shouldResume = driveWasOn
-        driveWasOn = false
-        if not shouldResume then return end
-        local resume = getgenv()._AUTOPILOT_V2_RESUME
-        if type(resume) == "function" then pcall(resume) end
-    end)
-end
 
 local function init()
     if route then return true end
@@ -238,12 +218,8 @@ local function probe()
         statusText = "终点求解失败"
         return "PROBE_FAIL 无法求解终点坐标"
     end
-    if type(y) ~= "number" or type(z) ~= "number" then
-        statusText = "终点坐标数据不完整"
-        return "PROBE_FAIL 终点坐标数据不完整"
-    end
     targetPos = Vector3.new(x, y, z)
-    targetLook = Vector3.new(tonumber(fx) or 0, 0, tonumber(fz) or -1)
+    targetLook = Vector3.new(fx or 0, 0, fz or -1)
     if targetLook.Magnitude < 0.01 then targetLook = Vector3.new(0, 0, -1) end
     targetLook = targetLook.Unit
     statusText = "终点已探测"
@@ -266,46 +242,28 @@ local function placeCar(pos, look, speed)
 end
 
 local function finish()
-    if stepping or stepConn ~= nil then return "TP_FAIL 请先停止当前间歇传送" end
     if not targetPos then probe() end
     if not targetPos then return "TP_FAIL 无终点坐标" end
     local ok, x, y, z, fx, fz = pcall(function()
         return RoadPath.pointAt(route, math.max(0, FinishS - 3), 0)
     end)
     local pos, look = targetPos, targetLook
-    if ok and type(x) == "number" and type(y) == "number" and type(z) == "number" then
+    if ok and type(x) == "number" then
         pos = Vector3.new(x, y, z)
-        look = Vector3.new(tonumber(fx) or 0, 0, tonumber(fz) or -1)
+        look = Vector3.new(fx or 0, 0, fz or -1)
         if look.Magnitude < 0.01 then look = targetLook end
         look = look.Unit
     end
-    -- 瞬移前先暂停自动驾驶，防止下一帧 override 把车辆拉回原路径点。
-    local wasDriveOn = false
-    local statusFn = getgenv()._AUTOPILOT_V2_STATUS
-    if type(statusFn) == "function" then
-        local statusOK, status = pcall(statusFn)
-        wasDriveOn = statusOK and string.find(tostring(status), "enabled=true", 1, true) ~= nil
-    end
-    if wasDriveOn then
-        local pause = getgenv()._AUTOPILOT_V2_PAUSE
-        if type(pause) == "function" then pcall(pause) end
-    end
     local placed, why = placeCar(pos, look, TP_SPEED)
-    if not placed and wasDriveOn then
-        local resume = getgenv()._AUTOPILOT_V2_RESUME
-        if type(resume) == "function" then task.delay(0.25, function() pcall(resume) end) end
-    end
     if not placed then return "TP_FAIL " .. why end
     statusText = "已直达终点"
     return "TP_OK 已放到终点(FinishS=" .. tostring(math.floor(FinishS)) .. ")"
 end
 
 local function stop()
-    local wasRunning = stepping or stepConn ~= nil
     stepping = false
     if stepConn then stepConn:Disconnect(); stepConn = nil end
     statusText = "已停止传送"
-    if wasRunning then resumePausedDrive(0.25) end
     return "间歇传送已停止"
 end
 
@@ -314,8 +272,7 @@ local function pathPointAt(s)
         return RoadPath.pointAt(route, math.max(0, s), 0)
     end)
     if not ok or type(x) ~= "number" then return nil end
-    if type(y) ~= "number" or type(z) ~= "number" then return nil end
-    local look = Vector3.new(tonumber(fx) or 0, 0, tonumber(fz) or -1)
+    local look = Vector3.new(fx or 0, 0, fz or -1)
     if look.Magnitude < 0.01 then look = Vector3.new(0, 0, -1) end
     return Vector3.new(x, y, z), look.Unit
 end
@@ -324,35 +281,23 @@ end
 local function intermittent(resumeDrive)
     if not targetPos then probe() end
     if not targetPos then return "TP_FAIL 无终点坐标" end
-    if stepping or stepConn ~= nil then return "间歇传送进行中" end
+    if stepping then return "间歇传送进行中" end
     local root = getCarRoot()
     if not root then return "TP_FAIL 未上车" end
 
-    -- 先求当前位置里程；求解失败时不暂停驾驶，避免车辆被留在停驶状态。
-    local projectOK, s = pcall(function()
-        return RoadPath.project(route, root.Position.X, root.Position.Z)
-    end)
-    if not projectOK or type(s) ~= "number" then
-        return "TP_FAIL 无法计算车辆当前路径位置"
-    end
-
     -- 记录并暂停自动驾驶，避免每帧 override 与传送抢控制权
     local stStatus = getgenv()._AUTOPILOT_V2_STATUS
-    local wasPendingResume = driveWasOn
-    local driveIsActive = false
+    driveWasOn = false
     if type(stStatus) == "function" then
-        local ok, status = pcall(stStatus)
-        driveIsActive = ok and string.find(tostring(status), "enabled=true", 1, true) ~= nil
+        local ok, s = pcall(stStatus)
+        driveWasOn = ok and string.find(tostring(s), "enabled=true") ~= nil
     end
-    resumeDriveOnStop = resumeDrive ~= false
-    resumeToken = resumeToken + 1 -- 作废上一次尚未执行的延迟恢复
-    driveWasOn = resumeDriveOnStop and (wasPendingResume or driveIsActive) or false
-    if driveIsActive then
-        local pause = getgenv()._AUTOPILOT_V2_PAUSE
-        if type(pause) == "function" then pcall(pause) end
+    if driveWasOn then
+        local st = getgenv()._AUTOPILOT_V2_STOP; if type(st) == "function" then pcall(st) end
     end
 
-    stepS = s
+    local s = RoadPath.project(route, root.Position.X, root.Position.Z)
+    stepS = tonumber(s) or 0
     stepping = true
     statusText = "间歇传送中"
     if stepConn then stepConn:Disconnect() end
@@ -361,64 +306,34 @@ local function intermittent(resumeDrive)
         -- 到终点：落在 FinishS 前 2m 带速度冲线
         if stepS >= FinishS - 2 then
             local pos, look = pathPointAt(FinishS - 2)
-            if not pos then
-                stepping = false
-                statusText = "传送中止：终点路径点读取失败"
-                if stepConn then stepConn:Disconnect(); stepConn = nil end
-                resumePausedDrive(0.25)
-                return
-            end
-            local placed, why = placeCar(pos, look, TP_SPEED)
-            if not placed then
-                stepping = false
-                statusText = "传送中止：" .. tostring(why)
-                if stepConn then stepConn:Disconnect(); stepConn = nil end
-                resumePausedDrive(0.25)
-                return
-            end
+            if pos then placeCar(pos, look, TP_SPEED) end
             stepping = false
             if stepConn then stepConn:Disconnect(); stepConn = nil end
             statusText = "间歇传送完成-冲线"
             -- 短暂等待游戏结算，再恢复自动驾驶(若之前开着)
-            if resumeDrive ~= false then resumePausedDrive(1.5) end
+            task.delay(1.5, function()
+                if resumeDrive ~= false and driveWasOn then
+                    local st = getgenv()._AUTOPILOT_V2_START
+                    if type(st) == "function" then pcall(st) end
+                end
+            end)
             return
         end
         stepS = math.min(stepS + TP_STEP, FinishS - 2)
         local pos, look = pathPointAt(stepS)
-        if not pos then
-            stepping = false
-            statusText = "传送中止：路径点读取失败"
-            if stepConn then stepConn:Disconnect(); stepConn = nil end
-            resumePausedDrive(0.25)
-            return
-        end
-        local placed, why = placeCar(pos, look, TP_SPEED)
-        if not placed then
-            stepping = false
-            statusText = "传送中止：" .. tostring(why)
-            if stepConn then stepConn:Disconnect(); stepConn = nil end
-            resumePausedDrive(0.25)
-            return
-        end
+        if pos then placeCar(pos, look, TP_SPEED) end
         stepping = false
-        local activeConn = stepConn
-        task.delay(TP_DELAY, function()
-            -- 连接还属于本轮传送才继续；Stop/重启已断开或替换连接时不再推进。
-            if activeConn and stepConn == activeConn then stepping = true end
-        end)
+        task.delay(TP_DELAY, function() if statusText == "间歇传送中" then stepping = true end end)
     end)
     return string.format("间歇传送启动 S=%.0f 步长=%dm 间隔=%.2fs 落点速度=%d", stepS, TP_STEP, TP_DELAY, TP_SPEED)
 end
 
 -- 一键通关：探测 + 间歇推进(不自动恢复驾驶，停在终点结算)
 local function autoFinish()
-    if not targetPos then
-        local probeResult = probe()
-        if not targetPos then return "AUTO_FINISH_FAIL " .. tostring(probeResult) end
-    end
+    if not targetPos then probe() end
     local r = intermittent(false)
-    if stepping then statusText = "一键通关进行中" end
-    return "AUTO_FINISH " .. tostring(r)
+    statusText = "一键通关进行中"
+    return "AUTO_FINISH " .. r
 end
 
 getgenv()._TP_PROBE        = probe
@@ -427,11 +342,6 @@ getgenv()._TP_FINISH       = finish
 getgenv()._TP_INTERMITTENT = intermittent
 getgenv()._TP_AUTO_FINISH  = autoFinish
 getgenv()._TP_STOP         = stop
-getgenv().__TP_CLEANUP      = function()
-    resumeDriveOnStop = false
-    driveWasOn = false
-    return stop()
-end
 getgenv()._TP_SET          = function(step, delay, speed)
     if tonumber(step)  then TP_STEP  = math.clamp(tonumber(step), 15, 200) end
     if tonumber(delay) then TP_DELAY = math.clamp(tonumber(delay), 0.1, 1.5) end
@@ -496,12 +406,22 @@ local CFG = {
     noclipMaxLat  = 16,   -- 触发穿墙前允许的最大横向偏离(米)，超过则放弃穿墙
     guardLat      = 20,   -- 穿墙期间横向偏离超过此值判定"被推出主道"->拉回
     guardFall     = 4,    -- 【v26】车低于路径地面此值判定"坠落虚空"->拉回(旧12太晚，整车幽灵掉4m就该救)
-    -- 【v24】穿墙总开关：默认开启（实测必需，保留接口 _NOCLIP_SET 可关）。
+    -- 【v24】穿墙总开关：默认关闭（保留接口 _NOCLIP_SET 可手动开启）。
     -- 实测结论：车"一直掉下去"的真凶是平移层(glideToCenter)每帧 CFrame.lookAt 强制水平+死守高度，
     -- 不是穿墙。对照实验：穿墙开+平移关时 carY 恒定 41.9~42.5、velY≈0，完全不掉；
     -- 而关穿墙后 Wreck.Cabin/Outcrop 这类残骸正面撞死无法通关。故穿墙保留开启。
-    noclipEnabled = true,
+    noclipEnabled = false, -- 默认关闭穿墙辅助，需手动开启自动驾驶后再按需启用
 }
+
+-- 启动时强制清理可能由上次注入遗留的开关状态，确保本脚本功能默认全关。
+for _, stopName in ipairs({"_TP_STOP", "_ARROW_STOP"}) do
+    local stopFn = getgenv()[stopName]
+    if type(stopFn) == "function" then pcall(stopFn) end
+end
+for _, setName in ipairs({"_AUTO_REVIVE_SET", "_GLIDE_CENTER_SET", "_ESP_MONSTER_SET", "_ESP_OBST_SET", "_ESP_BLDG_SET", "_NOCLIP_SET"}) do
+    local setFn = getgenv()[setName]
+    if type(setFn) == "function" then pcall(setFn, false) end
+end
 
 local enabled  = false
 local finished = false
@@ -565,7 +485,6 @@ local lastProgressS = 0 -- 上次有进展时的里程
 local recoverDir = 1    -- 脱困转向方向（交替）
 local recoverCount = 0  -- 【v14】连续脱困次数, 超过阈值才退回游戏复位
 local stateText = "待机"
-local lastDriveTick = 0 -- computeDrive 的真实时间戳，避免按帧累加造成计时快慢失真
 
 --// ---------- 初始化：require 模块 + build route ---------- //--
 local function initModules()
@@ -983,9 +902,6 @@ end
 
 -- 计算转向：pure-pursuit
 local function computeDrive(seat)
-    local nowDrive = os.clock()
-    local driveDt = lastDriveTick > 0 and math.clamp(nowDrive - lastDriveTick, 0, 0.1) or (1 / 60)
-    lastDriveTick = nowDrive
     local pos = seat.Position
     local vel = seat.AssemblyLinearVelocity or seat.Velocity or Vector3.new()
     speed = vel.Magnitude
@@ -1011,8 +927,7 @@ local function computeDrive(seat)
 
     -- 前瞻目标点
     local la = CFG.lookahead + math.min(speed * 0.25, 18)
-    local lookS = math.min(FinishS, math.max(0, mapS + la))
-    local tx, ty, tz, fx, fz = RoadPath.pointAt(route, lookS, 0)
+    local tx, ty, tz, fx, fz = RoadPath.pointAt(route, mapS + la, 0)
     local target = Vector3.new(tx, 0, tz)
     local toTarget = target - Vector3.new(pos.X, 0, pos.Z)
     toTarget = Vector3.new(toTarget.X, 0, toTarget.Z)
@@ -1070,10 +985,8 @@ local function computeDrive(seat)
     -- 超过抓地极限就甩出赛道。v7~v9 都是"偏了才补救"来不及; 正确解法是提前看弯道曲率。
     -- 用赛道切线夹角算前方曲率(纯几何、对象无关), 弯道按物理安全速度限速, 直道油门常满不限速。
     local function curvatureAt(s)
-        local s1 = math.clamp(s, 0, FinishS)
-        local s2 = math.min(FinishS, s1 + 25)
-        local _,_,_, fx1, fz1 = RoadPath.pointAt(route, s1, 0)
-        local _,_,_, fx2, fz2 = RoadPath.pointAt(route, s2, 0)
+        local _,_,_, fx1, fz1 = RoadPath.pointAt(route, s, 0)
+        local _,_,_, fx2, fz2 = RoadPath.pointAt(route, s + 25, 0)
         local dotc = fx1 * fx2 + fz1 * fz2
         dotc = math.clamp(dotc, -1, 1)
         return math.acos(dotc)   -- 0=直道, 越大越弯
@@ -1150,7 +1063,7 @@ local function computeDrive(seat)
             lastProgressS = mapS
             stuckT = 0
         else
-            stuckT = stuckT + driveDt
+            stuckT = stuckT + 0.05
         end
         if stuckT > CFG.stuckSec then
             recoverT = CFG.recoverSec
@@ -1161,7 +1074,7 @@ local function computeDrive(seat)
             doNoclip("脱困", nil, nil, true)
         end
         if recoverT > 0 then
-            recoverT = math.max(0, recoverT - driveDt)
+            recoverT = recoverT - 0.05
             if recoverCount <= 4 then
                 stateText = "卡住-倒车脱困#" .. recoverCount
                 return 0, 0.85, recoverDir * 0.7, false
@@ -1256,11 +1169,11 @@ local function clickRestart(btn)
 end
 
 local guardConn = RunService.Heartbeat:Connect(function(dt)
-    if not autoRevive then return end
+    if not enabled then return end
     restartCool = restartCool - dt
     if restartCool > 0 then return end
     local btn = findRestartBtn()
-    if btn then
+    if btn and autoRevive then
         stateText = "死亡->自动重启 #" .. (restartCount + 1)
         local ok, method = clickRestart(btn)
         restartCount = restartCount + 1
@@ -1317,10 +1230,6 @@ local function applyVisualRoots(flip)
     end
 end
 
-if getgenv().__AUTO_FUN_CONN then
-    pcall(function() getgenv().__AUTO_FUN_CONN:Disconnect() end)
-    getgenv().__AUTO_FUN_CONN = nil
-end
 local funConn = RunService.Heartbeat:Connect(function(dt)
     if not getSeat() then return end
     local ch = chassis
@@ -1368,7 +1277,6 @@ local funConn = RunService.Heartbeat:Connect(function(dt)
         funBounceT = 0
     end
 end)
-getgenv().__AUTO_FUN_CONN = funConn
 
 -- 趣味功能控制接口
 getgenv()._FUN_REVERSE_SET = function(on)
@@ -1432,19 +1340,7 @@ local obsOkay, obsErr = pcall(function()
         NotifySide = "Right",
         ShowCustomCursor = false,
         AlwaysOnTop = true,
-        CornerRadius = 16,
-        Font = Enum.Font.GothamMedium,
-        TabButtonsStyle = {
-            Gap = 6,
-            Padding = 4,
-            CornerRadius = 12,
-            Indicator = true,
-            IndicatorWidth = 3,
-            IndicatorHeight = 18,
-        },
     })
-    -- 用 Obsidian 自带的圆角刷新接口同步窗口、分组框、按钮、滑块与弹出菜单。
-    pcall(function() Window:SetCornerRadius(16) end)
 
     local function gstat(name)
         local f = getgenv()[name]
@@ -1471,13 +1367,13 @@ local obsOkay, obsErr = pcall(function()
     gd:AddButton({ Text = "▶  启动 / 停止自动驾驶", Func = toggleAuto })
     local gd2 = tabDrive:AddGroupbox({ Side = "Right", Name = "功能开关" })
     -- 自动复活独立成项：状态显示 + 独立开关 + 计数
-    LB.Revive    = gd2:AddLabel("AP_Revive", { Text = "自动复活：开启", DoesWrap = false })
+    LB.Revive    = gd2:AddLabel("AP_Revive", { Text = "自动复活：关闭", DoesWrap = false })
     LB.ReviveCnt = gd2:AddLabel("AP_ReviveCnt", { Text = "已复活次数：0", DoesWrap = false })
-    gd2:AddToggle("AP_ReviveTog", { Text = "死亡后自动点 RESTART", Default = true, Callback = function(v)
+    gd2:AddToggle("AP_ReviveTog", { Text = "死亡后自动点 RESTART", Default = false, Callback = function(v)
         local f = getgenv()._AUTO_REVIVE_SET; if type(f)=="function" then pcall(f, v) end
     end })
     gd2:AddDivider()
-    gd2:AddToggle("AP_GlideAssist", { Text = "★ 平移辅助转弯(平滑归中/免调)", Default = true, Callback = function(v)
+    gd2:AddToggle("AP_GlideAssist", { Text = "★ 平移辅助转弯(平滑归中/免调)", Default = false, Callback = function(v)
         local f = getgenv()._GLIDE_CENTER_SET; if type(f)=="function" then pcall(f, v) end
     end })
     LB.Guard = gd2:AddLabel("AP_Guard", { Text = "平移归中：0 帧", DoesWrap = false })
@@ -1504,20 +1400,20 @@ local obsOkay, obsErr = pcall(function()
     ---------- 标签页 2：透视 ----------
     local tabEsp = Window:AddTab("透视", "eye")
     local ge = tabEsp:AddGroupbox({ Side = "Left", Name = "显示开关" })
-    ge:AddToggle("AP_Monster", { Text = "怪物透视", Default = true, Callback = function(v)
+    ge:AddToggle("AP_Monster", { Text = "怪物透视", Default = false, Callback = function(v)
         local f = getgenv()._ESP_MONSTER_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    ge:AddToggle("AP_Obstacle", { Text = "障碍物透视", Default = true, Callback = function(v)
+    ge:AddToggle("AP_Obstacle", { Text = "障碍物透视", Default = false, Callback = function(v)
         local f = getgenv()._ESP_OBST_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    ge:AddToggle("AP_Building", { Text = "建筑透视", Default = true, Callback = function(v)
+    ge:AddToggle("AP_Building", { Text = "建筑透视", Default = false, Callback = function(v)
         local f = getgenv()._ESP_BLDG_SET; if type(f)=="function" then pcall(f, v) end
     end })
-    ge:AddToggle("AP_TP", { Text = "第三人称拉远", Default = gbool("_CAMERA_TP_STATUS"), Callback = function(v)
-        local f = v and getgenv()._CAMERA_TP_START or getgenv()._CAMERA_TP_STOP
+    ge:AddToggle("AP_TP", { Text = "第三人称拉远", Default = false, Callback = function(v)
+        local f = v and getgenv()._TP_START or getgenv()._TP_STOP
         if type(f) == "function" then pcall(f) end
     end })
-    ge:AddToggle("AP_ARROW", { Text = "追击者小箭头 + 距离", Default = gbool("_ARROW_STATUS"), Callback = function(v)
+    ge:AddToggle("AP_ARROW", { Text = "追击者小箭头 + 距离", Default = false, Callback = function(v)
         local f = v and getgenv()._ARROW_START or getgenv()._ARROW_STOP
         if type(f) == "function" then pcall(f) end
     end })
@@ -1702,25 +1598,6 @@ getgenv()._AUTOPILOT_V2_START = function()
     return string.format("STARTED FinishS=%s samples=%d", tostring(FinishS), route and #route.samples or 0)
 end
 
--- 传送只需暂停驾驶控制，不应调用完整 STOP（完整 STOP 会卸载 UI 和状态监控）。
-getgenv()._AUTOPILOT_V2_PAUSE = function()
-    enabled = false
-    pcall(function() if CarInput then CarInput.setOverride(nil) end end)
-    pcall(restoreCollide)
-    stateText = "已暂停(传送接管)"
-    return "AUTOPILOT_PAUSED"
-end
-
-getgenv()._AUTOPILOT_V2_RESUME = function()
-    if not route and not initModules() then return "INIT_FAIL" end
-    finished = false
-    enabled = true
-    local ok, err = pcall(function() CarInput.setOverride(override) end)
-    if not ok then enabled = false; stateText = "恢复失败"; return "RESUME_FAIL:" .. tostring(err) end
-    stateText = "已恢复"
-    return "AUTOPILOT_RESUMED"
-end
-
 getgenv()._AUTOPILOT_V2_STOP = function()
     enabled = false
     finished = false
@@ -1729,11 +1606,6 @@ getgenv()._AUTOPILOT_V2_STOP = function()
     if conn then conn:Disconnect() end
     if uiConn then uiConn:Disconnect() end
     if guardConn then guardConn:Disconnect() end
-    if funConn then pcall(function() funConn:Disconnect() end) end
-    if getgenv().__AUTO_FUN_CONN == funConn then getgenv().__AUTO_FUN_CONN = nil end
-    if funReverse then pcall(function() applyVisualRoots(false) end) end
-    funReverse, funSpin, funBounce = false, false, false
-    funRevCache, funRevCar = nil, nil
     pcall(restoreCollide)
     if Obsidian then pcall(function() Obsidian:Unload() end) end
     if getgenv().__AUTO_OBSIDIAN == Obsidian then getgenv().__AUTO_OBSIDIAN = nil end
@@ -1827,9 +1699,6 @@ print("[AutoDriveV28] 已注入(平移辅助转弯 + 穿墙防复位 + 保守传
 ]=]
 
 getgenv().__SRC_ESP = [=[
-if type(getgenv().__ESPA_CLEANUP) == "function" then
-    pcall(getgenv().__ESPA_CLEANUP)
-end
 --[[
   v4：透视 + 第三人称 + 小箭头（只指追击者Runner）+ 帧率优化 + 建筑高亮
   改动：
@@ -1863,7 +1732,6 @@ local scanConn, tpConn, arrowConn = nil, nil, nil
 local lastScan, monsterCount, obstCount, carCount, bldgCount = 0, 0, 0, 0, 0
 local sampleMonsters, sampleObst, sampleBldg = {}, {}, {}
 local chaserPart = nil   -- 追击者 Runner 的身体部件（用于箭头定位）
-local chaserModelName = "Runner" -- 在 scan() 定义前声明，确保扫描与箭头共用同一目标名
 
 local MOB_SKIP={"runnervoice","runnerskin","steeplefx","thrown","voice","fx","decal"}
 local OBST_EXCLUDE={"rail","fence","barrier","barricade","guardrail","railing","hedge","mesh","net",
@@ -2037,48 +1905,19 @@ end
 
 -- 帧率优化：一次性关闭阴影/粒子等重负载特效
 local perfApplied=false
-local perfSnapshot=nil
-local function restorePerf()
-    if not perfApplied then return end
-    local snap=perfSnapshot
-    if snap then
-        pcall(function()
-            local L=game:GetService("Lighting")
-            local exGet=getgenv()._EX_GET
-            local noShadow, nightVision=false, false
-            if type(exGet)=="function" then
-                local ok1,v1=pcall(exGet,"noshadow"); noShadow=ok1 and v1==true
-                local ok2,v2=pcall(exGet,"nightvision"); nightVision=ok2 and v2==true
-            end
-            L.GlobalShadows=noShadow and false or snap.globalShadows
-            L.Brightness=nightVision and math.max(snap.brightness,2.6) or snap.brightness
-        end)
-        for _,entry in ipairs(snap.objects) do
-            local obj=entry.instance
-            if obj and obj.Parent then pcall(function() obj.Enabled=entry.enabled end) end
-        end
-    end
-    perfSnapshot=nil
-    perfApplied=false
-end
 local function applyPerf()
     if perfApplied or not CFG.perfMode then return end
     perfApplied=true
-    local L=game:GetService("Lighting")
-    perfSnapshot={globalShadows=L.GlobalShadows,brightness=L.Brightness,objects={}}
-    pcall(function() L.GlobalShadows=false end)
-    pcall(function() L.Brightness=math.min(L.Brightness,1.0) end)
+    pcall(function() game:GetService("Lighting").GlobalShadows=false end)   -- 关阴影
+    pcall(function()
+        local L=game:GetService("Lighting")
+        L.Brightness = math.min(L.Brightness, 1.0)
+    end)
     local cnt=0
     for _,o in ipairs(WS:GetDescendants()) do
-        if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke")
-            or o:IsA("Fire") or o:IsA("Sparkles") then
-            local ok,wasEnabled=pcall(function() return o.Enabled end)
-            if ok then
-                perfSnapshot.objects[#perfSnapshot.objects+1]={instance=o,enabled=wasEnabled}
-                if wasEnabled then cnt=cnt+1 end
-                pcall(function() o.Enabled=false end)
-            end
-        end
+        if o:IsA("ParticleEmitter") then pcall(function() o.Enabled=false end); cnt=cnt+1 end
+        if o:IsA("Trail") then pcall(function() o.Enabled=false end) end
+        if o:IsA("Smoke") or o:IsA("Fire") or o:IsA("Sparkles") then pcall(function() o.Enabled=false end) end
     end
     print("[PERF] 关阴影+关粒子("..cnt..")+降高亮, 帧率优化已应用")
 end
@@ -2099,34 +1938,19 @@ end
 local function espStop()
     espOn=false
     if scanConn then scanConn:Disconnect(); scanConn=nil end
-    clearHL()
-    restorePerf()
-    return "ESP stopped"
+    clearHL(); return "ESP stopped"
 end
 
 -- 第三人称
 local TP_BIND="ESPA_TP_V4"
-local cameraSnapshot=nil
 local function tpStart()
     if tpOn then return "TP already on" end
-    cam=WS.CurrentCamera or cam
-    if cam then
-        cameraSnapshot={
-            cameraType=cam.CameraType,
-            cameraSubject=cam.CameraSubject,
-            cameraMode=lp.CameraMode,
-            minZoom=lp.CameraMinZoomDistance,
-            maxZoom=lp.CameraMaxZoomDistance,
-        }
-    end
     tpOn=true
     pcall(function() lp.CameraMode=Enum.CameraMode.Classic end)
     pcall(function() lp.CameraMinZoomDistance=CFG.tpDist*0.4 end)
     pcall(function() lp.CameraMaxZoomDistance=CFG.tpDist*2.5 end)
     local function placeCam()
         if not tpOn then return end
-        cam=WS.CurrentCamera or cam
-        if not cam then return end
         local root=playerRoot(); if not root then return end
         pcall(function()
             cam.CameraType=Enum.CameraType.Scriptable
@@ -2141,31 +1965,16 @@ local function tpStart()
     end
     pcall(function() RS:UnbindFromRenderStep(TP_BIND) end)
     RS:BindToRenderStep(TP_BIND,Enum.RenderPriority.Camera.Value+50,placeCam)
-    -- 不再额外连接 RenderStepped：BindToRenderStep 已足够，避免每帧重复设置相机。
-    if tpConn then tpConn:Disconnect(); tpConn=nil end
+    if tpConn then tpConn:Disconnect() end
+    tpConn=RS.RenderStepped:Connect(placeCam)
     return string.format("第三人称(dist=%d,height=%d)",CFG.tpDist,CFG.tpHeight)
 end
 local function tpStop()
     tpOn=false
     pcall(function() RS:UnbindFromRenderStep(TP_BIND) end)
-    if tpConn then tpConn:Disconnect(); tpConn=nil end
-    local snap=cameraSnapshot
-    cam=WS.CurrentCamera or cam
-    if snap then
-        pcall(function()
-            if cam then
-                cam.CameraType=snap.cameraType or Enum.CameraType.Custom
-                if snap.cameraSubject and snap.cameraSubject.Parent then cam.CameraSubject=snap.cameraSubject end
-            end
-            if snap.cameraMode then lp.CameraMode=snap.cameraMode end
-            if snap.minZoom then lp.CameraMinZoomDistance=snap.minZoom end
-            if snap.maxZoom then lp.CameraMaxZoomDistance=snap.maxZoom end
-        end)
-    else
-        pcall(function() if cam then cam.CameraType=Enum.CameraType.Custom end end)
-    end
-    cameraSnapshot=nil
-    return "第三人称已关闭并恢复原相机参数"
+    pcall(function() cam.CameraType=Enum.CameraType.Custom end)
+    pcall(function() lp.CameraMinZoomDistance=0.5 end)
+    return "第三人称已恢复"
 end
 
 -- 小箭头：纯箭头（无方框无底框），只指追击者 Runner + 距离小字
@@ -2175,6 +1984,7 @@ local function charRoot()
     return ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChildWhichIsA("BasePart")
 end
 local CHASER_MAX_DIST = 500  -- 【v8】超过500米不再显示箭头
+local chaserModelName = "Runner"  -- 【v2】可自定义的追击者模型名(默认 Runner)
 local function findChaser()
     -- 【v8 修复：箭头乱跳到别的NPC】
     -- 旧版 chaserPart 缓存失效后会回退到 RunnerSkin 的 Body/Dark/任意部件，
@@ -2239,8 +2049,6 @@ local function arrowStart()
         local dist=(target.Position-pr.Position).Magnitude
         -- 【v8】超过500米不再显示箭头和距离
         if dist > CHASER_MAX_DIST then arrowIcon.Visible=false; if arrowDist then arrowDist.Visible=false end; return end
-        cam=WS.CurrentCamera or cam
-        if not cam then arrowIcon.Visible=false; if arrowDist then arrowDist.Visible=false end; return end
         local W,H=cam.ViewportSize.X,cam.ViewportSize.Y
         local cx,cy=W/2,H/2
         local vp,front=cam:WorldToViewportPoint(target.Position)
@@ -2304,10 +2112,10 @@ end
 getgenv()._ESP_NAMES=function()
     return "怪{"..table.concat(sampleMonsters,",").."} 建筑{"..table.concat(sampleBldg,",").."} 障碍{"..table.concat(sampleObst,",").."}"
 end
-getgenv()._CAMERA_TP_START=tpStart
-getgenv()._CAMERA_TP_STOP=tpStop
-getgenv()._CAMERA_TP_STATUS=function()
-    return "cameraTP=" .. tostring(tpOn)
+getgenv()._TP_START=tpStart
+getgenv()._TP_STOP=tpStop
+getgenv()._TP_STATUS=function()
+    return string.format("tp=%s camType=%s",tostring(tpOn),tostring(cam.CameraType))
 end
 getgenv()._ARROW_START=arrowStart
 getgenv()._ARROW_STOP=arrowStop
@@ -2352,20 +2160,12 @@ getgenv()._ESPA_ALL_OFF=function()
     local a=espStop(); local b=tpStop(); local c=arrowStop()
     return a.." | "..b.." | "..c
 end
-getgenv().__ESPA_CLEANUP=function()
-    pcall(espStop)
-    pcall(tpStop)
-    pcall(arrowStop)
-end
 
-print("[ESPA v5] 已注入。调用 _ESPA_ALL_ON() 开启。")
+print("[ESPA v4] 已注入。调用 _ESPA_ALL_ON() 开启。")
 
 ]=]
 
 getgenv().__SRC_QTE = [=[
-if type(getgenv().__QTE_CLEANUP) == "function" then
-    pcall(getgenv().__QTE_CLEANUP)
-end
 -- 特殊怪 QTE 自动应对 v3
 -- 修复重点：tap 怪只精确触发 Tap 键(短促点击 begin→延迟 end)，不再把 Hold/Tap 一起乱按。
 -- 触发方式：fire 按钮连接(主力) + VirtualInputManager 模拟真实按键(辅助) 双保险。
@@ -2464,11 +2264,10 @@ local holdState = {}   -- [btn]=true 已按下, 防重复 begin
 local lastTap = 0
 
 local function releaseAll()
-    for btn, entry in pairs(holdState) do
+    for btn, _ in pairs(holdState) do
         if btn and btn.Parent then
-            stats.fired = stats.fired + fireBtn(btn, "end", entry and entry.key or Enum.KeyCode.F)
+            stats.fired = stats.fired + fireBtn(btn, "end", Enum.KeyCode.F)
         end
-        if entry then doVim("end", entry.vim, entry.key) end
         holdState[btn] = nil
     end
 end
@@ -2510,7 +2309,7 @@ local function tick(dt)
                     if not holdState[btn] then
                         stats.fired = stats.fired + fireBtn(btn, "begin", e.key)
                         doVim("begin", e.vim, e.key)
-                        holdState[btn] = e
+                        holdState[btn] = true
                         stats.events[e.gui .. "." .. e.btn] = (stats.events[e.gui .. "." .. e.btn] or 0) + 1
                     end
                 end
@@ -2519,14 +2318,14 @@ local function tick(dt)
     end
 
     -- 界面已关闭/切换的按钮：松开，避免残留按住
-    for btn, entry in pairs(holdState) do
+    for btn, _ in pairs(holdState) do
         local stillNeed = false
         for _, e in pairs(chosen) do
             if findBtn(e.gui, e.btn) == btn then stillNeed = true end
         end
         if not stillNeed then
-            stats.fired = stats.fired + fireBtn(btn, "end", entry and entry.key or Enum.KeyCode.F)
-            if entry then doVim("end", entry.vim, entry.key) end
+            stats.fired = stats.fired + fireBtn(btn, "end", Enum.KeyCode.F)
+            doVim("end", "key", Enum.KeyCode.F)
             holdState[btn] = nil
         end
     end
@@ -2537,13 +2336,6 @@ end
 if getgenv().__QTE_CONN then pcall(function() getgenv().__QTE_CONN:Disconnect() end) end
 loopConn = RS.Heartbeat:Connect(tick)
 getgenv().__QTE_CONN = loopConn
-local qteConnection = loopConn
-getgenv().__QTE_CLEANUP = function()
-    CFG.on = false
-    pcall(releaseAll)
-    if qteConnection then pcall(function() qteConnection:Disconnect() end) end
-    if getgenv().__QTE_CONN == qteConnection then getgenv().__QTE_CONN = nil end
-end
 
 getgenv()._QTE_ON = function() CFG.on = true return "QTE auto ON" end
 getgenv()._QTE_OFF = function() CFG.on = false; releaseAll() return "QTE auto OFF" end
@@ -2560,9 +2352,6 @@ end
 
 
 getgenv().__SRC_EX = [=[
-if type(getgenv().__EX_CLEANUP) == "function" then
-    pcall(getgenv().__EX_CLEANUP)
-end
 --[[
   ExtraFeatures v2 — 纯画面/叠加功能包（无角色能力类）
   设计原则：本游戏是驾驶游戏，玩家坐在 DriverSeat 里，角色不可控。
@@ -2610,7 +2399,6 @@ local function isOn(k) return ON[k] and true or false end
 
 -- ===== 画面类（改 Lighting/Camera，驾驶视角可见）=====
 local function resetLight()
-    CAM = WS.CurrentCamera or CAM
     safe(function()
         LIG.Brightness = DEF.brightness
         LIG.Ambient = DEF.ambient
@@ -2646,34 +2434,19 @@ local function applyLight()
     if isOn("fov") then safe(function() if CAM then CAM.FieldOfView = 110 end end) end
 end
 
-local mutedSounds = {}
 local function applyMute()
     if isOn("mute") then
         safe(function()
-            for _, sound in ipairs(game:GetDescendants()) do
-                if sound:IsA("Sound") then
-                    if mutedSounds[sound] == nil then mutedSounds[sound] = sound.Volume end
-                    pcall(function() sound.Volume = 0 end)
-                end
+            for _, s in ipairs(WS:GetDescendants()) do
+                if s:IsA("Sound") then pcall(function() s.Volume = 0 end) end
             end
         end)
-    else
-        for sound, originalVolume in pairs(mutedSounds) do
-            if sound and sound.Parent then pcall(function() sound.Volume = originalVolume end) end
-            mutedSounds[sound] = nil
-        end
     end
 end
 
-local originalFpsCap=nil
-if type(getfpscap)=="function" then pcall(function() originalFpsCap=getfpscap() end) end
 local function applyFpsUnlock()
     if isOn("fpsunlock") then
         safe(function() if type(setfpscap) == "function" then setfpscap(0) end end)
-    else
-        safe(function()
-            if originalFpsCap and type(setfpscap)=="function" then setfpscap(originalFpsCap) end
-        end)
     end
 end
 
@@ -2703,12 +2476,6 @@ local function ensureHUD()
         fpsLbl.TextSize = 16
         fpsLbl.Text = "FPS 0"
         fpsLbl.Parent = hud
-        local fpsCorner=Instance.new("UICorner")
-        fpsCorner.CornerRadius=UDim.new(0,8)
-        fpsCorner.Parent=fpsLbl
-        local fpsPadding=Instance.new("UIPadding")
-        fpsPadding.PaddingLeft=UDim.new(0,9)
-        fpsPadding.Parent=fpsLbl
         coordLbl = Instance.new("TextLabel")
         coordLbl.Size = UDim2.new(0, 260, 0, 28)
         coordLbl.Position = UDim2.new(0, 12, 0, 92)
@@ -2719,12 +2486,6 @@ local function ensureHUD()
         coordLbl.TextSize = 16
         coordLbl.Text = "X 0  Y 0  Z 0"
         coordLbl.Parent = hud
-        local coordCorner=Instance.new("UICorner")
-        coordCorner.CornerRadius=UDim.new(0,8)
-        coordCorner.Parent=coordLbl
-        local coordPadding=Instance.new("UIPadding")
-        coordPadding.PaddingLeft=UDim.new(0,9)
-        coordPadding.Parent=coordLbl
         cross = Instance.new("TextLabel")
         cross.Size = UDim2.new(0, 30, 0, 30)
         cross.Position = UDim2.new(0.5, -15, 0.5, -15)
@@ -2755,8 +2516,8 @@ local frames, tAcc = 0, 0
 pcall(function()
     RS:BindToRenderStep("EX_ClockLock", 9999, lockClock)
 end)
-local exSteppedConn = RS.Stepped:Connect(lockClock)  -- 物理步后写回，双保险
-local exHeartbeatConn = RS.Heartbeat:Connect(function(dt)
+RS.Stepped:Connect(lockClock)  -- 物理步后写回，双保险
+RS.Heartbeat:Connect(function(dt)
     lockClock()
     local showFps, showCoord, showCross = isOn("fpscounter"), isOn("coord"), isOn("crosshair")
     local hide = isOn("hidehud")
@@ -2802,21 +2563,8 @@ getgenv()._EX_TOGGLE = function(key) return getgenv()._EX_SET(key, not isOn(key)
 getgenv()._EX_ALL_OFF = function()
     for k in pairs(ON) do ON[k] = false end
     pcall(resetLight)
-    pcall(applyMute)       -- 关闭静音时恢复每个 Sound 原本音量
-    pcall(applyFpsUnlock)  -- 关闭帧率解锁时恢复原帧率上限(执行器支持时)
     safe(function() if hud then hud.Enabled = false end end)
     return "全部附加功能已关闭"
-end
-
-getgenv().__EX_CLEANUP=function()
-    if exSteppedConn then pcall(function() exSteppedConn:Disconnect() end); exSteppedConn=nil end
-    if exHeartbeatConn then pcall(function() exHeartbeatConn:Disconnect() end); exHeartbeatConn=nil end
-    pcall(function() RS:UnbindFromRenderStep("EX_ClockLock") end)
-    for k in pairs(ON) do ON[k]=false end
-    pcall(resetLight)
-    pcall(applyMute)
-    pcall(applyFpsUnlock)
-    if hud then pcall(function() hud:Destroy() end); hud=nil end
 end
 
 local ORDER = { "nightvision", "farview", "nofog", "day", "dusk", "noshadow", "hq", "fov",
@@ -2837,12 +2585,7 @@ print("[ExtraFeatures v2] 已注入 14 项纯画面/叠加功能(已删除全部
 
 
 local function RUN(tag)
-  local src=getgenv()["__SRC_"..tag]
-  if type(src)~="string" or src=="" then
-    warn("[1KEY] "..tag.." source missing")
-    return false
-  end
-  local fn,err=loadstring(src)
+  local src=getgenv()["__SRC_"..tag]; local fn,err=loadstring(src)
   if not fn then warn("[1KEY] "..tag.." compile err: "..tostring(err)); return false end
   local ok,e=pcall(fn); if not ok then warn("[1KEY] "..tag.." run err: "..tostring(e)); return false end
   return true
@@ -2850,4 +2593,4 @@ end
 RUN("TUNE"); RUN("EX"); RUN("TP"); RUN("AUTO"); RUN("ESP"); RUN("QTE")
 local on=getgenv()._ESPA_ALL_ON; if type(on)=="function" then pcall(on) end
 local st=getgenv()._AUTOPILOT_V2_START; if type(st)=="function" then print("[1KEY] AUTO:",tostring(pcall(st))) end
-print("[1KEY] v24 一键注入完成：圆角 UI / 状态冲突修复 / 传送循环修复 / QTE 清理")
+print("[1KEY] v22 一键注入完成：回中辅助/车辆联动/穿墙(默认开,可关)/保守传送")
