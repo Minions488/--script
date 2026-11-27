@@ -1173,7 +1173,7 @@ getgenv().WuRealWindow = Window
 local function WuLoader(url, doneMsg)
     return function()
         if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[url] = true
@@ -1195,7 +1195,7 @@ local MainTab = Window:AddTab("通用功能")
 local SpeedSection = MainTab:AddSection("角色属性")
 
 SpeedSection:AddSlider({
-    Name = "行走速度 (WalkSpeed)",
+    Name = "行走速度",
     Min = 16,
     Max = 250,
     Default = 16,
@@ -1209,7 +1209,7 @@ SpeedSection:AddSlider({
 })
 
 SpeedSection:AddSlider({
-    Name = "跳跃高度 (JumpPower)",
+    Name = "跳跃高度",
     Min = 50,
     Max = 300,
     Default = 50,
@@ -1223,7 +1223,7 @@ SpeedSection:AddSlider({
 })
 
 SpeedSection:AddSlider({
-    Name = "重力 (Gravity)",
+    Name = "重力",
     Min = 0,
     Max = 500,
     Default = 196.2,
@@ -1237,7 +1237,7 @@ SpeedSection:AddSlider({
 local WuFOVTarget = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70
 
 SpeedSection:AddSlider({
-    Name = "视野 (FOV)",
+    Name = "视野 FOV",
     Min = 30,
     Max = 120,
     Default = 70,
@@ -1324,7 +1324,7 @@ local VelocityEnabled = false
 local VelocityConnection = nil
 
 SpeedSection:AddSlider({
-    Name = "物理加速速度 (Velocity)",
+    Name = "加速速度",
     Min = 16,
     Max = 520,
     Default = 16,
@@ -1336,7 +1336,7 @@ SpeedSection:AddSlider({
 })
 
 SpeedSection:AddToggle({
-    Name = "物理加速开关 (覆盖WalkSpeed)",
+    Name = "物理加速",
     Default = false,
     Callback = function(state)
         VelocityEnabled = state
@@ -1358,7 +1358,7 @@ SpeedSection:AddToggle({
                     end
                 end)
             end
-            Window:Notify({Title = "物理加速", Content = "已开启 (不干扰高跳)", Duration = 2})
+            Window:Notify({Title = "物理加速", Content = "已开启", Duration = 2})
         else
             if VelocityConnection then
                 VelocityConnection:Disconnect()
@@ -1376,7 +1376,7 @@ local highJumpListener = nil
 local charAddedConn = nil
 
 SpeedSection:AddSlider({
-    Name = "高跳力度 (Velocity)",
+    Name = "高跳力度",
     Min = 50,
     Max = 500,
     Default = 100,
@@ -1388,7 +1388,7 @@ SpeedSection:AddSlider({
 })
 
 SpeedSection:AddToggle({
-    Name = "高跳开关 (Velocity驱动)",
+    Name = "高跳",
     Default = false,
     Callback = function(state)
         HighJumpEnabled = state
@@ -1430,7 +1430,7 @@ SpeedSection:AddToggle({
                 bindJump(char)
             end)
             
-            Window:Notify({Title = "高跳", Content = "已开启（力度: " .. HighJumpPower .. "）", Duration = 2})
+            Window:Notify({Title = "高跳", Content = "已开启", Duration = 2})
         else
             if highJumpListener then
                 highJumpListener:Disconnect()
@@ -1446,7 +1446,7 @@ SpeedSection:AddToggle({
 })
 
 SpeedSection:AddSlider({
-    Name = "相机焦距上限 (Zoom Out)",
+    Name = "最大缩放",
     Min = 0,
     Max = 200000,
     Default = 20,
@@ -1490,7 +1490,7 @@ ResetSection:AddButton({
         end)
         Window:Notify({
             Title = "已恢复",
-            Content = "所有属性已重置为默认值，物理加速/高跳已关闭",
+            Content = "已恢复默认设置",
             Duration = 2
         })
     end
@@ -1505,7 +1505,7 @@ ResetSection:AddButton({
 -------------------------------------------------
 do
     -- 反挂机：连接在 UI 创建前已建立，这里只控制开关
-    local afkSec = MainTab:AddSection("反挂机 / 聊天")
+    local afkSec = MainTab:AddSection("反挂机和聊天")
     afkSec:AddToggle({
         Name = "反挂机",
         Default = true,
@@ -1879,7 +1879,7 @@ InfoSection:AddButton({
 -------------------------------------------------
 local ACSection = SettingTab:AddSection("反作弊")
 ACSection:AddToggle({
-    Name = "防踢（默认开）",
+    Name = "防踢",
     Default = true,
     Callback = function(state)
         getgenv().WuAntiCheat = getgenv().WuAntiCheat or {}
@@ -1902,7 +1902,7 @@ ACSection:AddToggle({
 local KeySection = SettingTab:AddSection("卡密管理")
 
 KeySection:AddButton({
-    Name = "重置卡密（下次需重新输入）",
+    Name = "重置卡密",
     Callback = function()
         clearSavedKey()
         Window:Notify({
@@ -1941,7 +1941,7 @@ local VisualSection = Tab1:AddSection("视觉与移动")
 
 local NightVision = false
 VisualSection:AddButton({
-    Name = "夜视 (点击开关)",
+    Name = "夜视",
     Callback = function()
         NightVision = not NightVision
         game.Lighting.Ambient = NightVision and Color3.new(1, 1, 1) or Color3.new(0, 0, 0)
@@ -1953,7 +1953,7 @@ VisualSection:AddButton({
 local noclipEnabled = false
 
 VisualSection:AddButton({
-    Name = "穿墙 (点击开关)",
+    Name = "穿墙",
     Callback = function()
         noclipEnabled = not noclipEnabled
         local char = game.Players.LocalPlayer.Character
@@ -1981,7 +1981,7 @@ VisualSection:AddButton({
 
 local InfiniteJumpEnabled = false
 VisualSection:AddButton({
-    Name = "无限跳 (点击开关)",
+    Name = "无限跳",
     Callback = function()
         InfiniteJumpEnabled = not InfiniteJumpEnabled
         Window:Notify({
@@ -2461,14 +2461,14 @@ game:GetService("Players").PlayerAdded:Connect(function(player)
 end)
 
 FlingSection:AddToggle({
-    Name = "防甩飞 (禁用碰撞)",
+    Name = "防甩飞",
     Default = false,
     Callback = function(state)
         CollisionAntiFlingEnabled = state
         ApplyCollisionAntiFling()
         Window:Notify({
             Title = "防甩飞",
-            Content = state and "已开启 (作用于所有其他玩家)" or "已关闭",
+            Content = state and "已开启" or "已关闭",
             Duration = 2
         })
     end
@@ -2571,7 +2571,7 @@ TpSection:AddToggle({
 })
 
 TpSection:AddToggle({
-    Name = "查看玩家（观战）",
+    Name = "观战玩家",
     Default = false,
     Callback = function(state)
         Spectating = state
@@ -2736,7 +2736,7 @@ UtilSection2:AddButton({
 })
 
 UtilSection2:AddButton({
-    Name = "假卡顿 (走路跳跃变卡)",
+    Name = "假卡顿",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet('https://raw.githubusercontent.com/GhostPlayer352/Test4/main/Fe%20Fake%20Lag%20Obfuscator'))()
@@ -2794,7 +2794,7 @@ UtilSection2:AddToggle({
 
 local quickInteractConnection = nil
 UtilSection2:AddButton({
-    Name = "快速互动 (无需长按)",
+    Name = "快速互动",
     Callback = function()
         if quickInteractConnection then
             quickInteractConnection:Disconnect()
@@ -2923,7 +2923,7 @@ SpinSection:AddButton({
 local MiscSection = Tab5:AddSection("杂项工具")
 
 MiscSection:AddSlider({
-    Name = "血量设置 (只能自己看)",
+    Name = "血量设置",
     Min = 0,
     Max = 10000,
     Default = 100,
@@ -3014,7 +3014,7 @@ MiscSection:AddButton({
 })
 
 MiscSection:AddButton({
-    Name = "物体起飞 (Q键使用)",
+    Name = "物体起飞",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet("https://raw.githubusercontent.com/BOOSBS/ajduoxc/refs/heads/main/ajduoxcz"))()
@@ -3023,7 +3023,7 @@ MiscSection:AddButton({
 })
 
 MiscSection:AddButton({
-    Name = "虚拟键盘 (第1种)",
+    Name = "虚拟键盘 1",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet("https://gist.githubusercontent.com/RedZenXYZ/4d80bfd70ee27000660e4bfa7509c667/raw/da903c570249ab3c0c1a74f3467260972c3d87e6/KeyBoard%2520From%2520Ohio%2520Fr%2520Fr"))()
@@ -3032,7 +3032,7 @@ MiscSection:AddButton({
 })
 
 MiscSection:AddButton({
-    Name = "虚拟键盘 (第2种)",
+    Name = "虚拟键盘 2",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet("https://raw.githubusercontent.com/Xxtan31/Ata/main/deltakeyboardcrack.txt", true))()
@@ -3509,7 +3509,7 @@ TsbSection:AddButton({
     Callback = function()
         local key = "方块旋转"
         if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[key] = true
@@ -3625,7 +3625,7 @@ TsbSection:AddButton({
     Callback = function()
         local key = "战斗砖块"
         if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[key] = true
@@ -3711,7 +3711,7 @@ TsbSection:AddButton({
     Callback = function()
         local key = "离家同盟"
         if _G.LoadedScripts[key] then
-            Window:Notify({Title = "提示", Content = "已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[key] = true
@@ -3734,7 +3734,7 @@ TsbSection:AddButton({
     Callback = function()
         local url = "https://raw.githubusercontent.com/captainmanjiro/Don-t-Look-Back/refs/heads/main/Script"
         if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "别回头 已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "别回头 已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[url] = true
@@ -3758,7 +3758,7 @@ TsbSection:AddButton({
     Callback = function()
         local url = "https://api.x8stuff.lol/scripts/killstreak.lua"
         if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "Killstreak 已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "Killstreak 已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[url] = true
@@ -3780,7 +3780,7 @@ TsbSection:AddButton({
     Callback = function()
         local url = "https://raw.githubusercontent.com/imshrak/knifeduels/refs/heads/main/menu"
         if _G.LoadedScripts[url] then
-            Window:Notify({Title = "提示", Content = "刀战暴力子追 已加载，请勿重复点击", Duration = 2})
+            Window:Notify({Title = "提示", Content = "刀战暴力子追 已经加载，请勿重复点击", Duration = 2})
             return
         end
         _G.LoadedScripts[url] = true
@@ -3847,7 +3847,7 @@ local function WuEnsureNeuroESP()
 end
 
 MasterSection:AddToggle({
-    Name = "启用透视 (ESP)",
+    Name = "启用透视",
     Default = false,
     Callback = function(state)
         ESPEnabled = state
@@ -4131,7 +4131,7 @@ local function ScanAndApplyNPCESP()
 end
 
 NpcSection:AddToggle({
-    Name = "启用 NPC ESP (绿色高亮)",
+    Name = "启用 NPC 透视",
     Default = false,
     Callback = function(state)
         NPCESPEnabled = state
@@ -4149,7 +4149,7 @@ NpcSection:AddToggle({
                     end
                 end
             end)
-            Window:Notify({Title = "NPC ESP", Content = "已开启（绿色高亮，每2秒刷新）", Duration = 2})
+            Window:Notify({Title = "NPC ESP", Content = "已开启", Duration = 2})
         else
             if NPCESPThread then
                 pcall(function() task.cancel(NPCESPThread) end)
@@ -4193,7 +4193,7 @@ local AutoAttackEnabled = false
 local AutoAttackConnection = nil
 
 CombatSection:AddToggle({
-    Name = "靠近自动攻击 (需拿起武器)",
+    Name = "靠近自动攻击",
     Default = false,
     Callback = function(state)
         AutoAttackEnabled = state
@@ -4245,7 +4245,7 @@ CombatSection:AddToggle({
                     end
                 end
             end)
-            Window:Notify({Title = "自动攻击", Content = "已开启（靠近敌人自动打）", Duration = 2})
+            Window:Notify({Title = "自动攻击", Content = "已开启", Duration = 2})
         else
             if AutoAttackConnection then
                 AutoAttackConnection:Disconnect()
@@ -4277,7 +4277,7 @@ CombatSection:AddButton({
 })
 
 CombatSection:AddButton({
-    Name = "弹人 (实体)",
+    Name = "实体弹人",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet("https://pastefy.app/4r9e4F3p/raw"))()
@@ -4287,7 +4287,7 @@ CombatSection:AddButton({
 })
 
 CombatSection:AddButton({
-    Name = "弹人 (半实体)",
+    Name = "半实体弹人",
     Callback = function()
         pcall(function()
             loadstring(game:HttpGet("https://pastebin.com/raw/UTWcDtzj"))()
@@ -4406,7 +4406,7 @@ UtilSection3:AddButton({
 })
 
 UtilSection3:AddButton({
-    Name = "保存游戏 (saveinstance)",
+    Name = "保存游戏",
     Callback = function()
         pcall(function()
             saveinstance()
@@ -6266,7 +6266,7 @@ end)
 end
 
 local AimTab = Window:AddTab("自瞄")
-local SASection = AimTab:AddSection("内部静默自瞄 (Universal Pro v4.3)")
+local SASection = AimTab:AddSection("静默自瞄")
 
 -- 仅适配 UI → 全部写 _G，引擎逻辑不改
 SASection:AddToggle({
@@ -6546,7 +6546,7 @@ do
         cam.CFrame = cam.CFrame:Lerp(desired, alpha)
     end)
 
-    local CamSection = AimTab:AddSection("镜头自瞄 (非静默 · Nexus)")
+    local CamSection = AimTab:AddSection("镜头自瞄")
     CamSection:AddToggle({
         Name = "启用镜头自瞄",
         Default = false,
@@ -6823,13 +6823,13 @@ game:GetService("Players").PlayerAdded:Connect(function()
 end)
 
 -------------------------------------------------
--- 标签页：独立项目（1. ka  2. 造一部手机  3. 虫子进化  4. 力量随机生成）
+-- 标签页：独立项目
 -------------------------------------------------
 local SoloTab = Window:AddTab("独立项目")
 local SoloSection = SoloTab:AddSection("独立项目")
 
 SoloSection:AddButton({
-    Name = "1. 巫 kaiju alpha",
+    Name = "Kaiju Alpha",
     Callback = function()
         if getgenv().WuLoadKaijuAlpha then
             getgenv().WuLoadKaijuAlpha(true)
@@ -6840,7 +6840,7 @@ SoloSection:AddButton({
 })
 
 SoloSection:AddButton({
-    Name = "2. 造一部手机",
+    Name = "造一部手机",
     Callback = function()
         if getgenv().WuLoadPhoneTycoon then
             getgenv().WuLoadPhoneTycoon()
@@ -6851,7 +6851,7 @@ SoloSection:AddButton({
 })
 
 SoloSection:AddButton({
-    Name = "3. 虫子进化（自动攻击 + 经验球 + 无限耐力）",
+    Name = "虫子进化",
     Callback = function()
         if getgenv().WuLoadBugEvolution then
             getgenv().WuLoadBugEvolution()
@@ -6862,7 +6862,7 @@ SoloSection:AddButton({
 })
 
 SoloSection:AddButton({
-    Name = "4. 力量随机生成",
+    Name = "力量随机生成",
     Callback = function()
         if getgenv().WuLoadPowerFarm then
             getgenv().WuLoadPowerFarm(true)
@@ -6884,7 +6884,7 @@ local function addMoreScript(name, url, key)
         Callback = function()
             local k = key or url
             if _G.LoadedScripts[k] then
-                Window:Notify({Title = "提示", Content = name .. " 已加载，请勿重复点击", Duration = 2})
+                Window:Notify({Title = "提示", Content = name .. " 已经加载，请勿重复点击", Duration = 2})
                 return
             end
             _G.LoadedScripts[k] = true
@@ -6913,7 +6913,7 @@ else
 end
 
 --------------------------------------------------------------------------------------------
--- 巫 kaiju alpha：从 GitHub raw 拉取最新源码（不再内嵌旧 B64）
+-- Kaiju Alpha：从 GitHub raw 拉取最新源码（不再内嵌旧 B64）
 -------------------------------------------------
 getgenv().WuKaijuAlphaURL = getgenv().WuKaijuAlphaURL
     or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E5%B7%AB%20ka%20%E6%BA%90%E7%A0%81.txt"
@@ -6970,7 +6970,7 @@ local function WuShowLegacyPrompt(onYes, onNo, text)
     desc.Position = UDim2.new(0, 18, 0, 52)
     desc.Size = UDim2.new(1, -36, 0, 48)
     desc.Font = Enum.Font.Gotham
-    desc.Text = text or "是否执行服务器脚本：巫 kaiju alpha？"
+    desc.Text = text or "是否加载 Kaiju Alpha？"
     desc.TextColor3 = Color3.fromRGB(160, 170, 185)
     desc.TextSize = 14
     desc.TextWrapped = true
@@ -7023,7 +7023,7 @@ local function WuShowKaijuPrompt(onYes, onNo, text)
         if Window and Window.Dialog then
             shown = Window:Dialog({
                 Title = "检测到支持服务器",
-                Content = text or "是否执行服务器脚本：巫 kaiju alpha？",
+                Content = text or "是否加载 Kaiju Alpha？",
                 Buttons = {
                     { "是", function() if onYes then onYes() end end },
                     { "滚", function() if onNo then onNo() end end },
@@ -7078,7 +7078,7 @@ getgenv().WuLoadKaijuAlpha = function(skipPrompt)
     if getgenv().WuKaijuLoaded then
         pcall(function()
             game:GetService("StarterGui"):SetCore("SendNotification", {
-                Title = "巫 kaiju alpha",
+                Title = "Kaiju Alpha",
                 Text = "已经加载 请勿重复点击",
                 Duration = 4,
             })
@@ -7101,7 +7101,7 @@ getgenv().WuLoadKaijuAlpha = function(skipPrompt)
             getgenv().WuKaijuLoaded = true
             pcall(function()
                 game:GetService("StarterGui"):SetCore("SendNotification", {
-                    Title = "巫 kaiju alpha",
+                    Title = "Kaiju Alpha",
                     Text = "已加载",
                     Duration = 3,
                 })
@@ -7110,7 +7110,7 @@ getgenv().WuLoadKaijuAlpha = function(skipPrompt)
             warn("[巫 script] Kaiju 加载失败:", err)
             pcall(function()
                 game:GetService("StarterGui"):SetCore("SendNotification", {
-                    Title = "巫 kaiju alpha",
+                    Title = "Kaiju Alpha",
                     Text = "加载失败",
                     Duration = 5,
                 })
@@ -7126,7 +7126,6 @@ end
 
 -------------------------------------------------
 -- 虫子进化（独立项目）：GitHub 加载 + 服务器检测
--- 脚本自带 Obsidian 窗口（自动攻击 + 经验球），重复加载会先停掉上一份
 -------------------------------------------------
 getgenv().WuBugEvolutionURL = getgenv().WuBugEvolutionURL
     or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E8%99%AB%E5%AD%90%E8%BF%9B%E5%8C%96%E6%BA%90%E7%A0%81.lua"
@@ -7137,7 +7136,7 @@ getgenv().WuLoadBugEvolution = function()
         pcall(function()
             game:GetService("StarterGui"):SetCore("SendNotification", {
                 Title = "虫子进化",
-                Text = "已经加载 请勿重复点击（右 Ctrl 显示/隐藏窗口）",
+                Text = "已经加载，请勿重复点击",
                 Duration = 4,
             })
         end)
@@ -7188,7 +7187,7 @@ task.spawn(function()
     getgenv().WuBugPromptShown = true
     WuShowKaijuPrompt(function()
         if getgenv().WuLoadBugEvolution then getgenv().WuLoadBugEvolution() end
-    end, function() end, "是否执行独立项目：虫子进化（自动攻击 + 经验球 + 无限耐力）？")
+    end, function() end, "是否加载虫子进化？")
 end)
 
 task.spawn(function()
@@ -7229,7 +7228,7 @@ task.spawn(function()
 
     WuShowKaijuPrompt(function()
         if getgenv().WuLoadPhoneTycoon then getgenv().WuLoadPhoneTycoon() end
-    end, function() end, "是否执行独立项目：造一部手机？")
+    end, function() end, "是否加载造一部手机？")
 end)
 
 --------------------------------------------------------------------------------------------
@@ -7286,7 +7285,7 @@ getgenv().WuLoadPowerFarm = function(skipPrompt)
     if skipPrompt then
         doLoad()
     else
-        WuShowKaijuPrompt(doLoad, function() end, "是否执行独立项目：力量随机生成？")
+        WuShowKaijuPrompt(doLoad, function() end, "是否加载力量随机生成？")
     end
 end
 
@@ -7324,7 +7323,7 @@ task.spawn(function()
         if getgenv().WuLoadPowerFarm then
             getgenv().WuLoadPowerFarm(true)
         end
-    end, function() end, "是否执行独立项目：力量随机生成？")
+    end, function() end, "是否加载力量随机生成？")
 end)
 
 
@@ -7489,7 +7488,7 @@ task.spawn(function()
 
         SettingsPage:Section("其它")
         SettingsPage:Button({
-            Title = "重置卡密（下次需重新输入）",
+            Title = "重置卡密",
             Text = "重置",
             Callback = function()
                 pcall(function()
