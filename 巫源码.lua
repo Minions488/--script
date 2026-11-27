@@ -1039,7 +1039,7 @@ local okLib, Library = pcall(function()
 
     -- Mugi 内置 SVG 图标（按名称）；未知名称会被静默忽略
     local tabIcons = {
-        ["通用功能"] = "home", ["皮移植"] = "layers", ["服务器信息"] = "server",
+        ["通用功能"] = "home", ["服务器信息"] = "server",
         ["通用1"] = "sliders", ["范围设置"] = "target", ["甩飞与传送"] = "navigation",
         ["工具"] = "wrench", ["趣味"] = "smile", ["各类服务器脚本"] = "gamepad",
         ["ESP"] = "eye", ["额外功能"] = "star", ["自瞄"] = "crosshair",
@@ -1451,62 +1451,83 @@ ResetSection:AddButton({
 -------------------------------------------------
 
 -------------------------------------------------
--- 皮脚本移植 · 通用增强（低风险、自包含）
+-- 原「皮移植」功能并入「通用功能」
 -------------------------------------------------
 do
-    local PiTab = Window:AddTab("皮移植")
-    local afkSec = PiTab:AddSection("反挂机 / 聊天")
+    -- 反挂机：连接在 UI 创建前已建立，这里只控制开关
+    local afkSec = MainTab:AddSection("反挂机 / 聊天")
     afkSec:AddToggle({
-        Name = "反挂机 (Idled)",
+        Name = "反挂机",
         Default = true,
         Callback = function(state)
             getgenv().WuAntiAFK = state and true or false
-            Window:Notify({ Title = "反挂机", Content = state and "已开启" or "已关闭", Duration = 2 })
+            Window:Notify({Title = "反挂机", Content = state and "已开启" or "已关闭", Duration = 2})
         end
     })
 
-    getgenv().WuAutoSay = getgenv().WuAutoSay or { text = "你好", count = 1, running = false, auto = false }
+    local autoSay = getgenv().WuAutoSay
+    if type(autoSay) ~= "table" then
+        autoSay = {text = "你好", count = 1, running = false, auto = false}
+        getgenv().WuAutoSay = autoSay
+    end
+    autoSay.text = tostring(autoSay.text or "你好")
+    autoSay.count = math.clamp(tonumber(autoSay.count) or 1, 1, 20)
+    -- 防止重新执行脚本后，上一轮循环说话仍在后台运行
+    autoSay.auto = false
+
     afkSec:AddTextbox({
         Name = "说话内容",
-        Default = getgenv().WuAutoSay.text,
-        Placeholder = "输入要说的话",
+        Default = autoSay.text,
+        Placeholder = "输入内容",
         Callback = function(v)
             getgenv().WuAutoSay.text = tostring(v or "")
         end
     })
     afkSec:AddTextbox({
-        Name = "说话次数",
-        Default = tostring(getgenv().WuAutoSay.count or 1),
+        Name = "发送次数",
+        Default = tostring(autoSay.count),
         Placeholder = "1~20",
         Callback = function(v)
             getgenv().WuAutoSay.count = math.clamp(tonumber(v) or 1, 1, 20)
         end
     })
+
     local function WuSayOnce(msg)
         msg = tostring(msg or "")
         if msg == "" then return false end
-        local ok = pcall(function()
-            local ev = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-            if ev and ev:FindFirstChild("SayMessageRequest") then
-                ev.SayMessageRequest:FireServer(msg, "All")
-            else
-                -- TextChat 兜底
-                local TextChat = game:GetService("TextChatService")
-                local channel = TextChat:FindFirstChild("TextChannels") and TextChat.TextChannels:FindFirstChild("RBXGeneral")
-                if channel then
-                    channel:SendAsync(msg)
-                end
-            end
+
+        local replicated = game:GetService("ReplicatedStorage")
+        local events = replicated:FindFirstChild("DefaultChatSystemChatEvents")
+        local sayEvent = events and events:FindFirstChild("SayMessageRequest")
+        if sayEvent then
+            local sent = pcall(function()
+                sayEvent:FireServer(msg, "All")
+            end)
+            if sent then return true end
+        end
+
+        local sent = pcall(function()
+            local textChat = game:GetService("TextChatService")
+            local channels = textChat:FindFirstChild("TextChannels")
+            local channel = channels and channels:FindFirstChild("RBXGeneral")
+            if not channel then error("聊天频道不可用") end
+            channel:SendAsync(msg)
         end)
-        return ok
+        return sent
     end
+
     afkSec:AddButton({
-        Name = "发送一次/多次",
+        Name = "发送",
         Callback = function()
-            local n = tonumber(getgenv().WuAutoSay.count) or 1
-            local msg = getgenv().WuAutoSay.text or ""
+            local state = getgenv().WuAutoSay
+            local count = math.clamp(tonumber(state.count) or 1, 1, 20)
+            local msg = tostring(state.text or "")
+            if msg == "" then
+                Window:Notify({Title = "聊天", Content = "先输入内容", Duration = 2})
+                return
+            end
             task.spawn(function()
-                for i = 1, n do
+                for i = 1, count do
                     if not WuSayOnce(msg) then break end
                     task.wait(0.35)
                 end
@@ -1514,7 +1535,7 @@ do
         end
     })
     afkSec:AddToggle({
-        Name = "循环自动说话",
+        Name = "循环发送",
         Default = false,
         Callback = function(state)
             getgenv().WuAutoSay.auto = state and true or false
@@ -1522,40 +1543,17 @@ do
                 task.spawn(function()
                     while getgenv().WuAutoSay and getgenv().WuAutoSay.auto do
                         WuSayOnce(getgenv().WuAutoSay.text)
-                        task.wait(3) -- 避免触发聊天冷却/封禁
+                        task.wait(3)
                     end
                 end)
             end
         end
     })
 
-    local camSec = PiTab:AddSection("相机 / 画质")
+    -- FOV 和最大缩放已在上方「角色属性」中，避免重复控件
+    local camSec = MainTab:AddSection("画质")
     camSec:AddSlider({
-        Name = "相机 FOV",
-        Min = 30,
-        Max = 120,
-        Default = 70,
-        Increment = 1,
-        Callback = function(v)
-            pcall(function()
-                workspace.CurrentCamera.FieldOfView = tonumber(v) or 70
-            end)
-        end
-    })
-    camSec:AddSlider({
-        Name = "最大缩放距离",
-        Min = 20,
-        Max = 5000,
-        Default = 128,
-        Increment = 10,
-        Callback = function(v)
-            pcall(function()
-                game.Players.LocalPlayer.CameraMaxZoomDistance = tonumber(v) or 128
-            end)
-        end
-    })
-    camSec:AddSlider({
-        Name = "FPS 上限 (需执行器支持)",
+        Name = "FPS 上限",
         Min = 30,
         Max = 240,
         Default = 60,
@@ -1567,31 +1565,32 @@ do
         end
     })
     camSec:AddToggle({
-        Name = "全亮 (FullBright)",
+        Name = "全亮",
         Default = false,
         Callback = function(state)
             getgenv().WuFullBright = state and true or false
             pcall(function()
-                local Lighting = game:GetService("Lighting")
+                local lighting = game:GetService("Lighting")
                 if state then
-                    getgenv().WuFullBrightBackup = getgenv().WuFullBrightBackup or {
-                        Brightness = Lighting.Brightness,
-                        ClockTime = Lighting.ClockTime,
-                        FogEnd = Lighting.FogEnd,
-                        GlobalShadows = Lighting.GlobalShadows,
-                        OutdoorAmbient = Lighting.OutdoorAmbient,
+                    getgenv().WuFullBrightBackup = {
+                        Brightness = lighting.Brightness,
+                        ClockTime = lighting.ClockTime,
+                        FogEnd = lighting.FogEnd,
+                        GlobalShadows = lighting.GlobalShadows,
+                        OutdoorAmbient = lighting.OutdoorAmbient,
                     }
-                    Lighting.Brightness = 2
-                    Lighting.ClockTime = 14
-                    Lighting.FogEnd = 100000
-                    Lighting.GlobalShadows = false
-                    Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+                    lighting.Brightness = 2
+                    lighting.ClockTime = 14
+                    lighting.FogEnd = 100000
+                    lighting.GlobalShadows = false
+                    lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
                 else
-                    local b = getgenv().WuFullBrightBackup
-                    if b then
-                        for k, val in pairs(b) do
-                            pcall(function() Lighting[k] = val end)
+                    local backup = getgenv().WuFullBrightBackup
+                    if backup then
+                        for key, value in pairs(backup) do
+                            pcall(function() lighting[key] = value end)
                         end
+                        getgenv().WuFullBrightBackup = nil
                     end
                 end
             end)
@@ -1602,35 +1601,62 @@ do
         Default = false,
         Callback = function(state)
             pcall(function()
-                local Lighting = game:GetService("Lighting")
+                local lighting = game:GetService("Lighting")
                 if state then
-                    getgenv().WuFogBackup = Lighting.FogEnd
-                    Lighting.FogEnd = 1000000
+                    if getgenv().WuFogBackup == nil then
+                        getgenv().WuFogBackup = lighting.FogEnd
+                    end
+                    lighting.FogEnd = 1000000
                 else
-                    if getgenv().WuFogBackup then
-                        Lighting.FogEnd = getgenv().WuFogBackup
+                    if getgenv().WuFogBackup ~= nil then
+                        lighting.FogEnd = getgenv().WuFogBackup
+                        getgenv().WuFogBackup = nil
                     end
                 end
             end)
         end
     })
     camSec:AddButton({
-        Name = "删除所有特效 (Blur/Bloom/ColorCorrection)",
+        Name = "清除画面特效",
         Callback = function()
             pcall(function()
-                for _, v in ipairs(game:GetService("Lighting"):GetChildren()) do
-                    if v:IsA("BlurEffect") or v:IsA("BloomEffect") or v:IsA("ColorCorrectionEffect")
-                        or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect") then
-                        v:Destroy()
+                for _, effect in ipairs(game:GetService("Lighting"):GetChildren()) do
+                    if effect:IsA("BlurEffect") or effect:IsA("BloomEffect")
+                        or effect:IsA("ColorCorrectionEffect") or effect:IsA("SunRaysEffect")
+                        or effect:IsA("DepthOfFieldEffect") then
+                        effect:Destroy()
                     end
                 end
             end)
-            Window:Notify({ Title = "画质", Content = "已清理 Lighting 特效", Duration = 2 })
+            Window:Notify({Title = "画质", Content = "已清除特效", Duration = 2})
         end
     })
 
-    local flySec = PiTab:AddSection("飞行 (自包含)")
-    getgenv().WuFly = getgenv().WuFly or { on = false, speed = 50, conn = nil, bv = nil, bg = nil }
+    local flySec = MainTab:AddSection("飞行")
+    local flyState = getgenv().WuFly
+    if type(flyState) ~= "table" then
+        flyState = {on = false, speed = 50, conn = nil, bv = nil, bg = nil}
+        getgenv().WuFly = flyState
+    end
+    flyState.speed = tonumber(flyState.speed) or 50
+
+    local function WuStopFly()
+        local f = getgenv().WuFly
+        if not f then return end
+        f.on = false
+        if f.conn then pcall(function() f.conn:Disconnect() end) f.conn = nil end
+        if f.bv then pcall(function() f.bv:Destroy() end) f.bv = nil end
+        if f.bg then pcall(function() f.bg:Destroy() end) f.bg = nil end
+        pcall(function()
+            local player = game:GetService("Players").LocalPlayer
+            local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.PlatformStand = false end
+        end)
+    end
+
+    -- 清掉上次执行留下的飞行连接和物理对象
+    WuStopFly()
+
     flySec:AddSlider({
         Name = "飞行速度",
         Min = 10,
@@ -1641,114 +1667,121 @@ do
             getgenv().WuFly.speed = tonumber(v) or 50
         end
     })
-    local function WuStopFly()
-        local F = getgenv().WuFly
-        if not F then return end
-        F.on = false
-        if F.conn then pcall(function() F.conn:Disconnect() end) F.conn = nil end
-        if F.bv then pcall(function() F.bv:Destroy() end) F.bv = nil end
-        if F.bg then pcall(function() F.bg:Destroy() end) F.bg = nil end
-        pcall(function()
-            local hum = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if hum then hum.PlatformStand = false end
-        end)
-    end
+
     local function WuStartFly()
         WuStopFly()
-        local F = getgenv().WuFly
-        F.on = true
-        local lp = game.Players.LocalPlayer
-        local char = lp.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum then return end
-        hum.PlatformStand = true
-        local bv = Instance.new("BodyVelocity")
-        bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-        bv.Velocity = Vector3.zero
-        bv.Parent = hrp
-        local bg = Instance.new("BodyGyro")
-        bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
-        bg.P = 3e4
-        bg.Parent = hrp
-        F.bv, F.bg = bv, bg
-        local UIS = game:GetService("UserInputService")
-        F.conn = game:GetService("RunService").RenderStepped:Connect(function()
-            if not F.on or not hrp or not hrp.Parent then
+        local f = getgenv().WuFly
+        local player = game:GetService("Players").LocalPlayer
+        local character = player.Character
+        if not character then
+            Window:Notify({Title = "飞行", Content = "角色未加载", Duration = 2})
+            return
+        end
+        local root = character:FindFirstChild("HumanoidRootPart")
+        local hum = character:FindFirstChildOfClass("Humanoid")
+        if not root or not hum then
+            Window:Notify({Title = "飞行", Content = "角色组件未就绪", Duration = 2})
+            return
+        end
+
+        local bodyVelocity = Instance.new("BodyVelocity")
+        bodyVelocity.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        bodyVelocity.Velocity = Vector3.zero
+        bodyVelocity.Parent = root
+
+        local bodyGyro = Instance.new("BodyGyro")
+        bodyGyro.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+        bodyGyro.P = 3e4
+        bodyGyro.Parent = root
+
+        f.on = true
+        f.bv, f.bg = bodyVelocity, bodyGyro
+        local userInput = game:GetService("UserInputService")
+        f.conn = game:GetService("RunService").RenderStepped:Connect(function()
+            if not f.on or not root.Parent or not bodyVelocity.Parent or not bodyGyro.Parent then
                 WuStopFly()
                 return
             end
-            local cam = workspace.CurrentCamera
-            bg.CFrame = cam.CFrame
-            local dir = Vector3.zero
-            if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
-            if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
-            if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
-            if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
-            if UIS:IsKeyDown(Enum.KeyCode.Space) or UIS:IsKeyDown(Enum.KeyCode.E) then dir = dir + Vector3.new(0, 1, 0) end
-            if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.Q) then dir = dir - Vector3.new(0, 1, 0) end
-            if dir.Magnitude > 0 then
-                bv.Velocity = dir.Unit * (F.speed or 50)
-            else
-                bv.Velocity = Vector3.zero
+            local camera = workspace.CurrentCamera
+            if not camera then return end
+            bodyGyro.CFrame = camera.CFrame
+
+            local direction = hum.MoveDirection -- 支持触屏摇杆移动
+            if userInput:IsKeyDown(Enum.KeyCode.W) then direction = direction + camera.CFrame.LookVector end
+            if userInput:IsKeyDown(Enum.KeyCode.S) then direction = direction - camera.CFrame.LookVector end
+            if userInput:IsKeyDown(Enum.KeyCode.A) then direction = direction - camera.CFrame.RightVector end
+            if userInput:IsKeyDown(Enum.KeyCode.D) then direction = direction + camera.CFrame.RightVector end
+            if userInput:IsKeyDown(Enum.KeyCode.Space) or userInput:IsKeyDown(Enum.KeyCode.E) or hum.Jump then
+                direction = direction + Vector3.new(0, 1, 0)
             end
+            if userInput:IsKeyDown(Enum.KeyCode.LeftControl) or userInput:IsKeyDown(Enum.KeyCode.Q) then
+                direction = direction - Vector3.new(0, 1, 0)
+            end
+
+            bodyVelocity.Velocity = direction.Magnitude > 0 and direction.Unit * (f.speed or 50) or Vector3.zero
         end)
     end
+
     flySec:AddToggle({
-        Name = "飞行开关 (WASD/空格/Ctrl)",
+        Name = "飞行",
         Default = false,
         Callback = function(state)
             if state then WuStartFly() else WuStopFly() end
-            Window:Notify({ Title = "飞行", Content = state and "已开启" or "已关闭", Duration = 2 })
+            Window:Notify({Title = "飞行", Content = state and "已开启" or "已关闭", Duration = 2})
         end
     })
 
-    local tpSec = PiTab:AddSection("加入游戏")
-    getgenv().WuJoinPlaceId = getgenv().WuJoinPlaceId or ""
-    tpSec:AddTextbox({
+    local joinSec = MainTab:AddSection("加入游戏")
+    getgenv().WuJoinPlaceId = tostring(getgenv().WuJoinPlaceId or "")
+    joinSec:AddTextbox({
         Name = "PlaceId",
-        Default = "",
-        Placeholder = "输入游戏 PlaceId",
+        Default = getgenv().WuJoinPlaceId,
+        Placeholder = "输入 PlaceId",
         Callback = function(v)
             getgenv().WuJoinPlaceId = tostring(v or ""):gsub("%s+", "")
         end
     })
-    tpSec:AddButton({
-        Name = "传送到该 PlaceId",
+    joinSec:AddButton({
+        Name = "传送到 PlaceId",
         Callback = function()
             local id = tonumber(getgenv().WuJoinPlaceId)
-            if not id then
-                Window:Notify({ Title = "传送", Content = "PlaceId 无效", Duration = 2 })
+            if not id or id <= 0 then
+                Window:Notify({Title = "传送", Content = "PlaceId 无效", Duration = 2})
                 return
             end
-            pcall(function()
-                game:GetService("TeleportService"):Teleport(id, game.Players.LocalPlayer)
+            local ok, err = pcall(function()
+                game:GetService("TeleportService"):Teleport(id, game:GetService("Players").LocalPlayer)
             end)
+            if not ok then
+                Window:Notify({Title = "传送失败", Content = tostring(err), Duration = 3})
+            end
         end
     })
-    tpSec:AddButton({
-        Name = "复制当前 JobId",
+    joinSec:AddButton({
+        Name = "复制 JobId",
         Callback = function()
-            pcall(function()
-                local j = game.JobId
-                if setclipboard then setclipboard(j) elseif toclipboard then toclipboard(j) end
-                Window:Notify({ Title = "JobId", Content = tostring(j), Duration = 3 })
+            local jobId = tostring(game.JobId)
+            local copied = pcall(function()
+                if setclipboard then setclipboard(jobId)
+                elseif toclipboard then toclipboard(jobId)
+                else error("执行器不支持剪贴板") end
             end)
+            Window:Notify({Title = "JobId", Content = copied and "已复制" or jobId, Duration = 3})
         end
     })
-    tpSec:AddButton({
-        Name = "复制当前 PlaceId",
+    joinSec:AddButton({
+        Name = "复制 PlaceId",
         Callback = function()
-            pcall(function()
-                local j = tostring(game.PlaceId)
-                if setclipboard then setclipboard(j) elseif toclipboard then toclipboard(j) end
-                Window:Notify({ Title = "PlaceId", Content = j, Duration = 3 })
+            local placeId = tostring(game.PlaceId)
+            local copied = pcall(function()
+                if setclipboard then setclipboard(placeId)
+                elseif toclipboard then toclipboard(placeId)
+                else error("执行器不支持剪贴板") end
             end)
+            Window:Notify({Title = "PlaceId", Content = copied and "已复制" or placeId, Duration = 3})
         end
     })
 end
-
 
 local SettingTab = Window:AddTab("服务器信息")
 
@@ -6789,17 +6822,6 @@ SoloSection:AddButton({
     end
 })
 
-SoloSection:AddButton({
-    Name = "5. 不要停下",
-    Callback = function()
-        if getgenv().WuLoadDontStop then
-            getgenv().WuLoadDontStop()
-        else
-            Window:Notify({Title = "提示", Content = "不要停下模块未就绪", Duration = 2})
-        end
-    end
-})
-
 -------------------------------------------------
 -- 标签页：更多脚本
 -------------------------------------------------
@@ -7458,142 +7480,4 @@ task.spawn(function()
     if not ok then
         warn("[巫 script] 设置板块失败:", err)
     end
-end)
-
-
---------------------------------------------------------------------------------------------
--- 不要停下（独立项目）：分享链接解析 + 自动检测 + 手动加载
---------------------------------------------------------------------------------------------
-getgenv().WuDontStopURL = getgenv().WuDontStopURL
-    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E4%B8%8D%E8%A6%81%E5%81%9C%E4%B8%8B%E6%BA%90%E7%A0%81.lua"
-
-local WU_DONTSTOP_SHARE_CODE = "7808634635c97749ac190a41e1b9caf3"
-
-local function WuGetHttpRequest()
-    if typeof(request) == "function" then return request end
-    if typeof(http_request) == "function" then return http_request end
-    if syn and typeof(syn.request) == "function" then return syn.request end
-    return nil
-end
-
-local function WuExtractIds(value, found, depth)
-    if depth > 8 or type(value) ~= "table" then return end
-    for k, v in pairs(value) do
-        local key = tostring(k):lower()
-        if type(v) == "number" or (type(v) == "string" and tonumber(v)) then
-            local n = tonumber(v)
-            if n and n > 0 and (key:find("placeid") or key:find("rootplaceid")
-                or key == "gameid" or key:find("universeid")) then
-                found[key] = n
-            end
-        elseif type(v) == "table" then
-            WuExtractIds(v, found, depth + 1)
-        end
-    end
-end
-
-local function WuResolveDontStopIds()
-    local req = WuGetHttpRequest()
-    if not req then
-        return nil, "当前执行器没有 request/http_request，无法解析 Roblox 分享链接"
-    end
-
-    local ok, response = pcall(function()
-        return req({
-            Url = "https://apis.roblox.com/sharelinks/v1/resolve-link",
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Accept"] = "application/json",
-                ["Origin"] = "https://www.roblox.com",
-                ["Referer"] = "https://www.roblox.com/",
-            },
-            Body = game:GetService("HttpService"):JSONEncode({
-                linkId = WU_DONTSTOP_SHARE_CODE,
-                linkType = "ExperienceDetails",
-            }),
-        })
-    end)
-    if not ok then return nil, tostring(response) end
-    if type(response) ~= "table" then return nil, "分享链接解析返回格式异常" end
-    local status = tonumber(response.StatusCode or response.Status or 0)
-    if status < 200 or status >= 300 then
-        return nil, "分享链接解析失败，HTTP " .. tostring(status)
-    end
-
-    local body = response.Body or response.body
-    if type(body) ~= "string" or body == "" then
-        return nil, "分享链接解析没有返回内容"
-    end
-    local decodedOk, decoded = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(body)
-    end)
-    if not decodedOk then return nil, "分享链接解析结果不是有效 JSON" end
-
-    local ids = {}
-    WuExtractIds(decoded, ids, 0)
-    local placeId = ids.placeid or ids.rootplaceid
-    local universeId = ids.universeid or ids.gameid
-    if not placeId and not universeId then
-        return nil, "解析成功，但响应中没有找到 PlaceId/UniverseId"
-    end
-    return { PlaceId = placeId, UniverseId = universeId }
-end
-
-getgenv().WuLoadDontStop = function()
-    if getgenv().WuDontStopLoaded then
-        pcall(function()
-            Window:Notify({Title = "不要停下", Content = "已经加载，请勿重复执行", Duration = 3})
-        end)
-        return
-    end
-
-    local ok, err = pcall(function()
-        local url = getgenv().WuDontStopURL
-        local raw = game:HttpGet(url)
-        assert(type(raw) == "string" and #raw > 100, "下载失败或源码内容过短")
-        assert(not raw:find("<!DOCTYPE html>", 1, true), "下载到的是网页，不是 Lua 源码")
-        local fn, compileErr = loadstring(raw)
-        assert(fn, compileErr or "Lua 编译失败")
-        fn()
-        getgenv().WuDontStopLoaded = true
-    end)
-
-    pcall(function()
-        Window:Notify({
-            Title = "不要停下",
-            Content = ok and "加载完成" or ("加载失败：" .. tostring(err)),
-            Duration = ok and 3 or 6,
-        })
-    end)
-    if not ok then warn("[巫 script] 不要停下加载失败:", err) end
-end
-
--- 自动检测：解析分享链接对应的 PlaceId / UniverseId，匹配当前游戏后弹出确认框。
--- 仅解析一次；解析失败时不误触发，独立项目按钮仍可手动加载。
-task.spawn(function()
-    task.wait(2)
-    if getgenv().WuDontStopPromptShown or getgenv().WuDontStopLoaded then return end
-
-    local ids, resolveErr
-    -- 网络偶发失败时短暂重试，避免第一次请求超时就永久漏检。
-    for attempt = 1, 3 do
-        ids, resolveErr = WuResolveDontStopIds()
-        if ids then break end
-        if attempt < 3 then task.wait(2) end
-    end
-    if not ids then
-        warn("[巫 script] 不要停下自动检测暂不可用:", resolveErr)
-        return
-    end
-
-    local matched = (ids.PlaceId and game.PlaceId == ids.PlaceId)
-        or (ids.UniverseId and game.GameId == ids.UniverseId)
-    if not matched then return end
-    if getgenv().WuDontStopPromptShown or getgenv().WuDontStopLoaded then return end
-
-    getgenv().WuDontStopPromptShown = true
-    WuShowKaijuPrompt(function()
-        if getgenv().WuLoadDontStop then getgenv().WuLoadDontStop() end
-    end, function() end, "检测到「不要停下」对应的游戏，是否加载脚本？")
 end)
