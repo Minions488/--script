@@ -7623,23 +7623,43 @@ local function WuResolveDontStopIds()
 end
 
 getgenv().WuLoadDontStop = function()
-    if getgenv().WuDontStopLoaded then
+    -- 已加载或正在加载时直接拦截，避免连点、自动检测与手动加载同时触发
+    if getgenv().WuDontStopLoaded or getgenv().WuDontStopLoading then
         pcall(function()
-            Window:Notify({Title = "不要停下", Content = "已经加载，请勿重复执行", Duration = 3})
+            Window:Notify({
+                Title = "不要停下",
+                Content = getgenv().WuDontStopLoaded and "已经加载" or "正在加载",
+                Duration = 3,
+            })
         end)
         return
     end
 
-    local ok, err = pcall(function()
+    -- 先上锁，再进行可能 yield 的网络请求，防止并发二次加载
+    getgenv().WuDontStopLoading = true
+    local ok, err
+    local fn
+
+    ok, err = pcall(function()
         local url = getgenv().WuDontStopURL
         local raw = game:HttpGet(url)
         assert(type(raw) == "string" and #raw > 100, "下载失败或源码内容过短")
         assert(not raw:find("<!DOCTYPE html>", 1, true), "下载到的是网页，不是 Lua 源码")
-        local fn, compileErr = loadstring(raw)
+        local compileErr
+        fn, compileErr = loadstring(raw)
         assert(fn, compileErr or "Lua 编译失败")
-        fn()
-        getgenv().WuDontStopLoaded = true
     end)
+
+    if ok then
+        -- 在执行脚本前设置已加载标记，防止脚本自身回调再次触发加载
+        getgenv().WuDontStopLoaded = true
+        ok, err = pcall(fn)
+        if not ok then
+            getgenv().WuDontStopLoaded = nil
+        end
+    end
+
+    getgenv().WuDontStopLoading = nil
 
     pcall(function()
         Window:Notify({
