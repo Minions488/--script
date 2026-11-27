@@ -4,6 +4,9 @@ pcall(function()
     if getgenv().WuScript_GUI then getgenv().WuScript_GUI:Destroy() end
 end)
 getgenv().WuScript_Running = true
+pcall(function()
+    game:GetService("RunService"):UnbindFromRenderStep("WuScript_FOVLock")
+end)
 _G.LoadedScripts = _G.LoadedScripts or {}
 
 -- 白名单门禁：只有名单内才能进入卡密界面，否则踢出
@@ -19,6 +22,7 @@ local WuWhitelistNames = {
     "AK91_JB",
     "9191ccd",
     "GOTUXT",
+    "magegg207",
 }
 
 local function WuIsWhitelisted()
@@ -1230,6 +1234,8 @@ SpeedSection:AddSlider({
     end
 })
 
+local WuFOVTarget = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70
+
 SpeedSection:AddSlider({
     Name = "视野 (FOV)",
     Min = 30,
@@ -1238,7 +1244,51 @@ SpeedSection:AddSlider({
     Increment = 1,
     Notifications = false,
     Callback = function(value)
-        workspace.CurrentCamera.FieldOfView = value
+        WuFOVTarget = tonumber(value) or 70
+        local camera = workspace.CurrentCamera
+        if camera then
+            camera.FieldOfView = WuFOVTarget
+        end
+    end
+})
+
+SpeedSection:AddToggle({
+    Name = "锁定 FOV",
+    Default = false,
+    Callback = function(state)
+        local runService = game:GetService("RunService")
+        pcall(function()
+            runService:UnbindFromRenderStep("WuScript_FOVLock")
+        end)
+
+        if state then
+            local camera = workspace.CurrentCamera
+            if camera then
+                -- 锁定当前滑块设定值；后续切换摄像机也会继续保持。
+                camera.FieldOfView = WuFOVTarget
+            end
+
+            local ok = pcall(function()
+                runService:BindToRenderStep(
+                    "WuScript_FOVLock",
+                    Enum.RenderPriority.Last.Value,
+                    function()
+                        local currentCamera = workspace.CurrentCamera
+                        if currentCamera and currentCamera.FieldOfView ~= WuFOVTarget then
+                            currentCamera.FieldOfView = WuFOVTarget
+                        end
+                    end
+                )
+            end)
+
+            if ok then
+                Window:Notify({Title = "通用", Content = "FOV 已锁定", Duration = 2})
+            else
+                Window:Notify({Title = "通用", Content = "FOV 锁定失败", Duration = 2})
+            end
+        else
+            Window:Notify({Title = "通用", Content = "FOV 已解锁", Duration = 2})
+        end
     end
 })
 
