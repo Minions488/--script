@@ -6872,6 +6872,17 @@ SoloSection:AddButton({
     end
 })
 
+SoloSection:AddButton({
+    Name = "不要停下",
+    Callback = function()
+        if getgenv().WuLoadDontStop then
+            getgenv().WuLoadDontStop()
+        else
+            Window:Notify({Title = "提示", Content = "不要停下模块未就绪", Duration = 2})
+        end
+    end
+})
+
 -------------------------------------------------
 -- 标签页：更多脚本
 -------------------------------------------------
@@ -7529,4 +7540,142 @@ task.spawn(function()
     if not ok then
         warn("[巫 script] 设置板块失败:", err)
     end
+end)
+
+
+--------------------------------------------------------------------------------------------
+-- 不要停下（独立项目）：分享链接解析 + 自动检测 + 手动加载
+--------------------------------------------------------------------------------------------
+getgenv().WuDontStopURL = getgenv().WuDontStopURL
+    or "https://raw.githubusercontent.com/Minions488/--script/refs/heads/main/%E4%B8%8D%E8%A6%81%E5%81%9C%E4%B8%8B%E6%BA%90%E7%A0%81.lua"
+
+local WU_DONTSTOP_SHARE_CODE = "7808634635c97749ac190a41e1b9caf3"
+
+local function WuGetHttpRequest()
+    if typeof(request) == "function" then return request end
+    if typeof(http_request) == "function" then return http_request end
+    if syn and typeof(syn.request) == "function" then return syn.request end
+    return nil
+end
+
+local function WuExtractIds(value, found, depth)
+    if depth > 8 or type(value) ~= "table" then return end
+    for k, v in pairs(value) do
+        local key = tostring(k):lower()
+        if type(v) == "number" or (type(v) == "string" and tonumber(v)) then
+            local n = tonumber(v)
+            if n and n > 0 and (key:find("placeid") or key:find("rootplaceid")
+                or key == "gameid" or key:find("universeid")) then
+                found[key] = n
+            end
+        elseif type(v) == "table" then
+            WuExtractIds(v, found, depth + 1)
+        end
+    end
+end
+
+local function WuResolveDontStopIds()
+    local req = WuGetHttpRequest()
+    if not req then
+        return nil, "当前执行器没有 request/http_request，无法解析 Roblox 分享链接"
+    end
+
+    local ok, response = pcall(function()
+        return req({
+            Url = "https://apis.roblox.com/sharelinks/v1/resolve-link",
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["Accept"] = "application/json",
+                ["Origin"] = "https://www.roblox.com",
+                ["Referer"] = "https://www.roblox.com/",
+            },
+            Body = game:GetService("HttpService"):JSONEncode({
+                linkId = WU_DONTSTOP_SHARE_CODE,
+                linkType = "ExperienceDetails",
+            }),
+        })
+    end)
+    if not ok then return nil, tostring(response) end
+    if type(response) ~= "table" then return nil, "分享链接解析返回格式异常" end
+    local status = tonumber(response.StatusCode or response.Status or 0)
+    if status < 200 or status >= 300 then
+        return nil, "分享链接解析失败，HTTP " .. tostring(status)
+    end
+
+    local body = response.Body or response.body
+    if type(body) ~= "string" or body == "" then
+        return nil, "分享链接解析没有返回内容"
+    end
+    local decodedOk, decoded = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    if not decodedOk then return nil, "分享链接解析结果不是有效 JSON" end
+
+    local ids = {}
+    WuExtractIds(decoded, ids, 0)
+    local placeId = ids.placeid or ids.rootplaceid
+    local universeId = ids.universeid or ids.gameid
+    if not placeId and not universeId then
+        return nil, "解析成功，但响应中没有找到 PlaceId/UniverseId"
+    end
+    return { PlaceId = placeId, UniverseId = universeId }
+end
+
+getgenv().WuLoadDontStop = function()
+    if getgenv().WuDontStopLoaded then
+        pcall(function()
+            Window:Notify({Title = "不要停下", Content = "已经加载，请勿重复执行", Duration = 3})
+        end)
+        return
+    end
+
+    local ok, err = pcall(function()
+        local url = getgenv().WuDontStopURL
+        local raw = game:HttpGet(url)
+        assert(type(raw) == "string" and #raw > 100, "下载失败或源码内容过短")
+        assert(not raw:find("<!DOCTYPE html>", 1, true), "下载到的是网页，不是 Lua 源码")
+        local fn, compileErr = loadstring(raw)
+        assert(fn, compileErr or "Lua 编译失败")
+        fn()
+        getgenv().WuDontStopLoaded = true
+    end)
+
+    pcall(function()
+        Window:Notify({
+            Title = "不要停下",
+            Content = ok and "加载完成" or ("加载失败：" .. tostring(err)),
+            Duration = ok and 3 or 6,
+        })
+    end)
+    if not ok then warn("[巫 script] 不要停下加载失败:", err) end
+end
+
+-- 自动检测：解析分享链接对应的 PlaceId / UniverseId，匹配当前游戏后弹出确认框。
+-- 仅解析一次；解析失败时不误触发，独立项目按钮仍可手动加载。
+task.spawn(function()
+    task.wait(2)
+    if getgenv().WuDontStopPromptShown or getgenv().WuDontStopLoaded then return end
+
+    local ids, resolveErr
+    -- 网络偶发失败时短暂重试，避免第一次请求超时就永久漏检。
+    for attempt = 1, 3 do
+        ids, resolveErr = WuResolveDontStopIds()
+        if ids then break end
+        if attempt < 3 then task.wait(2) end
+    end
+    if not ids then
+        warn("[巫 script] 不要停下自动检测暂不可用:", resolveErr)
+        return
+    end
+
+    local matched = (ids.PlaceId and game.PlaceId == ids.PlaceId)
+        or (ids.UniverseId and game.GameId == ids.UniverseId)
+    if not matched then return end
+    if getgenv().WuDontStopPromptShown or getgenv().WuDontStopLoaded then return end
+
+    getgenv().WuDontStopPromptShown = true
+    WuShowKaijuPrompt(function()
+        if getgenv().WuLoadDontStop then getgenv().WuLoadDontStop() end
+    end, function() end, "检测到「不要停下」对应的游戏，是否加载脚本？")
 end)
