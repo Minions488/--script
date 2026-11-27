@@ -142,9 +142,9 @@ getgenv().__SRC_TP = [=[
     _TP_FINISH()         一次性直达终点(易被反作弊复位，不推荐)
     _TP_INTERMITTENT()   沿路径分段推进到终点(默认保守参数)
     _TP_AUTO_FINISH()    一键通关：停驾驶->探测->间歇推进->冲线触发结算
-    _TP_STOP()           停止分段传送
+    _TP_SEGMENT_STOP()   停止分段传送
     _TP_SET(step,delay,speed)  调整分段步长/间隔/落点速度
-    _TP_STATUS()         状态诊断
+    _TP_SEGMENT_STATUS() 状态诊断
   v2 改动：
     1) 步长 120->55m、间隔 0.15->0.35s，默认更接近真实行驶，降低被复位概率
     2) 每段落点带沿路径切线方向的速度(speed)，不是瞬移静止，游戏更认可
@@ -156,7 +156,7 @@ local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 local ws = game:GetService("Workspace")
 
-if getgenv()._TP_STOP then pcall(getgenv()._TP_STOP) end
+if getgenv()._TP_SEGMENT_STOP then pcall(getgenv()._TP_SEGMENT_STOP) end
 
 local RoadPath, World, route, FinishS = nil, nil, nil, nil
 local targetPos = nil
@@ -329,20 +329,20 @@ getgenv()._TP_TARGET       = function() return targetPos end
 getgenv()._TP_FINISH       = finish
 getgenv()._TP_INTERMITTENT = intermittent
 getgenv()._TP_AUTO_FINISH  = autoFinish
-getgenv()._TP_STOP         = stop
+getgenv()._TP_SEGMENT_STOP = stop
 getgenv()._TP_SET          = function(step, delay, speed)
     if tonumber(step)  then TP_STEP  = math.clamp(tonumber(step), 15, 200) end
     if tonumber(delay) then TP_DELAY = math.clamp(tonumber(delay), 0.1, 1.5) end
     if tonumber(speed) then TP_SPEED = math.clamp(tonumber(speed), 0, 200) end
     return string.format("传送参数 步长=%dm 间隔=%.2fs 速度=%d", TP_STEP, TP_DELAY, TP_SPEED)
 end
-getgenv()._TP_STATUS       = function()
+getgenv()._TP_SEGMENT_STATUS = function()
     return string.format("tp状态=%s 终点=%s FinishS=%s 分段中=%s 步长=%d 间隔=%.2f 速度=%d",
         statusText, targetPos and string.format("(%.0f,%.1f,%.0f)",targetPos.X,targetPos.Y,targetPos.Z) or "未探测",
         FinishS and tostring(math.floor(FinishS)) or "?", tostring(stepping), TP_STEP, TP_DELAY, TP_SPEED)
 end
 
-print("[Teleport v2] 已注入。接口: _TP_PROBE / _TP_FINISH / _TP_INTERMITTENT / _TP_AUTO_FINISH / _TP_SET / _TP_STOP")
+print("[Teleport v2] 已注入。接口: _TP_PROBE / _TP_FINISH / _TP_INTERMITTENT / _TP_AUTO_FINISH / _TP_SET / _TP_SEGMENT_STOP")
 
 ]=]
 
@@ -389,7 +389,7 @@ local CFG = {
     recenterDead  = 0.25, -- 打舵回中死区(米)，仅 steerAssistOn 开启时生效
     recenterFull  = 4.0,  -- 打舵回中满力距离，仅 steerAssistOn 开启时生效
     recenterMax   = 0.85, -- 打舵回中最大舵角，仅 steerAssistOn 开启时生效
-    tuneLinkSpeed = true, -- 车辆极速倍率联动自动驾驶安全速度(让调校在自动驾驶时生效)
+    tuneLinkSpeed = true, -- 自动驾驶启动后沿用车辆调校联动
     -- 【v20 防出界穿墙】偏离主道过远时不穿，穿墙中被推出/坠落立即拉回路径
     noclipMaxLat  = 16,   -- 触发穿墙前允许的最大横向偏离(米)，超过则放弃穿墙
     guardLat      = 20,   -- 穿墙期间横向偏离超过此值判定"被推出主道"->拉回
@@ -402,7 +402,7 @@ local CFG = {
 }
 
 -- 启动时强制清理可能由上次注入遗留的开关状态，确保本脚本功能默认全关。
-for _, stopName in ipairs({"_TP_STOP", "_ARROW_STOP"}) do
+for _, stopName in ipairs({"_TP_SEGMENT_STOP", "_ARROW_STOP"}) do
     local stopFn = getgenv()[stopName]
     if type(stopFn) == "function" then pcall(stopFn) end
 end
@@ -437,12 +437,12 @@ local steerCapNow = 0.62    -- 【v20】当前转向软上限
 local recenterMaxNow = 0.85 -- 【v24】当前最大回中修正量(关平移后加强)
 local recenterDeadNow = 0.25-- 【v21】当前回中死区
 local recenterFullNow = 4.0 -- 【v24】回中力达到最大的偏离距离(提前满格)
-local tuneLinkNow = true    -- 【v21】车辆调校联动自动驾驶开关
+local tuneLinkNow = true    -- 自动驾驶启动后沿用车辆调校联动
 local tuneTopMul = 1.0      -- 【v21】从车辆调校读到的极速倍率(缓存)
--- ===== 【v27】平移辅助转弯：用户要的唯一回中功能，默认开 =====
+-- ===== 【v27】平移辅助转弯：默认关闭，手动开启后生效 =====
 -- 用"横向平移"把车拉回中心线（不是打舵角的回中辅助）。参数内置为最安全值，无需手动调。
 -- 安全的平移实现见 glideToCenter()：纯位置平移、保留车身姿态、Y交给物理、单帧封顶、不碰速度。
-local autoGlideCenter = true  -- 平移辅助转弯总开关(默认开，v27)
+local autoGlideCenter = false -- 平移辅助转弯总开关(默认关闭)
 local glidePulls = 0          -- 平移辅助触发帧数(诊断用)
 local GLIDE_RATE = 3.5        -- 【v31】基础平滑收敛速率(1/秒)：帧率无关指数平滑；近中心时用此值，柔和贴合
 local GLIDE_RATE_MAX = 16     -- 【v31】越偏离越快的速率上限(1/秒)：偏离越大收敛速率按比例升到此值
@@ -1121,7 +1121,7 @@ end
 --// ---------- 死亡自动重启：检测 Caught 页面 -> 点 RESTART FROM BEGINNING ---------- //--
 local restartCool = 0
 local restartCount = 0
-local autoRevive = true  -- v18: 自动复活独立开关（默认开），由 _AUTO_REVIVE_SET 控制
+local autoRevive = false -- 自动复活默认关闭，由 _AUTO_REVIVE_SET 控制
 local function findRestartBtn()
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
     if not pg then return nil end
@@ -1488,7 +1488,7 @@ local obsOkay, obsErr = pcall(function()
         local f = getgenv()._TP_FINISH; if type(f)=="function" then pcall(f) end
     end })
     gtp:AddButton({ Text = "■ 停止传送", Func = function()
-        local f = getgenv()._TP_STOP; if type(f)=="function" then pcall(f) end
+        local f = getgenv()._TP_SEGMENT_STOP; if type(f)=="function" then pcall(f) end
     end })
     gtp:AddDivider()
     local gtps = tabTp:AddGroupbox({ Side = "Right", Name = "传送参数" })
@@ -1552,7 +1552,7 @@ local obsOkay, obsErr = pcall(function()
             safeSet(LB.ExStat, "附加功能开启：" .. tostring(onCnt) .. " 项")
         end end
         -- 传送状态
-        local tps=getgenv()._TP_STATUS
+        local tps=getgenv()._TP_SEGMENT_STATUS
         if type(tps)=="function" then local ok,v=pcall(tps); if ok and LB.TpLive then safeSet(LB.TpLive, "传送状态：" .. v) end end
         -- 【v31】趣味状态
         local fs=getgenv()._FUN_STATUS
@@ -1630,7 +1630,7 @@ getgenv()._RECENTER_DEAD_SET = function(v)
     local n = tonumber(v); if n then recenterDeadNow = math.clamp(n, 0.02, 5.0) end
     return string.format("回中死区=%.2f", recenterDeadNow)
 end
--- 【v23】自动平移回中总开关(默认开)：偏离中心时横向平移拉回中心线，不手动调中心点
+-- 自动平移回中总开关：默认关闭，手动开启后生效
 getgenv()._GLIDE_CENTER_SET = function(on)
     autoGlideCenter = on and true or false
     return "自动平移回中=" .. tostring(autoGlideCenter)
@@ -1714,7 +1714,7 @@ local CFG = {
 }
 local espOn, tpOn, arrowOn = false, false, false
 -- v6: 怪物透视 / 障碍透视 / 建筑透视 拆成独立开关
-local monsterOn, obstOn, bldgOn = true, true, true
+local monsterOn, obstOn, bldgOn = false, false, false
 local highlights = {}
 local scanConn, tpConn, arrowConn = nil, nil, nil
 local lastScan, monsterCount, obstCount, carCount, bldgCount = 0, 0, 0, 0, 0
@@ -2163,7 +2163,7 @@ local lp = game.Players.LocalPlayer
 local pg = lp:FindFirstChild("PlayerGui")
 
 local CFG = {
-    on = true,
+    on = false,
     interval = 0.08,
     tapDuration = 0.08,  -- tap 按下到松开时长(短促点击)
     tapRepeat   = 0.26,  -- tap 重复点击间隔(秒)
@@ -2584,7 +2584,40 @@ local function RUN(tag)
   local ok,e=pcall(fn); if not ok then warn("[1KEY] "..tag.." run err: "..tostring(e)); return false end
   return true
 end
+-- 先关闭上一次注入留下的运行实例，再覆盖全局接口。
+local function STOP_OLD(name, ...)
+    local f = getgenv()[name]
+    if type(f) == "function" then pcall(f, ...) end
+end
+STOP_OLD("_ESPA_ALL_OFF")
+STOP_OLD("_TP_SEGMENT_STOP")
+STOP_OLD("_AUTOPILOT_V2_STOP")
+STOP_OLD("_QTE_OFF")
+STOP_OLD("_EX_ALL_OFF")
+getgenv()._AUTOPILOT_V2_STOP = nil
+
 RUN("TUNE"); RUN("EX"); RUN("TP"); RUN("AUTO"); RUN("ESP"); RUN("QTE")
-local on=getgenv()._ESPA_ALL_ON; if type(on)=="function" then pcall(on) end
-local st=getgenv()._AUTOPILOT_V2_START; if type(st)=="function" then print("[1KEY] AUTO:",tostring(pcall(st))) end
-print("[1KEY] v22 一键注入完成：回中辅助/车辆联动/穿墙(默认开,可关)/保守传送")
+
+-- 所有模块载入后再统一置为关闭，避免 UI 默认值与内部运行状态不一致。
+local function FORCE_OFF(name, ...)
+    local f = getgenv()[name]
+    if type(f) == "function" then
+        local ok, err = pcall(f, ...)
+        if not ok then warn("[不要停下] 关闭失败 " .. name .. ": " .. tostring(err)) end
+    end
+end
+FORCE_OFF("_ESPA_ALL_OFF")
+FORCE_OFF("_TP_SEGMENT_STOP")
+FORCE_OFF("_QTE_OFF")
+FORCE_OFF("_EX_ALL_OFF")
+FORCE_OFF("_AUTO_REVIVE_SET", false)
+FORCE_OFF("_GLIDE_CENTER_SET", false)
+FORCE_OFF("_CRUISE_SET", false)
+FORCE_OFF("_MANUAL_SPD_SET", false)
+FORCE_OFF("_STEER_ASSIST_SET", false)
+FORCE_OFF("_NOCLIP_SET", false)
+FORCE_OFF("_FUN_REVERSE_SET", false)
+FORCE_OFF("_FUN_SPIN_SET", false)
+FORCE_OFF("_FUN_BOUNCE_SET", false)
+
+print("[1KEY] 不要停下已注入：全部功能默认关闭")
