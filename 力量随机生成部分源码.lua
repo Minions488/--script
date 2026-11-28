@@ -104,13 +104,13 @@ end
 
 function M.joinGroup()
 	local rem = RE:FindFirstChild("PromptGroupJoin")
-	if not rem then return false, "无加群接口" end
+	if not rem then return false, "无接口" end
 	pcall(function() rem:FireServer() end)
-	return true, "已弹出加群窗口"
+	return true, "已弹出"
 end
 
 function M.redeemCodes()
-	if not M.inGroup() then return 0, "未加群，先点「加入群组」" end
+	if not M.inGroup() then return 0, "未加群" end
 	local list = {}
 	if okCodes and type(CodesCfg.CODES) == "table" then
 		local used = data("Codes") or {}
@@ -228,7 +228,7 @@ function M.fxToggle()
 			end)
 		end
 		getgenv().__PF_FX_N = n
-		return true, "已关 " .. n .. " 个特效 · 新特效自动关闭"
+		return true, "已关 " .. n .. " 个特效"
 	end
 	if getgenv().__PF_FX_CONN then
 		pcall(function() getgenv().__PF_FX_CONN:Disconnect() end)
@@ -248,40 +248,76 @@ function M.fxToggle()
 	return false, "特效已恢复"
 end
 
--- 实测：RollCooldownQuery 每次往返约 250ms，旧逻辑「查询+挥手+等 0.45s」只有 1 次/秒。
--- 服务端真实冷却约 0.19s，所以改成不查询、20 次/秒直接挥手踩点，实测 5.3 次/秒。
-local ROLL_GAP = 0.05
-local lastRollFire = 0
+-- ══════════ 极速Roll ══════════
+-- CD 查询往返约 0.25s，返回值已滞后；CD <= 阈值就抢发，用 RTT 吃掉剩余冷却。阈值越大越激进。
+local FAST = {
+	threshold = 0.35, pollStep = 0.25, queryTimeout = 12, observe = 0.65, jitter = 0.05, gapFloor = 1.5,
+	fire = 0, ok = 0, reject = 0, noGain = 0, lastCd = 0, lastResult = "-", kicked = false, gen = 0, lastFire = 0,
+}
+M.fast = FAST
+
 local function rollsValue()
 	local ls = plr:FindFirstChild("leaderstats")
 	local v = ls and ls:FindFirstChild("Rolls")
 	return v and tonumber(v.Value) or nil
 end
 
-function M.rollOnce()
-	local now = os.clock()
-	if now - lastRollFire < ROLL_GAP then return false, ROLL_GAP end
-	-- 技能无敌帧期间服务端会吞掉 roll，先等一帧再打
-	-- 注意：永久无敌（Invincible）不会吞 roll，实测照样能抽，不能拦
-	if guardFlag("AbilityIFrames") then return false, 0.05 end
-	lastRollFire = now
-	M.clearGuards()
-	M.clearAnim()
+if getgenv().__PF_FAST_CONNS then
+	for _, c in ipairs(getgenv().__PF_FAST_CONNS) do pcall(function() c:Disconnect() end) end
+end
+getgenv().__PF_FAST_CONNS = {}
+local function fastHook(name, fn)
+	local rem = RE:FindFirstChild(name)
+	if rem then table.insert(getgenv().__PF_FAST_CONNS, rem.OnClientEvent:Connect(fn)) end
+end
+fastHook("RollRejected", function() FAST.reject = FAST.reject + 1 end)
+fastHook("KickEvent", function()
+	FAST.kicked = true
+	FAST.gen = FAST.gen + 1
+	FAST.lastResult = "被踢，已停机"
+	getgenv().__PF_ROLL_ON = nil
+	if getgenv().__PF_KICK_STOP then pcall(getgenv().__PF_KICK_STOP) end
+end)
+
+local function fastQuery()
+	local rf = RF:FindFirstChild("RollCooldownQuery")
+	if not rf then return 0 end
+	local ok, c = pcall(function() return rf:InvokeServer() end)
+	return (ok and tonumber(c)) or 0
+end
+
+local function fastLive(gen)
+	return getgenv().__PF_ROLL_ON and gen == FAST.gen
+end
+
+local function fastWait(gen)
+	local deadline = os.clock() + FAST.queryTimeout
+	while fastLive(gen) and os.clock() < deadline do
+		local cd = fastQuery()
+		FAST.lastCd = cd
+		if cd <= FAST.threshold then return true, cd end
+		task.wait(math.min(cd, FAST.pollStep))
+	end
+	return false
+end
+
+local function fastFire()
 	local rem = RE:FindFirstChild("RollRequest")
-	if not rem then return false, 0.5 end
+	if not rem then return false end
+	M.clearGuards()
 	local R = getgenv().__PF_RAGE_REF
 	if R then R.mine = true end
 	pcall(function() rem:FireServer() end)
 	if R then R.mine = false end
-	-- 用 leaderstats.Rolls 作为真实计数（请求会被服务端按冷却丢弃，不能拿请求数当抽数）
-	local n = rollsValue()
-	if n then rollStats.n = n else rollStats.n = rollStats.n + 1 end
+	FAST.fire = FAST.fire + 1
+	FAST.lastFire = os.clock()
+	return true
+end
+
+local function curPowerName()
 	local c = char()
-	if c then
-		local cp = c:FindFirstChild("CurrentPower")
-		if cp then rollStats.last = tostring(cp.Value) end
-	end
-	return true, 0
+	local cp = c and c:FindFirstChild("CurrentPower")
+	return cp and tostring(cp.Value) or nil
 end
 
 -- 抽到指定力量就自动停下，保留结果（默认关闭，由面板勾选）
@@ -314,53 +350,75 @@ end
 
 function M.startRoll()
 	if getgenv().__PF_ROLL_ON then return false, "已在运行" end
+	if FAST.kicked then return false, "已被踢出" end
 	M.keepHit = nil
 	local n = rollsValue()
 	if n and rollStats.n == 0 then rollStats.n = n end
+	FAST.gen = FAST.gen + 1
+	local gen = FAST.gen
 	getgenv().__PF_ROLL_ON = true
 	getgenv().__PF_ROLL = task.spawn(function()
-		local function curPower()
-			local c = char()
-			local cp = c and c:FindFirstChild("CurrentPower")
-			return cp and tostring(cp.Value) or nil
-		end
-		while getgenv().__PF_ROLL_ON do
-			local before = curPower() or ""
-			local r0 = rollsValue()
-			local accepted = false
-			-- 自动旋转 = 自动点一次 ROLL：一次一轮，没到账才补点，不连发
-			M.rollOnce()
-			local t1 = os.clock()
-			while getgenv().__PF_ROLL_ON and os.clock() - t1 < 1.7 do
-				if curPower() ~= before then
-					accepted = true
-					break
-				end
-				local r = rollsValue()
-				if r ~= nil and r0 ~= nil and r ~= r0 then
-					accepted = true
-					break
-				end
-				M.clearAnim()
+		while fastLive(gen) do
+			if not char() then
+				task.wait(0.5)
+			elseif guardFlag("AbilityIFrames") then
 				task.wait(0.05)
-			end
-			if accepted then
-				task.wait(0.1)
-				-- 不再排除“和上次相同”：重复抽到同一个保留力量也要停
-				local keep = M.currentKeep()
-				if keep then
-					M.onKeepHit(keep)
-					break
+			else
+				local ready, cd = fastWait(gen)
+				if not ready then
+					if not fastLive(gen) then break end
+					FAST.lastResult = "门控超时"
+					task.wait(0.5)
+				else
+					local since = os.clock() - FAST.lastFire
+					if since < FAST.gapFloor then task.wait(FAST.gapFloor - since) end
+					if FAST.jitter > 0 then task.wait(math.random() * FAST.jitter) end
+					if not fastLive(gen) then break end
+					local before, p0, rej0 = rollsValue(), curPowerName(), FAST.reject
+					if fastFire() then
+						local gained = false
+						local deadline = os.clock() + FAST.observe
+						while os.clock() < deadline do
+							task.wait(0.06)
+							M.clearAnim()
+							local r = rollsValue()
+							if (r and before and r > before) or (curPowerName() ~= p0) then
+								gained = true
+								break
+							end
+						end
+						local n2 = rollsValue()
+						if n2 then rollStats.n = n2 end
+						local pw = curPowerName()
+						if pw then rollStats.last = pw end
+						if FAST.reject > rej0 then
+							FAST.lastResult = string.format("拒绝 cd=%.2f", cd or 0)
+						elseif gained then
+							FAST.ok = FAST.ok + 1
+							FAST.lastResult = string.format("ok cd=%.2f", cd or 0)
+							task.wait(0.1)
+							local keep = M.currentKeep()
+							if keep then
+								M.onKeepHit(keep)
+								break
+							end
+						else
+							FAST.noGain = FAST.noGain + 1
+							FAST.lastResult = string.format("未到账 cd=%.2f", cd or 0)
+						end
+					else
+						task.wait(0.5)
+					end
 				end
-				task.wait(0.1)
 			end
 		end
-		getgenv().__PF_ROLL = nil
+		if gen == FAST.gen then getgenv().__PF_ROLL = nil end
 	end)
 	return true, "开始抽卡"
 end
 
 function M.stopRoll()
+	FAST.gen = FAST.gen + 1
 	getgenv().__PF_ROLL_ON = nil
 	getgenv().__PF_ROLL = nil
 	return true, "已停止"
@@ -506,7 +564,7 @@ function M.claimAll()
 			task.wait(0.22)
 		end
 	end
-	return true, "已领取每日 + 在线奖励"
+	return true, "已领取"
 end
 
 -- ══════════ ③ 技能点 ══════════
@@ -614,7 +672,7 @@ end
 
 function M.floatUp(height)
 	local _, hum, hrp = char()
-	if not hrp then return false, "无角色（大厅菜单中天然安全）" end
+	if not hrp then return false, "无角色" end
 	height = tonumber(height) or 800
 	local pad = ensurePad()
 	local base = hrp.Position + Vector3.new(0, height, 0)
@@ -632,7 +690,7 @@ function M.floatDown()
 	local pad = workspace:FindFirstChild(PAD_NAME)
 	if pad then pad:Destroy() end
 	local _, hum, hrp = char()
-	if not hrp then return true, "已落地（大厅菜单中）" end
+	if not hrp then return true, "已落地" end
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { plr.Character }
@@ -647,7 +705,7 @@ function M.floatDown()
 		from = hit.Position - Vector3.new(0, 2, 0)
 		hit = workspace:Raycast(from, Vector3.new(0, -3000, 0), params)
 	end
-	if not hit then return false, "下方 3000 格内没有地面" end
+	if not hit then return false, "下方无地面" end
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.CFrame = CFrame.new(hit.Position + Vector3.new(0, 4, 0))
 	pcall(function()
@@ -2026,6 +2084,8 @@ local Toggles = Library.Toggles
 local Window = Library:CreateWindow({
 	Title = "力量辅助",
 	Footer = "v3",
+	CornerRadius = 16,
+	Font = Enum.Font.GothamMedium,
 	Center = true,
 	AutoShow = true,
 	Resizable = true,
@@ -2060,7 +2120,7 @@ local function confirm(title, desc, onYes)
 			},
 		})
 	end)
-	if not ok then notify("确认框失败，请开「免确认」") end
+	if not ok then notify("确认框失败") end
 end
 
 -- 自定义文案的双按钮弹窗（按钮文字与回调都可指定）
@@ -2089,7 +2149,7 @@ local function ask(title, desc, yesText, noText, onYes, onNo)
 			},
 		})
 	end)
-	if not ok then notify("弹窗失败，请重试") end
+	if not ok then notify("弹窗失败") end
 end
 
 -- ───── 主页 ─────
@@ -2124,7 +2184,7 @@ local function rageTicker()
 			if os.clock() < M.rage.burstUntil then
 				setLbl(lblRage, "加速中…")
 			else
-				setLbl(lblRage, "手动：点 ROLL 触发")
+				setLbl(lblRage, "点 ROLL 触发")
 			end
 			task.wait(0.3)
 		end
@@ -2156,7 +2216,7 @@ rageToggle = GRage:AddToggle("RageSpin", {
 			rageTurnOn()
 			return
 		end
-		ask("风险提示", "此功能未经实际测试，可能造成你账户风险", "确定开启", "我再想想",
+		ask("风险提示", "有封号风险", "确定开启", "我再想想",
 			function()
 				getgenv().__PF_RAGE_AGREED = true
 				rageTurnOn()
@@ -2169,7 +2229,6 @@ rageToggle = GRage:AddToggle("RageSpin", {
 	end,
 })
 
-GRage:AddLabel("手动：自己点 ROLL 才会加速", true)
 
 -- ───── 国王 ─────
 local GKing = TabKing:AddLeftGroupbox("自动抢王")
@@ -2330,7 +2389,7 @@ end
 local function seizeKing(reason)
 	local _, _, hrp = char()
 	local part = crownPart()
-	if not (hrp and part) then return false, "没找到王冠或角色" end
+	if not (hrp and part) then return false, "无王冠或角色" end
 	local p = part.Position
 	local target
 	local rp = RaycastParams.new()
@@ -2368,13 +2427,13 @@ local function seizeKing(reason)
 			if solidAt(top - Vector3.new(0, d, 0)) then thick = d else break end
 		end
 		kingc.thick = thick
-		if thick < 4 then return false, "这里地板太薄，钻下去会掉虚空，等国王换个位置再试" end
+		if thick < 4 then return false, "地板太薄" end
 		-- 实测 45 格以下会瞬间死亡（地图有秒杀区），30 格稳定，所以卡 30
 		kingc.insideDepth = math.min(kingc.depth, thick - 2, 30)
 		target = top - Vector3.new(0, kingc.insideDepth, 0)
 		kingc.groundPos = top + Vector3.new(0, 4, 0)
 	else
-		return false, "王冠下方没有地面"
+		return false, "王冠下方无地面"
 	end
 	if not kingc.holdPos then kingc.homePos = hrp.Position end
 	startHold(target)
@@ -2453,7 +2512,7 @@ GKing:AddSlider("KingDepth", {
 })
 
 GKing:AddButton({
-	Text = "钻进去（穿墙占位）",
+	Text = "占位",
 	Func = function()
 		local ok, msg = seizeKing("手动")
 		notify(msg or "完成")
@@ -2461,14 +2520,14 @@ GKing:AddButton({
 })
 
 GKing:AddButton({
-	Text = "取消占位 / 还原碰撞",
+	Text = "取消占位",
 	Func = function()
 		stopHold()
 		notify("已退出占位")
 	end,
 })
 
-GKing:AddLabel("穿墙：自己全部无碰撞 + 独立碰撞组，钉在王冠正下方、地面以下的方块里，外面看不到。\n深度上限 30 格（实测 45 格以下会瞬间死亡），地板太薄会拒绝。关开关或点「取消占位」还原碰撞。", true)
+GKing:AddLabel("深度上限 30 格", true)
 
 local busy = false
 
@@ -2506,9 +2565,19 @@ local tgAutoRoll = GCode:AddToggle("AutoRoll", {
 			setLbl(lblRoll, "抽卡中…")
 		else
 			M.stopRoll()
-			setLbl(lblRoll, string.format("已停 · %d 次 · %s", rollStats.n, rollStats.last))
+			setLbl(lblRoll, string.format("已停 · %d 次 · %s · 拒 %d", rollStats.n, rollStats.last, M.fast.reject))
 		end
 	end,
+})
+
+GCode:AddSlider("RollThr", {
+	Text = "抢发阈值",
+	Min = 0,
+	Max = 1,
+	Default = M.fast.threshold,
+	Rounding = 2,
+	Suffix = " s",
+	Callback = function(v) M.fast.threshold = tonumber(v) or M.fast.threshold end,
 })
 
 local lblKeep = GCode:AddLabel("保留：未选择", true)
@@ -2564,7 +2633,7 @@ local function runBuy()
 	setLbl(lblSkill, "购买中…")
 	task.spawn(function()
 		local bought, fail = M.buyBatch(6)
-		setLbl(lblSkill, bought == 0 and "买了 0 个（条件不符）" or string.format("已买 %d · 失败 %d", bought, fail))
+		setLbl(lblSkill, bought == 0 and "买了 0 个" or string.format("已买 %d · 失败 %d", bought, fail))
 		busy = false
 		task.delay(1.2, refreshSkill)
 	end)
@@ -2615,14 +2684,14 @@ GFloat:AddButton({
 	end,
 })
 GFloat:AddToggle("AutoFloat", {
-	Text = "自动悬浮（有人近/掉血）",
+	Text = "自动悬浮",
 	Default = CFG.autoAfk == true,
 	Callback = function(v)
 		CFG.autoAfk = v
 		-- 关掉自动悬浮 = 立刻收回平台并送回地面（否则会挂在半空，被反虚空反复判定）
 		if not v then
 			local ok, msg = M.floatDown()
-			setLbl(lblFloat, "关闭自动悬浮：" .. tostring(msg))
+			setLbl(lblFloat, tostring(msg))
 		end
 	end,
 })
@@ -2680,13 +2749,13 @@ local lbMove = GProt:AddLabel("-", true)
 local lbEsp = GEsp:AddLabel("血量 / 能力 / 获取概率", true)
 
 GFight:AddToggle("AutoAttack", {
-	Text = "自动攻击（直接触发，不模拟点击）",
+	Text = "自动攻击",
 	Default = false,
 	Callback = function(v) M.setCombat(v) end,
 })
 
 GFight:AddSlider("AtkRange", {
-	Text = "攻击范围（敌人进入即攻击）",
+	Text = "攻击范围",
 	Min = 3,
 	Max = 60,
 	Default = tonumber(combat.range) or 12,
@@ -2696,7 +2765,7 @@ GFight:AddSlider("AtkRange", {
 })
 
 GFight:AddToggle("AutoLead", {
-	Text = "自动预判（跟随当前延迟）",
+	Text = "自动预判",
 	Default = true,
 	Callback = function(v) M.setAutoLead(v) end,
 })
@@ -2712,7 +2781,8 @@ GFight:AddSlider("AtkLead", {
 })
 
 GFight:AddInput("LockTarget", {
-	Text = "锁定目标（用户名，留空=最近敌人）",
+	Text = "锁定目标",
+	Placeholder = "留空=最近",
 	Default = "",
 	Finished = true,
 	ClearTextOnFocus = false,
@@ -2727,7 +2797,7 @@ GFight:AddDropdown("AtkMove", {
 })
 
 GFight:AddToggle("AutoSwing", {
-	Text = "自动挥击（范围内有敌人就触发，不移动）",
+	Text = "自动挥击",
 	Default = false,
 	Callback = function(v) M.setSwing(v) end,
 })
@@ -2785,13 +2855,13 @@ GProt:AddToggle("RagdollFix", {
 })
 
 GProt:AddToggle("AntiVoid", {
-	Text = "反虚空（掉落自动回地面）",
+	Text = "反虚空",
 	Default = false,
 	Callback = function(v) M.setAntiVoid(v) end,
 })
 
 GAcc:AddSlider("SpeedVal", {
-	Text = "加速（无惯性）",
+	Text = "加速",
 	Min = 0,
 	Max = 200,
 	Default = 0,
@@ -2818,7 +2888,7 @@ GChest:AddDropdown("ChestMode", {
 })
 
 GChest:AddToggle("SkipLoot", {
-	Text = "跳过开箱动画（奖励照常到账）",
+	Text = "跳过开箱动画",
 	Default = false,
 	Callback = function(v) M.setSkipLoot(v) end,
 })
@@ -2826,7 +2896,7 @@ GChest:AddToggle("SkipLoot", {
 -- ───── 药水 ─────
 local GPotSel = TabPot:AddLeftGroupbox("药水")
 local GPotAuto = TabPot:AddRightGroupbox("自动")
-local lblPot = GPotSel:AddLabel("先在游戏里打开一次药水店", true)
+local lblPot = GPotSel:AddLabel("先打开药水店", true)
 local lblPotInfo = GPotAuto:AddLabel("-", true)
 
 local potValues = {}
@@ -2918,7 +2988,7 @@ GPotAuto:AddToggle("TimedBuy", {
 	Callback = function(v)
 		CFG.timed = v
 		if v then syncSel() end
-		setLbl(lblPotInfo, v and ("每 " .. M.intervalDesc() .. " 买一次，首次购买后计时") or "定时买已关")
+		setLbl(lblPotInfo, v and ("每 " .. M.intervalDesc() .. " 买一次") or "已关")
 	end,
 })
 
@@ -3070,9 +3140,7 @@ local function farmTick(st)
 		if ok then st.status = "悬浮中" end
 	end
 
-	-- 3 个药水栏：财富+急速+加速；2 栏：急速+加速（飞速旋钮只手动开，脚本不接管）
 	local slots = effectSlotLimit() or 0
-	-- 飞速旋钮是手动模式，不接管自动刷：自动刷始终走自己的常规抽卡循环
 	local th = getgenv().__PF_ROLL
 	if not getgenv().__PF_ROLL_ON or not th or coroutine.status(th) == "dead" then
 		getgenv().__PF_ROLL_ON = nil
@@ -3080,8 +3148,14 @@ local function farmTick(st)
 	end
 	st.status = "抽卡中"
 
-	local potList = { "Speedy Potion", "Haste Potion" }
-	if slots >= 3 then potList[#potList + 1] = "Fortune Potion" end
+	local potList
+	if st.mode == "coins" then
+		potList = { "Lucky Potion", "Speedy Potion", "Haste Potion" }
+	else
+		potList = { "Speedy Potion", "Haste Potion" }
+		if slots >= 3 then potList[#potList + 1] = "Fortune Potion" end
+	end
+	st.potList = potList
 
 	for _, nm in ipairs(potList) do
 		if getgenv().__PF_FARM ~= st then return end
@@ -3102,11 +3176,12 @@ local function farmTick(st)
 
 	local elapsed = os.clock() - st.t0
 	local cur = tonumber((data("Currency") or {})[def.cur]) or 0
-	local buffs = (M.effectActive("Speedy Potion") and "加速✓" or "加速×")
-		.. (M.effectActive("Haste Potion") and " 急速✓" or " 急速×")
-	if slots >= 3 then
-		buffs = buffs .. (M.effectActive("Fortune Potion") and " 财富✓" or " 财富×")
+	local SHORT = { ["Lucky Potion"] = "幸运", ["Speedy Potion"] = "加速", ["Haste Potion"] = "急速", ["Fortune Potion"] = "财富" }
+	local bt = {}
+	for _, nm in ipairs(potList) do
+		bt[#bt + 1] = SHORT[nm] .. (M.effectActive(nm) and "✓" or "×")
 	end
+	local buffs = table.concat(bt, " ")
 	local text = string.format(
 		"刷%s %s\n抽 %d · +%s\n药水 买%d 喝%d\n%s",
 		def.name, hms(elapsed), rollStats.n - st.baseRolls, fmt(math.max(0, cur - st.base)),
@@ -3155,7 +3230,6 @@ end
 GFarm:AddButton({ Text = "刷金币", Func = function() startFarm("coins") end })
 GFarm:AddButton({ Text = "刷钻石", Func = function() startFarm("diamonds") end })
 GFarm:AddButton({ Text = "停止", Func = function() stopFarm() end })
-GFarm:AddLabel("手套：自动选转得最快的（已拥有）\n金币：不挂亿万富翁 · 钻石：自动挂亿万富翁", true)
 
 refreshCode()
 pcall(refreshSkill)
@@ -3175,10 +3249,16 @@ Library:OnUnload(function()
 	if getgenv().__PF_AFK_CONN then pcall(function() getgenv().__PF_AFK_CONN:Disconnect() end) getgenv().__PF_AFK_CONN = nil end
 	if getgenv().__PF_FPS_CONN_MAIN then pcall(function() getgenv().__PF_FPS_CONN_MAIN:Disconnect() end) getgenv().__PF_FPS_CONN_MAIN = nil end
 	getgenv().__PF_HOLD = nil
+	getgenv().__PF_KICK_STOP = nil
 	getgenv().__PF_LIB = nil
 	getgenv().__PF_PANEL = nil
 end)
 getgenv().__PF_PANEL = Library.ScreenGui
+getgenv().__PF_KICK_STOP = function()
+	pcall(function() tgAutoRoll:SetValue(false) end)
+	pcall(stopFarm)
+	setLbl(lblRoll, "被踢，已停机")
+end
 getgenv().__PF_HOLD = true
 
 -- 面板一加载就按配置领一次，不用再手动关掉/打开
@@ -3221,7 +3301,7 @@ getgenv().__PF_LOOP = task.spawn(function()
 			local c = char()
 			local cp = c and c:FindFirstChild("CurrentPower")
 			if cp then rollStats.last = tostring(cp.Value) end
-			setLbl(lblRoll, string.format("抽卡中 · %d 次 · %s", rollStats.n, rollStats.last))
+			setLbl(lblRoll, string.format("抽卡中 · %d 次 · %s · 拒 %d · %s", rollStats.n, rollStats.last, M.fast.reject, M.fast.lastResult))
 		end
 
 		local frames = getgenv().__PF_FRAMES or 0
