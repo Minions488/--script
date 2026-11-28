@@ -1055,12 +1055,14 @@ local function hms(sec)
 end
 
 
+local combat, swing, rag, move, leadMs, walk, chest, loot, voidc
+do -- PF_SCOPE
 -- ══════════ ⑧ 战斗 / 防护 / 移动 ══════════
-local combat = { on = false, hitbox = 0, target = nil, swings = 0, hits = 0, range = 12, lead = 200, autoLead = true, ping = 0, lock = "", attackMove = "teleport", tpAt = 0 }
+combat = { on = false, hitbox = 0, target = nil, swings = 0, hits = 0, range = 12, lead = 200, autoLead = true, ping = 0, lock = "", attackMove = "teleport", tpAt = 0 }
 -- 自动挥击：只做「范围内有敌人 → 触发攻击」，不移动、不转向、不选目标
-local swing = { on = false, range = 8, last = 0, n = 0 }
-local rag = { on = false, fixed = 0 }
-local move = { speed = 0, orig = nil }
+swing = { on = false, range = 8, last = 0, n = 0 }
+rag = { on = false, fixed = 0 }
+move = { speed = 0, orig = nil }
 M.combat, M.rag, M.move = combat, rag, move
 
 -- 注意：角色里同时有 HitboxPlayer(Script) 和 HitboxPlayer(Part)，必须按类型取
@@ -1202,7 +1204,7 @@ local function curPing()
 	return ok and (tonumber(v) or 0) or 0
 end
 
-local function leadMs()
+function leadMs()
 	if combat.autoLead then return math.clamp(combat.ping or 0, 0, 600) end
 	return math.clamp(tonumber(combat.lead) or 0, 0, 600)
 end
@@ -1218,7 +1220,7 @@ end
 
 -- ══ 寻路 / 探路：绝不往虚空里走 ══
 local pfs = game:GetService("PathfindingService")
-local walk = { wps = nil, i = 1, at = 0, goal = nil, state = "" }
+walk = { wps = nil, i = 1, at = 0, goal = nil, state = "" }
 
 local function groundBelowAt(pos, depth)
 	local params = RaycastParams.new()
@@ -1523,7 +1525,7 @@ end
 -- ══════════ ⑨ 自动开宝箱 ══════════
 -- 宝箱 = Workspace.ChestsStuffFolder.ActiveMapChests 下的 MapLootChest_*
 -- 交互 = 箱内 ProximityPrompt（距离上限 5 格、需视线），用 fireproximityprompt 直接触发
-local chest = { on = false, mode = "teleport", opened = 0, state = "未开启", last = nil }
+chest = { on = false, mode = "teleport", opened = 0, state = "未开启", last = nil }
 M.chest = chest
 
 local function chestFolder()
@@ -1645,7 +1647,7 @@ end
 -- ══════════ 跳过开箱动画 ══════════
 -- 开箱动画在 PlayerGui.OpeningLootGui.LootOpeningFrame（滚轮逐格展示），纯客户端演出。
 -- 奖励由服务端在触发宝箱时已发放，所以直接隐藏动画不会丢奖励。
-local loot = { on = false, skipped = 0, last = "" }
+loot = { on = false, skipped = 0, last = "" }
 
 local function lootItems(frame)
 	local roll = frame:FindFirstChild("CanvasGroupRoll")
@@ -1746,7 +1748,7 @@ end
 -- ══════════ ⑩ 反虚空 ══════════
 -- 落地时记录安全点；踩空（悬空且脚下 350 格内没有真地面）当帧拉回安全点，不等坠落。
 -- 兜底：低于最近地面 200 格也立即拉回。虚空伤害是秒杀，必须抢在坠落之前。
-local voidc = { on = false, back = 0, safe = nil, floorY = nil, msg = "" }
+voidc = { on = false, back = 0, safe = nil, floorY = nil, msg = "" }
 M.voidc = voidc
 
 local VOID_FALL = 350  -- 脚下这么多格内没有地面 = 虚空（够长：正常跳台/下坡不会误判）
@@ -2068,6 +2070,7 @@ function M.setESP(on)
 	return true
 end
 
+end -- PF_SCOPE
 -- ══════════ Obsidian UI ══════════
 local LIB_URLS = {
 	"https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua",
@@ -3100,6 +3103,7 @@ local function farmEquip(eventName, model)
 end
 
 local hudLabel, hudButton
+local stopFarm
 
 local function destroyHud()
 	if hudLabel then pcall(function() hudLabel:Destroy() end) hudLabel = nil end
@@ -3107,7 +3111,7 @@ local function destroyHud()
 	getgenv().__PF_FARM_HUD = nil
 end
 
-M.stopFarm = function()
+stopFarm = function()
 	local st = getgenv().__PF_FARM
 	destroyHud()
 	if not st then return end
@@ -3124,7 +3128,7 @@ end
 local function farmTick(st)
 	if M.keepHit then
 		st.status = "已保留 " .. tostring(M.keepHit)
-		M.stopFarm()
+		stopFarm()
 		return
 	end
 	local def = FARM_DEF[st.mode]
@@ -3209,7 +3213,7 @@ end
 local function startFarm(mode)
 	local def = FARM_DEF[mode]
 	if not def then return end
-	if getgenv().__PF_FARM then M.stopFarm() end
+	if getgenv().__PF_FARM then stopFarm() end
 	M.keepHit = nil
 	CFG.timed = false
 	CFG.autoDrink = false
@@ -3230,7 +3234,7 @@ local function startFarm(mode)
 	getgenv().__PF_FARM = st
 
 	pcall(function() hudLabel = Library:AddDraggableLabel("刷" .. def.name .. "…") end)
-	pcall(function() hudButton = Library:AddDraggableButton({ Text = "停止刷", Func = function() M.stopFarm() end }) end)
+	pcall(function() hudButton = Library:AddDraggableButton({ Text = "停止刷", Func = function() stopFarm() end }) end)
 	getgenv().__PF_FARM_HUD = { Destroy = destroyHud }
 	pcall(function() Library:Toggle(false) end)
 
@@ -3244,13 +3248,13 @@ end
 
 GFarm:AddButton({ Text = "刷金币", Func = function() startFarm("coins") end })
 GFarm:AddButton({ Text = "刷钻石", Func = function() startFarm("diamonds") end })
-GFarm:AddButton({ Text = "停止", Func = function() M.stopFarm() end })
+GFarm:AddButton({ Text = "停止", Func = function() stopFarm() end })
 
 refreshCode()
 pcall(refreshSkill)
 
 Library:OnUnload(function()
-	pcall(M.stopFarm)
+	pcall(stopFarm)
 	M.stopRoll()
 	pcall(M.setRagePower, false)
 	pcall(M.floatDown)
@@ -3271,7 +3275,7 @@ end)
 getgenv().__PF_PANEL = Library.ScreenGui
 getgenv().__PF_KICK_STOP = function()
 	pcall(function() tgAutoRoll:SetValue(false) end)
-	pcall(M.stopFarm)
+	pcall(stopFarm)
 	setLbl(lblRoll, "被踢，已停机")
 end
 getgenv().__PF_HOLD = true
