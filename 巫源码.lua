@@ -7580,25 +7580,47 @@ local function WuResolveDontStopIds()
         return nil, "当前执行器没有 request/http_request，无法解析 Roblox 分享链接"
     end
 
-    local ok, response = pcall(function()
-        return req({
-            Url = "https://apis.roblox.com/sharelinks/v1/resolve-link",
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Accept"] = "application/json",
-                ["Origin"] = "https://www.roblox.com",
-                ["Referer"] = "https://www.roblox.com/",
-            },
-            Body = game:GetService("HttpService"):JSONEncode({
-                linkId = WU_DONTSTOP_SHARE_CODE,
-                linkType = "ExperienceDetails",
-            }),
-        })
-    end)
+    local options = {
+        Url = "https://apis.roblox.com/sharelinks/v1/resolve-link",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Accept"] = "application/json",
+            ["Origin"] = "https://www.roblox.com",
+            ["Referer"] = "https://www.roblox.com/",
+        },
+        Body = game:GetService("HttpService"):JSONEncode({
+            linkId = WU_DONTSTOP_SHARE_CODE,
+            linkType = "ExperienceDetails",
+        }),
+    }
+
+    local ok, response = pcall(function() return req(options) end)
     if not ok then return nil, tostring(response) end
     if type(response) ~= "table" then return nil, "分享链接解析返回格式异常" end
+
     local status = tonumber(response.StatusCode or response.Status or 0)
+    -- Roblox 部分 POST 接口会先用 403 返回 CSRF token；拿到 token 后重试一次。
+    if status == 403 then
+        local responseHeaders = response.Headers or response.headers
+        local csrf
+        if type(responseHeaders) == "table" then
+            for key, value in pairs(responseHeaders) do
+                if tostring(key):lower() == "x-csrf-token" then
+                    csrf = tostring(value)
+                    break
+                end
+            end
+        end
+        if csrf and csrf ~= "" then
+            options.Headers["X-CSRF-TOKEN"] = csrf
+            ok, response = pcall(function() return req(options) end)
+            if not ok then return nil, tostring(response) end
+            if type(response) ~= "table" then return nil, "分享链接重试返回格式异常" end
+            status = tonumber(response.StatusCode or response.Status or 0)
+        end
+    end
+
     if status < 200 or status >= 300 then
         return nil, "分享链接解析失败，HTTP " .. tostring(status)
     end

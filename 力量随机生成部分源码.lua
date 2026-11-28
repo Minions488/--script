@@ -2069,12 +2069,28 @@ function M.setESP(on)
 end
 
 -- ══════════ Obsidian UI ══════════
-local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local okLib, Library = pcall(function()
-	return loadstring(game:HttpGet(repo .. "Library.lua"))()
-end)
-if not okLib or type(Library) ~= "table" then
-	warn("[辅助] Obsidian 加载失败:", Library)
+local LIB_URLS = {
+	"https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua",
+	"https://cdn.jsdelivr.net/gh/deividcomsono/Obsidian@main/Library.lua",
+}
+local okLib, Library, libErr
+for round = 1, 2 do
+	for _, url in ipairs(LIB_URLS) do
+		okLib, Library = pcall(function()
+			return loadstring(game:HttpGet(url))()
+		end)
+		if okLib and type(Library) == "table" then break end
+		libErr = tostring(Library)
+		okLib = false
+	end
+	if okLib then break end
+	task.wait(1)
+end
+if not okLib then
+	warn("[辅助] UI 库加载失败:", libErr)
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("SendNotification", { Title = "辅助", Text = "UI 库加载失败：" .. tostring(libErr):sub(1, 80), Duration = 8 })
+	end)
 	return
 end
 getgenv().__PF_LIB = Library
@@ -3084,7 +3100,6 @@ local function farmEquip(eventName, model)
 end
 
 local hudLabel, hudButton
-local stopFarm
 
 local function destroyHud()
 	if hudLabel then pcall(function() hudLabel:Destroy() end) hudLabel = nil end
@@ -3092,7 +3107,7 @@ local function destroyHud()
 	getgenv().__PF_FARM_HUD = nil
 end
 
-stopFarm = function()
+M.stopFarm = function()
 	local st = getgenv().__PF_FARM
 	destroyHud()
 	if not st then return end
@@ -3109,7 +3124,7 @@ end
 local function farmTick(st)
 	if M.keepHit then
 		st.status = "已保留 " .. tostring(M.keepHit)
-		stopFarm()
+		M.stopFarm()
 		return
 	end
 	local def = FARM_DEF[st.mode]
@@ -3194,7 +3209,7 @@ end
 local function startFarm(mode)
 	local def = FARM_DEF[mode]
 	if not def then return end
-	if getgenv().__PF_FARM then stopFarm() end
+	if getgenv().__PF_FARM then M.stopFarm() end
 	M.keepHit = nil
 	CFG.timed = false
 	CFG.autoDrink = false
@@ -3215,7 +3230,7 @@ local function startFarm(mode)
 	getgenv().__PF_FARM = st
 
 	pcall(function() hudLabel = Library:AddDraggableLabel("刷" .. def.name .. "…") end)
-	pcall(function() hudButton = Library:AddDraggableButton({ Text = "停止刷", Func = function() stopFarm() end }) end)
+	pcall(function() hudButton = Library:AddDraggableButton({ Text = "停止刷", Func = function() M.stopFarm() end }) end)
 	getgenv().__PF_FARM_HUD = { Destroy = destroyHud }
 	pcall(function() Library:Toggle(false) end)
 
@@ -3229,13 +3244,13 @@ end
 
 GFarm:AddButton({ Text = "刷金币", Func = function() startFarm("coins") end })
 GFarm:AddButton({ Text = "刷钻石", Func = function() startFarm("diamonds") end })
-GFarm:AddButton({ Text = "停止", Func = function() stopFarm() end })
+GFarm:AddButton({ Text = "停止", Func = function() M.stopFarm() end })
 
 refreshCode()
 pcall(refreshSkill)
 
 Library:OnUnload(function()
-	pcall(stopFarm)
+	pcall(M.stopFarm)
 	M.stopRoll()
 	pcall(M.setRagePower, false)
 	pcall(M.floatDown)
@@ -3256,7 +3271,7 @@ end)
 getgenv().__PF_PANEL = Library.ScreenGui
 getgenv().__PF_KICK_STOP = function()
 	pcall(function() tgAutoRoll:SetValue(false) end)
-	pcall(stopFarm)
+	pcall(M.stopFarm)
 	setLbl(lblRoll, "被踢，已停机")
 end
 getgenv().__PF_HOLD = true
